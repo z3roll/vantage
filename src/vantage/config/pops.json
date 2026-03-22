@@ -1,0 +1,345 @@
+[
+  {
+    "site_id": "aklnzl1",
+    "code": "akl",
+    "name": "AKL - AKLNZL1",
+    "lat_deg": -36.8493316,
+    "lon_deg": 174.7654045
+  },
+  {
+    "site_id": "ashnvax2",
+    "code": "iad",
+    "name": "IAD/WAS - ASHNVAX2",
+    "lat_deg": 39.015551,
+    "lon_deg": -77.460349
+  },
+  {
+    "site_id": "atlagax1",
+    "code": "atl",
+    "name": "ATL - ATLAGAX1",
+    "lat_deg": 33.758575,
+    "lon_deg": -84.3880016
+  },
+  {
+    "site_id": "bgtacol1",
+    "code": "bog",
+    "name": "BOG - BGTACOL1",
+    "lat_deg": 4.6712121,
+    "lon_deg": -74.1617196
+  },
+  {
+    "site_id": "bnssarg1",
+    "code": "eze",
+    "name": "EZE - BNSSARG1",
+    "lat_deg": -34.589928,
+    "lon_deg": -58.466912
+  },
+  {
+    "site_id": "brsabra1",
+    "code": "bsb",
+    "name": "BSB - BRSABRA1",
+    "lat_deg": -15.789511,
+    "lon_deg": -47.9114926
+  },
+  {
+    "site_id": "brseaus1",
+    "code": "bne",
+    "name": "BNE - BRSEAUS1",
+    "lat_deg": -27.4538615,
+    "lon_deg": 153.033214
+  },
+  {
+    "site_id": "chcoilx1",
+    "code": "ord",
+    "name": "ORD/CHI - CHCOILX1",
+    "lat_deg": 41.8760688,
+    "lon_deg": -87.6316483
+  },
+  {
+    "site_id": "chrhnzl1",
+    "code": "chc",
+    "name": "CHC - CHRHNZL1",
+    "lat_deg": -43.531563,
+    "lon_deg": 172.635461
+  },
+  {
+    "site_id": "clgycan1",
+    "code": "yyc",
+    "name": "YYC - CLGYCAN1",
+    "lat_deg": 50.976973,
+    "lon_deg": -113.9566777
+  },
+  {
+    "site_id": "dhkabgd1",
+    "code": "dac",
+    "name": "DAC - DHKABGD1",
+    "lat_deg": 24.0649646,
+    "lon_deg": 90.2360319
+  },
+  {
+    "site_id": "dllstxx1",
+    "code": "dfw",
+    "name": "DFW/DAL - DLLSTXX1",
+    "lat_deg": 32.8010115,
+    "lon_deg": -96.8195697
+  },
+  {
+    "site_id": "dnvrcox1",
+    "code": "den",
+    "name": "DEN - DNVRCOX1",
+    "lat_deg": 39.7456628,
+    "lon_deg": -104.9957125
+  },
+  {
+    "site_id": "dohaqat1",
+    "code": "doh",
+    "name": "DOH - DOHAQAT1",
+    "lat_deg": 25.5502333,
+    "lon_deg": 51.4391625
+  },
+  {
+    "site_id": "frntdeu1",
+    "code": "fra",
+    "name": "FRA - FRNTDEU1",
+    "lat_deg": 50.1196613,
+    "lon_deg": 8.7346252
+  },
+  {
+    "site_id": "frtabra1",
+    "code": "for",
+    "name": "FOR - FRTABRA1",
+    "lat_deg": -3.735067,
+    "lon_deg": -38.458034
+  },
+  {
+    "site_id": "gtmygtm1",
+    "code": "gua",
+    "name": "GUA - GTMYGTM1",
+    "lat_deg": 14.655149,
+    "lon_deg": -90.544525
+  },
+  {
+    "site_id": "jhngzaf1",
+    "code": "jnb",
+    "name": "JNB - JHNGZAF1",
+    "lat_deg": -26.137957,
+    "lon_deg": 28.197517
+  },
+  {
+    "site_id": "jtnaidn1",
+    "code": "cgk",
+    "name": "CGK - JTNAIDN1",
+    "lat_deg": -6.237865,
+    "lon_deg": 106.823498
+  },
+  {
+    "site_id": "kscymox1",
+    "code": "mci",
+    "name": "MCI - KSCYMOX1",
+    "lat_deg": 39.1008832,
+    "lon_deg": -94.5812398
+  },
+  {
+    "site_id": "lgosnga1",
+    "code": "los",
+    "name": "LOS - LGOSNGA1",
+    "lat_deg": 6.4495336,
+    "lon_deg": 3.5884013
+  },
+  {
+    "site_id": "limaper1",
+    "code": "lim",
+    "name": "LIM - LIMAPER1",
+    "lat_deg": -12.0889509,
+    "lon_deg": -76.9731775
+  },
+  {
+    "site_id": "lndngbr1",
+    "code": "lon",
+    "name": "LON/LHR - LNDNGBR1",
+    "lat_deg": 51.5114777,
+    "lon_deg": -0.0012635
+  },
+  {
+    "site_id": "lsancax1",
+    "code": "lax",
+    "name": "LAX - LSANCAX1",
+    "lat_deg": 34.047997,
+    "lon_deg": -118.2556849
+  },
+  {
+    "site_id": "mdrdesp1",
+    "code": "mad",
+    "name": "MAD - MDRDESP1",
+    "lat_deg": 40.4342057,
+    "lon_deg": -3.6240396
+  },
+  {
+    "site_id": "mlbeaus1",
+    "code": "mel",
+    "name": "MEL - MLBEAUS1",
+    "lat_deg": -37.8235284,
+    "lon_deg": 144.9156203
+  },
+  {
+    "site_id": "mlnnita1",
+    "code": "mxp",
+    "name": "MXP - MLNNITA1",
+    "lat_deg": 45.4755627,
+    "lon_deg": 9.1037672
+  },
+  {
+    "site_id": "mmbiind1",
+    "code": "bom",
+    "name": "BOM - MMBIIND1",
+    "lat_deg": 19.110795,
+    "lon_deg": 72.901065
+  },
+  {
+    "site_id": "mmmiflx1",
+    "code": "mia",
+    "name": "MIA - MMMIFLX1",
+    "lat_deg": 25.7824329,
+    "lon_deg": -80.1931407
+  },
+  {
+    "site_id": "mnlaph1",
+    "code": "mnl",
+    "name": "MNL - MNLAPH1",
+    "lat_deg": 14.564626,
+    "lon_deg": 121.021875
+  },
+  {
+    "site_id": "mntlcan1",
+    "code": "mtr",
+    "name": "MTR - MNTLCAN1",
+    "lat_deg": 45.4972023,
+    "lon_deg": -73.5704739
+  },
+  {
+    "site_id": "mplsmnx1",
+    "code": "msp",
+    "name": "MSP - MPLSMNX1",
+    "lat_deg": 44.9714107,
+    "lon_deg": -93.2548509
+  },
+  {
+    "site_id": "msctom1",
+    "code": "mct",
+    "name": "MCT - MSCTOM1",
+    "lat_deg": 23.726849,
+    "lon_deg": 57.7940688
+  },
+  {
+    "site_id": "nrbiken1",
+    "code": "nbo",
+    "name": "NBO - NRBIKEN1",
+    "lat_deg": -1.349897,
+    "lon_deg": 36.748969
+  },
+  {
+    "site_id": "nwyynyx1",
+    "code": "lga",
+    "name": "LGA/NYC - NWYYNYX1",
+    "lat_deg": 40.7198512,
+    "lon_deg": -74.0043892
+  },
+  {
+    "site_id": "prthau1",
+    "code": "per",
+    "name": "PER - PRTHAU1",
+    "lat_deg": -31.8642727,
+    "lon_deg": 115.8958668
+  },
+  {
+    "site_id": "qrtomex1",
+    "code": "qro",
+    "name": "QRO/MEX - QRTOMEX1",
+    "lat_deg": 20.5669519,
+    "lon_deg": -100.2566086
+  },
+  {
+    "site_id": "sfiabgr1",
+    "code": "sof",
+    "name": "SOF - SFIABGR1",
+    "lat_deg": 42.7027903,
+    "lon_deg": 23.3062386
+  },
+  {
+    "site_id": "sltyutx1",
+    "code": "slc",
+    "name": "SLC - SLTYUTX1",
+    "lat_deg": 40.720861,
+    "lon_deg": -111.985013
+  },
+  {
+    "site_id": "sngesgp1",
+    "code": "sin",
+    "name": "SIN - SNGESGP1",
+    "lat_deg": 1.2952307,
+    "lon_deg": 103.7898448
+  },
+  {
+    "site_id": "snjecax1",
+    "code": "sjc",
+    "name": "SJC/SFO - SNJECAX1",
+    "lat_deg": 37.241638,
+    "lon_deg": -121.783323
+  },
+  {
+    "site_id": "sntochl1",
+    "code": "scl",
+    "name": "SCL - SNTOCHL1",
+    "lat_deg": -33.3581747,
+    "lon_deg": -70.6758799
+  },
+  {
+    "site_id": "splobra1",
+    "code": "gru",
+    "name": "GRU - SPLOBRA1",
+    "lat_deg": -23.49355,
+    "lon_deg": -46.809461
+  },
+  {
+    "site_id": "srbaind2",
+    "code": "sub",
+    "name": "SUB - SRBAIND2",
+    "lat_deg": -7.273023,
+    "lon_deg": 112.74282
+  },
+  {
+    "site_id": "sttlwax1",
+    "code": "sea",
+    "name": "SEA - STTLWAX1",
+    "lat_deg": 47.6144489,
+    "lon_deg": -122.3386777
+  },
+  {
+    "site_id": "sydyaus1",
+    "code": "syd",
+    "name": "SYD - SYDYAUS1",
+    "lat_deg": -33.7850819,
+    "lon_deg": 151.1312062
+  },
+  {
+    "site_id": "tkyojpn1",
+    "code": "tyo",
+    "name": "TYO/NRT - TKYOJPN1",
+    "lat_deg": 35.6877247,
+    "lon_deg": 139.7644231
+  },
+  {
+    "site_id": "tmpeazx1",
+    "code": "phx",
+    "name": "PHX - TMPEAZX1",
+    "lat_deg": 33.3955428,
+    "lon_deg": -111.9701203
+  },
+  {
+    "site_id": "wrswpol1",
+    "code": "waw",
+    "name": "WAW - WRSWPOL1",
+    "lat_deg": 52.227354,
+    "lon_deg": 21.003357
+  }
+]
