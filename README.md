@@ -6,87 +6,106 @@ Satellite ISPs like Starlink optimize ISL (inter-satellite link) routing but ign
 
 ## Key Idea
 
-Current satellite networks use **hot-potato routing** — traffic exits at the PoP nearest to the user, regardless of destination. This minimizes satellite path length but can result in very long ground paths.
+Current satellite networks use **hot-potato routing** — traffic exits at the PoP nearest to the user, regardless of destination location. This minimizes satellite path length but can result in very long ground paths (e.g., Frankfurt PoP → Google in Mountain View = 105ms ground RTT).
 
-Vantage uses **ground-aware PoP selection** — traffic exits at the PoP nearest to the *destination*, trading longer satellite paths for much shorter ground paths. The net effect is lower total E2E latency.
-
-![Baseline vs Vantage](figures/baseline_vs_vantage.png)
-
-| Metric | Baseline (Nearest PoP) | Vantage (Greedy) |
-|--------|----------------------|-----------------|
-| Avg E2E RTT | 121 ms | 67 ms |
-| Satellite segment | 16 ms | 66 ms |
-| Ground segment | 105 ms | 1 ms |
-| **Improvement** | — | **-45%** |
+Vantage uses **ground-aware PoP selection** — traffic exits at the PoP nearest to the *destination*, trading longer satellite paths for much shorter ground paths. The satellite penalty is bounded (~50ms extra ISL hops), but the ground savings can be 100ms+. The net effect is lower total E2E latency.
 
 ## Architecture
 
 ```
-for each epoch:
-    snapshot = world.snapshot_at(t)              # satellite positions + ISL topology
-    demand   = traffic.generate(epoch)           # flow demands (src → dst)
-    intent   = controller.optimize(snapshot)     # PoP selection per destination
-    result   = forward.realize(intent, snapshot) # compute actual E2E delays
-    feedback.observe(result)                     # update ground delay knowledge
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          SIMULATION ENGINE                               │
+│  Orchestrates all subsystems. Drives time. Manages feedback loop.       │
+│                                                                          │
+│  ┌─ Epoch Loop ───────────────────────────────────────────────────────┐  │
+│  │                                                                     │  │
+│  │  ┌─────────┐     ┌────────────┐     ┌──────────────┐               │  │
+│  │  │  Clock   │────▶│   World    │────▶│  Network     │               │  │
+│  │  │  (time t)│     │   Model    │     │  Snapshot(t) │               │  │
+│  │  └─────────┘     └────────────┘     └──────┬───────┘               │  │
+│  │                                            │                        │  │
+│  │                  ┌─────────────────────────┼────────────────┐       │  │
+│  │                  │     CONTROL PLANE       │                │       │  │
+│  │                  │                         ▼                │       │  │
+│  │  ┌──────────┐    │  ┌───────────────────────────────────┐   │       │  │
+│  │  │ Traffic  │    │  │  TE Controller                     │   │       │  │
+│  │  │ (demand) │───▶│  │  (CandidateBasedController)       │   │       │  │
+│  │  └──────────┘    │  │  enumerate candidates → score →   │   │       │  │
+│  │                  │  │  select best → RoutingIntent       │   │       │  │
+│  │  ┌──────────┐    │  └──────────────┬────────────────────┘   │       │  │
+│  │  │  Ground  │───▶│                 │                        │       │  │
+│  │  │Knowledge │    │  Strategies:    │                        │       │  │
+│  │  │(L1+L2/L3)│◀ ─ ┤  nearest_pop | ground_only |           │       │  │
+│  │  └──────────┘    │  static_pop  | greedy                   │       │  │
+│  │       ▲          └─────────────┼───────────────────────────┘       │  │
+│  │       │                        │                                    │  │
+│  │       │                        ▼                                    │  │
+│  │       │  ┌──────────────────────────────────────────────────────┐   │  │
+│  │       │  │  Forwarding Engine (forward.py)                      │   │  │
+│  │       │  │  RoutingIntent × Snapshot × Demand → EpochResult    │   │  │
+│  │       │  │  Computes actual E2E delays along resolved paths     │   │  │
+│  │       │  └──────────────────────┬───────────────────────────────┘   │  │
+│  │       │                         │                                   │  │
+│  │       │  ┌──────────────────────▼───────────────────────────────┐   │  │
+│  │       │  │  Feedback Observer (engine_feedback.py)               │   │  │
+│  │       └──│  EpochResult → ground_knowledge.put(pop, dest, rtt) │   │  │
+│  │          └──────────────────────┬───────────────────────────────┘   │  │
+│  │                                 │                                   │  │
+│  │                                 ▼                                   │  │
+│  │          ┌──────────────────────────────────────────────────────┐   │  │
+│  │          │  Analysis (analysis/metrics.py)                      │   │  │
+│  │          │  EpochResult → latency stats, controller comparison │   │  │
+│  │          └──────────────────────────────────────────────────────┘   │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-![Architecture](figures/architecture.png)
+### Dependency Model
 
-### Layer Separation
+```
+engine ──orchestrates──▶ { world, traffic, control, forward, feedback, analysis }
 
-| Layer | Module | Responsibility |
-|-------|--------|----------------|
-| **World** | `world/` | Satellite positions, ISL topology, routing matrices, ground infrastructure |
-| **Policy** | `control/policy/` | PoP selection strategies via candidate enumeration + scoring |
-| **Forward** | `forward.py` | Compute actual segment delays along resolved paths |
-| **Feedback** | `engine_feedback.py` | Write realized ground delays back to GroundKnowledge |
-| **Analysis** | `analysis/` | Offline metrics: latency stats, controller comparison |
-| **Domain** | `domain/` | Frozen dataclasses (PathAllocation, FlowKey, NetworkSnapshot, etc.) |
+control  ──reads──▶ world            (NetworkSnapshot: satellite positions, ISL graph)
+control  ──reads──▶ ground_knowledge (GroundKnowledge: cached + estimated ground delays)
+control  ──reads──▶ traffic          (TrafficDemand: flow demands per epoch)
 
-### Controller Strategies
+forward  ──reads──▶ world            (truth: actual topology, actual delays)
+forward  ──reads──▶ control          (RoutingIntent to realize)
+forward  ──reads──▶ ground_knowledge (ground delay for E2E computation)
 
-All controllers inherit from `CandidateBasedController` and differ only in PoP selection:
+feedback ──writes─▶ ground_knowledge (observed ground delays from forwarding results)
 
-| Strategy | Selection Rule | Use Case |
-|----------|---------------|----------|
-| `nearest_pop` | PoP closest to user | Baseline (hot-potato) |
-| `ground_only` | PoP closest to destination | Oracle (ground-delay optimal) |
-| `static_pop` | Best historical PoP per destination | Static lookup |
-| `greedy` | Minimize satellite + ground E2E jointly | **Primary algorithm** |
+analysis ──reads──▶ forward          (EpochResult to analyze, offline only)
 
-### Ground Knowledge
+world    ──reads──▶ nothing          (pure model of physical reality)
+traffic  ──reads──▶ nothing          (pure demand generator)
+```
 
-`GroundKnowledge` is the single source of truth for ground delays:
-- **L1 cache**: feedback-derived values (updated each epoch)
-- **L2 estimator**: HaversineDelay (distance-based fallback)
-- **L3 estimator**: FiberGraphDelay (ITU fiber topology, Dijkstra)
+### Key Design Rules
 
-### Performance
+- All domain types are **frozen dataclasses** (`frozen=True, slots=True`)
+- **Protocol** over ABC — duck typing, any class with right methods works
+- No subsystem calls "upward" to engine
+- Control plane never modifies world state (read-only)
+- `GroundKnowledge` is the **single source of truth** for ground delays
+- New strategies require only a new `CandidateScorer` implementation
 
-Satellite routing uses a **Time-Varying Graph** (TVG):
-- Fixed +Grid ISL topology built once
-- Edge weights (propagation delays) recomputed per timeslot via vectorized numpy
-- All-pairs Dijkstra via scipy sparse (C implementation): **~660ms per timeslot** (12x faster than networkx)
-- Results cached per timeslot
+## E2E Delay Decomposition
+
+```
+User → (uplink) → Sat_ingress → (ISL hops) → Sat_egress → (downlink) → GS → (backhaul) → PoP → (ground) → Destination
+         ~2ms          variable (~5-60ms)          ~2ms        ~1ms              variable (~1-105ms)
+```
+
+All delay values in the system are **RTT** (round-trip time).
 
 ## Quick Start
 
 ```bash
-# Install
-uv sync
-
-# Preprocess raw data (run once)
-uv run python -m vantage.config.preprocess
-
-# Run experiment
-uv run python -m vantage.main
-
-# Run tests
-uv run pytest tests/
-
-# Lint + type check
-uv run ruff check src/ tests/
-uv run mypy src/
+uv sync                                    # install deps
+uv run python -m vantage.config.preprocess  # preprocess raw data (run once)
+uv run python -m vantage.main              # run experiment
+uv run pytest tests/                        # run tests
 ```
 
 ## Project Structure
@@ -97,7 +116,7 @@ src/vantage/
     domain/              # Frozen dataclasses (pure data models)
     world/
         ground/          # GroundKnowledge, GroundInfrastructure, delay models
-        satellite/       # SatelliteSegment, TVG, constellation, routing, visibility
+        satellite/       # SatelliteSegment, TVG routing (scipy), constellation
     control/
         controller.py    # TEController Protocol + factory
         policy/
@@ -106,10 +125,10 @@ src/vantage/
             ground_only.py
             static_pop.py
             greedy.py
-    forward.py           # Realize intent → compute delays
+    forward.py           # Realize intent → compute actual delays
     engine_feedback.py   # GroundDelayFeedback observer
-    traffic/             # EndpointPopulation, generators
+    traffic/             # EndpointPopulation, generators (Uniform / Gravity)
     analysis/            # Metrics, controller comparison
-    common/              # Physical constants, geo utilities
+    common/              # Physical constants, geographic utilities
     config/              # Preprocessed data + preprocess script
 ```
