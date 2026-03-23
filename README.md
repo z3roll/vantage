@@ -1,4 +1,4 @@
-# Bifrost
+# Argus
 
 **Steering Satellite Traffic with End-to-End Awareness.**
 
@@ -6,7 +6,7 @@
 
 Current satellite networks optimize each segment in isolation — ISL routing minimizes satellite hop delay, but is oblivious to what happens after traffic exits the constellation. This local optimization produces globally suboptimal end-to-end paths.
 
-Bifrost takes a holistic view: by jointly reasoning about satellite and terrestrial segments, the system steers traffic toward exit points that minimize *total* path delay, not just the space segment. The core insight is that a moderately longer satellite path can dramatically shorten the overall journey if it delivers traffic to a better terrestrial handoff point.
+Argus takes a holistic view: by jointly reasoning about satellite and terrestrial segments, the system steers traffic toward exit points that minimize *total* path delay, not just the space segment. The core insight is that a moderately longer satellite path can dramatically shorten the overall journey if it delivers traffic to a better terrestrial handoff point.
 
 ## Architecture
 
