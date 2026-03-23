@@ -1,0 +1,71 @@
+graph TB
+    subgraph WORLD["World (Physical Truth)"]
+        direction TB
+        SAT["Satellite Segment<br/>constellation + topology<br/>+ TVG routing (scipy)"]
+        GND["Ground Infrastructure<br/>GS, PoPs, backhaul edges"]
+        GK["Ground Knowledge<br/>L1 cache + L2/L3 estimator"]
+        SAT --> SNAP["Network Snapshot<br/>(frozen per timeslot)"]
+        GND --> SNAP
+    end
+
+    subgraph TRAFFIC["Traffic (Demand)"]
+        POP_T["Endpoint Population<br/>106 terminals + 5 destinations"]
+        GEN["Traffic Generator<br/>Uniform / Gravity"]
+        POP_T --> GEN
+        GEN --> DEM["Traffic Demand<br/>(per epoch)"]
+    end
+
+    subgraph CONTROL["Control (Policy)"]
+        direction TB
+        CTRL["TEController Protocol"]
+        BASE["CandidateBasedController"]
+        CTRL --- BASE
+        subgraph STRATEGIES["Strategies"]
+            NP["nearest_pop"]
+            GO["ground_only"]
+            SP["static_pop"]
+            GR["greedy"]
+        end
+        BASE --- STRATEGIES
+        subgraph FRAMEWORK["Framework (common/)"]
+            CAND["Candidate Enumerator"]
+            SCORE["CandidateScorer Protocol<br/>SatelliteCostScorer / E2EScorer"]
+            SEL["select_best()"]
+        end
+        BASE --- FRAMEWORK
+    end
+
+    subgraph ENGINE["Engine (Orchestrator)"]
+        LOOP["Epoch Loop<br/>snapshot → optimize → realize → feedback"]
+    end
+
+    subgraph FORWARD["Forward (Execution)"]
+        REAL["realize()<br/>compute actual E2E delays"]
+    end
+
+    subgraph FEEDBACK["Feedback"]
+        FB["GroundDelayFeedback<br/>writes ground_rtt → GroundKnowledge"]
+    end
+
+    subgraph ANALYSIS["Analysis (Offline)"]
+        MET["Metrics<br/>latency stats, comparison"]
+    end
+
+    SNAP --> LOOP
+    DEM --> LOOP
+    GK --> CTRL
+    LOOP --> CTRL
+    CTRL -->|RoutingIntent| REAL
+    SNAP --> REAL
+    REAL -->|EpochResult| FB
+    FB -->|put| GK
+    REAL -->|EpochResult| MET
+
+    style WORLD fill:#e8f4fd,stroke:#2563eb
+    style TRAFFIC fill:#fef3c7,stroke:#d97706
+    style CONTROL fill:#f0fdf4,stroke:#16a34a
+    style ENGINE fill:#faf5ff,stroke:#7c3aed
+    style FORWARD fill:#fff1f2,stroke:#dc2626
+    style FEEDBACK fill:#fefce8,stroke:#ca8a04
+    style ANALYSIS fill:#f1f5f9,stroke:#475569
+    style GK fill:#fbbf24,stroke:#b45309,color:#000

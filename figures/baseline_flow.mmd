@@ -1,0 +1,39 @@
+sequenceDiagram
+    autonumber
+    participant UT as User Terminal<br/>(Berlin, Germany)
+    participant IS as Ingress Satellite<br/>(overhead Berlin)
+    participant ISL as ISL Network<br/>(hop-by-hop)
+    participant ES as Egress Satellite<br/>(over nearest GS)
+    participant GS as Ground Station<br/>(Frankfurt, DE)
+    participant POP as PoP Frankfurt<br/>(nearest to USER)
+    participant G as Google<br/>(Mountain View, CA)
+
+    Note over UT: HAS: satellite ephemeris<br/>(from ground control),<br/>antenna pointing data
+    Note over IS: HAS: forwarding table<br/>(dest GS -> next hop),<br/>from ground control
+    Note over GS: HAS: fixed fiber backhaul<br/>to bound PoP (Frankfurt)
+    Note over POP: HAS: BGP routing table
+
+    UT->>IS: Uplink packet (best elevation satellite)
+    Note right of UT: Physical selection:<br/>highest elevation angle
+
+    IS->>ISL: Forward to nearest GS<br/>(shortest ISL path)
+    ISL->>ES: Hop-by-hop to egress<br/>(~5-15ms ISL delay)
+
+    ES->>GS: Downlink to Frankfurt GS<br/>(~2ms downlink)
+
+    GS->>POP: Fiber backhaul to PoP Frankfurt<br/>(~1ms backhaul)
+    Note over GS,POP: GS-PoP binding is FIXED<br/>(physical fiber)
+
+    rect rgb(255, 230, 230)
+        Note over POP,G: UNOPTIMIZED GROUND PATH<br/>Frankfurt -> Mountain View = ~105ms RTT
+        POP->>G: Terrestrial internet routing<br/>(BGP, ~105ms ground RTT)
+    end
+
+    G-->>POP: Response
+    POP-->>GS: Reverse path
+    GS-->>ES: Uplink
+    ES-->>ISL: ISL return
+    ISL-->>IS: Hop-by-hop
+    IS-->>UT: Downlink to terminal
+
+    Note over UT,G: TOTAL E2E RTT ~ 121ms<br/>Satellite: ~16ms (short path) | Ground: ~105ms (LONG path)<br/>PoP = nearest to USER, NOT to destination
