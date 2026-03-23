@@ -1,14 +1,12 @@
-# Vantage
+# Bifrost
 
-**Ground-aware traffic engineering for LEO satellite networks.**
-
-Satellite ISPs like Starlink optimize ISL (inter-satellite link) routing but ignore ground segment delay. Vantage proves that incorporating ground delay knowledge into PoP selection significantly reduces end-to-end latency.
+**Steering Satellite Traffic with End-to-End Awareness.**
 
 ## Key Idea
 
-Current satellite networks use **hot-potato routing** — traffic exits at the PoP nearest to the user, regardless of destination location. This minimizes satellite path length but can result in very long ground paths (e.g., Frankfurt PoP → Google in Mountain View = 105ms ground RTT).
+Current satellite networks optimize each segment in isolation — ISL routing minimizes satellite hop delay, but is oblivious to what happens after traffic exits the constellation. This local optimization produces globally suboptimal end-to-end paths.
 
-Vantage uses **ground-aware PoP selection** — traffic exits at the PoP nearest to the *destination*, trading longer satellite paths for much shorter ground paths. The satellite penalty is bounded (~50ms extra ISL hops), but the ground savings can be 100ms+. The net effect is lower total E2E latency.
+Bifrost takes a holistic view: by jointly reasoning about satellite and terrestrial segments, the system steers traffic toward exit points that minimize *total* path delay, not just the space segment. The core insight is that a moderately longer satellite path can dramatically shorten the overall journey if it delivers traffic to a better terrestrial handoff point.
 
 ## Architecture
 
