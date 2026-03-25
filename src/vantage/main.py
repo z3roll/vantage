@@ -1,12 +1,19 @@
-"""Argus experiment runner — Greedy learning analysis."""
+"""Argus experiment runner — probe-based ground delay learning."""
 
 import time
 from pathlib import Path
 
+from vantage.control.controller import create_controller
 from vantage.control.policy.greedy import VantageGreedyController
 from vantage.engine import RunConfig, RunContext
 from vantage.engine_feedback import GroundDelayFeedback
 from vantage.forward import realize
+from vantage.probe import (
+    HotListPolicy,
+    LRUEviction,
+    ProbeManager,
+    TrafficDrivenPolicy,
+)
 from vantage.traffic import EndpointPopulation, UniformGenerator
 from vantage.world.ground import GroundInfrastructure, GroundKnowledge, HaversineDelay
 from vantage.world.satellite import SatelliteSegment
@@ -39,8 +46,7 @@ def main() -> None:
         endpoints[d.name] = d
 
     traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
-    config = RunConfig(num_epochs=10, epoch_interval_s=300.0)
-    n_flows = len(population.sources) * len(population.destinations)
+    config = RunConfig(num_epochs=15, epoch_interval_s=300.0)
     n_pops = len(ground.pops)
     n_dests = len(population.destinations)
 
@@ -50,53 +56,83 @@ def main() -> None:
     snapshots = [world.snapshot_at(e, e * config.epoch_interval_s) for e in range(config.num_epochs)]
     print(f"{time.perf_counter() - t0:.1f}s")
 
-    # ── Greedy with learning ────────────────────────────────
-    gk = GroundKnowledge(estimator=HaversineDelay())
+    # ── GroundKnowledge: starts EMPTY (no oracle) ───────────
+    gk = GroundKnowledge()  # no estimator — cold start
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
     ctrl = VantageGreedyController(endpoints=endpoints, ground_knowledge=gk)
-    feedback = GroundDelayFeedback(gk)
 
-    print(f"\nGreedy learning over {config.num_epochs} epochs "
-          f"({n_flows} flows/epoch, {n_pops} PoPs, {n_dests} destinations)")
-    print()
+    # ── Probe Manager ───────────────────────────────────────
+    # Traffic-driven: after first epoch, Controller knows global hot dests
+    target_policy = TrafficDrivenPolicy()
+    eviction = LRUEviction()
+    probe_mgr = ProbeManager(
+        ground_truth=HaversineDelay(),
+        knowledge=gk,
+        pops=ground.pops,
+        endpoints=endpoints,
+        target_policy=target_policy,
+        eviction_policy=eviction,
+        pop_cache_capacity=100,      # each PoP caches up to 100 destinations
+        probe_budget_per_pop=1,      # each PoP probes 1 dest per cycle
+        passive_sample_rate=1.0,     # sample all flows (simulation)
+        probe_interval_s=300.0,      # probe every epoch (= epoch_interval)
+    )
 
-    print(f"{'Epoch':>5s}  {'AvgRTT':>8s}  {'Sat':>7s}  {'Gnd':>7s}  "
-          f"{'Cache':>7s}  {'CtrlTime':>9s}  {'FwdTime':>8s}  {'PoPs':>5s}")
-    print("-" * 72)
+    # ── Run ─────────────────────────────────────────────────
+    print(f"\nGreedy with probe-based learning ({config.num_epochs} epochs, "
+          f"{n_pops} PoPs, {n_dests} dests)")
+    print(f"Cold start: no ground delay data. Probe budget: 5/PoP/cycle.\n")
+
+    print(f"{'Ep':>3s}  {'AvgRTT':>8s}  {'Sat':>7s}  {'Gnd':>7s}  "
+          f"{'GK':>5s}  {'Passive':>7s}  {'Active':>6s}  {'PoPs':>4s}")
+    print("-" * 62)
 
     for epoch in range(config.num_epochs):
+        t = epoch * config.epoch_interval_s
         snapshot = snapshots[epoch]
         demand = traffic.generate(epoch)
 
-        cache_before = len(gk._cache)
+        # 1. Active probe (PoPs probe destinations per Controller instruction)
+        n_active = probe_mgr.collect("active_probe", current_time_s=t)
 
-        t0 = time.perf_counter()
+        # 2. Sync PoP caches → centralized GroundKnowledge
+        probe_mgr.sync_to_knowledge()
+
+        # 3. Controller reads current data, builds cost tables
         tables = ctrl.compute_tables(snapshot)
-        dt_ctrl = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
+        # 4. User traffic routed (terminal-side PoP selection)
         result = realize(tables, snapshot, demand, ctx)
-        dt_fwd = time.perf_counter() - t0
 
-        feedback.observe(result)
+        # 5. Passive sampling from user traffic
+        n_passive = probe_mgr.collect("passive_sample", epoch_result=result)
 
-        cache_after = len(gk._cache)
+        # 6. Sync passive results too
+        probe_mgr.sync_to_knowledge()
 
+        # 7. Update traffic-driven policy with global stats
+        target_policy.update_stats(probe_mgr.get_stats())
+
+        # ── Metrics ─────────────────────────────────────────
         rtts = [f.total_rtt for f in result.flow_outcomes]
         avg_rtt = sum(rtts) / len(rtts) if rtts else 0.0
-        avg_sat = sum(f.satellite_rtt for f in result.flow_outcomes) / len(result.flow_outcomes)
-        avg_gnd = sum(f.ground_rtt for f in result.flow_outcomes) / len(result.flow_outcomes)
+        avg_sat = sum(f.satellite_rtt for f in result.flow_outcomes) / max(len(result.flow_outcomes), 1)
+        avg_gnd = sum(f.ground_rtt for f in result.flow_outcomes) / max(len(result.flow_outcomes), 1)
         pops_used = len({f.pop_code for f in result.flow_outcomes})
+        gk_size = len(gk._cache)
 
-        print(f"{epoch:5d}  {avg_rtt:7.1f}ms  {avg_sat:6.1f}ms  {avg_gnd:6.1f}ms  "
-              f"{cache_after:4d}/{n_pops * n_dests:<3d}  "
-              f"{dt_ctrl * 1000:7.1f}ms  {dt_fwd * 1000:6.1f}ms  {pops_used:5d}")
+        print(f"{epoch:3d}  {avg_rtt:7.1f}ms  {avg_sat:6.1f}ms  {avg_gnd:6.1f}ms  "
+              f"{gk_size:5d}  +{n_passive:<6d}  +{n_active:<5d}  {pops_used:4d}")
 
-    print(f"\nCache final: {len(gk._cache)} entries")
-    print(f"Per-destination coverage:")
+    # ── Summary ─────────────────────────────────────────────
+    print(f"\nGroundKnowledge: {len(gk._cache)} entries")
+    cache_summary = probe_mgr.get_cache_summary()
+    pops_with_data = sum(1 for v in cache_summary.values() if v > 0)
+    print(f"PoPs with data: {pops_with_data}/{n_pops}")
+    print(f"\nPer-dest coverage:")
     for d in population.destinations:
-        pops_with_data = sum(1 for p in ground.pops if gk.get(p.code, d.name) is not None)
-        print(f"  {d.name:15s}  {pops_with_data}/{n_pops} PoPs cached")
+        n = sum(1 for p in ground.pops if gk.get(p.code, d.name) is not None)
+        print(f"  {d.name:15s}  {n}/{n_pops} PoPs")
 
 
 if __name__ == "__main__":
