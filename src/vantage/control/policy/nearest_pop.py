@@ -1,37 +1,26 @@
 """NearestPoP controller: hot-potato baseline.
 
-Routes each flow to the PoP geographically closest to the source.
+Fills sat_cost with real values, ground_cost with zeros.
+Terminal picks PoP with lowest satellite cost = nearest PoP.
 """
 
 from __future__ import annotations
 
-from vantage.control.policy.common.base import CandidateBasedController
-from vantage.control.policy.common.candidate import enumerate_pop_candidates
-from vantage.control.policy.common.scoring import SatelliteCostScorer, select_best
-from vantage.control.policy.common.utils import find_nearest_pop
-from vantage.domain import Endpoint, FlowKey, NetworkSnapshot, PathAllocation
+from types import MappingProxyType
+
+from vantage.control.policy.common.sat_cost import precompute_sat_cost
+from vantage.domain import CostTables, NetworkSnapshot
 
 
-class NearestPoPController(CandidateBasedController):
-    """Baseline: route each flow to the PoP nearest to its source."""
+class NearestPoPController:
+    """Baseline: route to PoP with lowest satellite segment cost (nearest)."""
 
-    def __init__(self, endpoints: dict[str, Endpoint] | None = None) -> None:
-        super().__init__(endpoints=endpoints, scorer=SatelliteCostScorer())
-
-    def _select_alloc(
-        self,
-        flow_key: FlowKey,
-        src_ep: Endpoint,
-        user_sat: int,
-        snapshot: NetworkSnapshot,
-    ) -> PathAllocation | None:
-        nearest = find_nearest_pop(
-            src_ep.lat_deg, src_ep.lon_deg, snapshot.infra.pops
+    def compute_tables(self, snapshot: NetworkSnapshot) -> CostTables:
+        sat_cost = precompute_sat_cost(snapshot)
+        # Ground cost = 0 for all → terminal picks purely by satellite cost
+        ground_cost: dict[tuple[str, str], float] = {}
+        return CostTables(
+            epoch=snapshot.epoch,
+            sat_cost=MappingProxyType(sat_cost),
+            ground_cost=MappingProxyType(ground_cost),
         )
-        if nearest is None:
-            return None
-        candidates = enumerate_pop_candidates(
-            nearest.code, user_sat, src_ep, snapshot
-        )
-        best = select_best(candidates, self._scorer)
-        return best.to_allocation() if best is not None else None

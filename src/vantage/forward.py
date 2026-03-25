@@ -1,23 +1,23 @@
-"""Data plane: realize RoutingIntent against network truth.
+"""Data plane: terminal-side PoP selection + delay computation.
 
-Layer boundary: **forward** is the execution layer. It does NOT search
-or decide — it only computes actual delays along pre-resolved paths.
-Controller outputs fully resolved paths (pop, gs, user_sat, egress_sat).
-Forward computes the actual delays. All delays in ms.
+Controller provides CostTables (precomputed sat_cost + ground_cost).
+For each flow, the terminal selects the best PoP via:
+    argmin over pop: sat_cost[ingress_sat, pop] + ground_cost[pop, dest]
 
-Ground delay resolution uses context.ground_knowledge (unified service):
-L1 cache hit → use cached value; cache miss → L2/L3 estimator fallback.
+Then actual E2E delays are computed along the resolved path.
+All delays in ms.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from vantage.control.policy.common.utils import find_ingress_satellite
 from vantage.domain import (
+    CostTables,
     EpochResult,
     FlowOutcome,
     NetworkSnapshot,
-    RoutingIntent,
     TrafficDemand,
 )
 
@@ -26,78 +26,110 @@ if TYPE_CHECKING:
 
 
 def realize(
-    intent: RoutingIntent,
+    tables: CostTables,
     snapshot: NetworkSnapshot,
     demand: TrafficDemand,
     context: RunContext,
 ) -> EpochResult:
-    """Realize a RoutingIntent: compute E2E delays along resolved paths.
+    """Realize CostTables: terminal-side PoP selection + E2E delay computation.
 
-    satellite_rtt = uplink + ISL + downlink + backhaul (calibrated), ms.
-    ground_rtt = PoP→destination (from ground_knowledge), ms.
+    For each flow:
+    1. Find ingress satellite (best visible from terminal)
+    2. Select best PoP: argmin(sat_cost + ground_cost)
+    3. Resolve best (GS, egress_sat) for that PoP
+    4. Compute actual segment delays
     """
     sat = snapshot.satellite
     gk = context.ground_knowledge
+    calibration = context.world.calibration
     outcomes: list[FlowOutcome] = []
     total_demand = 0.0
     routed_demand = 0.0
-    calibration = context.world.calibration
 
-    for flow_key, alloc in intent.allocations.items():
-        flow_demand = demand.flows.get(flow_key, 0.0)
+    for flow_key, flow_demand in demand.flows.items():
         total_demand += flow_demand
 
         src_ep = context.endpoints.get(flow_key.src)
         if src_ep is None:
             continue
 
-        gs = snapshot.infra.gs_by_id(alloc.gs_id)
-        if gs is None:
+        # Terminal finds its ingress satellite
+        uplink = find_ingress_satellite(src_ep, sat.positions)
+        if uplink is None:
             continue
 
-        # Satellite propagation RTT (uplink + ISL + downlink) × 2
-        raw_propagation_rtt = sat.compute_satellite_rtt(
-            alloc.user_sat, alloc.egress_sat,
-            src_ep.lat_deg, src_ep.lon_deg,
-            gs.lat_deg, gs.lon_deg,
-        )
+        ingress = uplink.sat_id
 
-        # Calibrate satellite propagation
-        if calibration is not None:
-            propagation_rtt = calibration.calibrate(
-                flow_key.src, raw_propagation_rtt
-            )
-        else:
-            propagation_rtt = raw_propagation_rtt
+        # Terminal-side PoP selection: argmin(sat_cost + ground_cost)
+        best_pop: str | None = None
+        best_total_cost = float("inf")
+        for pop in snapshot.infra.pops:
+            sc = tables.sat_cost.get((ingress, pop.code))
+            gc = tables.ground_cost.get((pop.code, flow_key.dst), 0.0)
+            if sc is None:
+                continue
+            total = sc + gc
+            if total < best_total_cost:
+                best_total_cost = total
+                best_pop = pop.code
 
-        # Backhaul RTT (GS↔PoP)
-        backhaul_rtt = snapshot.infra.get_backhaul_delay(
-            alloc.gs_id, alloc.pop_code
-        ) * 2
+        if best_pop is None:
+            continue
 
-        # satellite_rtt = propagation + backhaul (everything terminal→PoP)
-        satellite_rtt = propagation_rtt + backhaul_rtt
+        # Resolve best (GS, egress_sat) for the chosen PoP
+        best_gs: str | None = None
+        best_egress: int = -1
+        best_sat_rtt = float("inf")
 
-        # Ground RTT (PoP→destination) via unified knowledge service
-        pop = snapshot.infra.pop_by_code(alloc.pop_code)
+        for gs_id, backhaul in snapshot.infra.pop_gs_edges(best_pop):
+            gs = snapshot.infra.gs_by_id(gs_id)
+            if gs is None:
+                continue
+            gs_links = sat.gateway_attachments.attachments.get(gs_id)
+            if not gs_links:
+                continue
+            backhaul_rtt = backhaul * 2
+            for link in gs_links:
+                raw_prop = sat.compute_satellite_rtt(
+                    ingress, link.sat_id,
+                    src_ep.lat_deg, src_ep.lon_deg,
+                    gs.lat_deg, gs.lon_deg,
+                )
+                if calibration is not None:
+                    prop = calibration.calibrate(flow_key.src, raw_prop)
+                else:
+                    prop = raw_prop
+                total_sat = prop + backhaul_rtt
+                if total_sat < best_sat_rtt:
+                    best_sat_rtt = total_sat
+                    best_gs = gs_id
+                    best_egress = link.sat_id
+
+        if best_gs is None:
+            continue
+
+        satellite_rtt = best_sat_rtt
+
+        # Ground RTT from knowledge service
+        pop_obj = snapshot.infra.pop_by_code(best_pop)
         dst_ep = context.endpoints.get(flow_key.dst)
-        if pop is not None and dst_ep is not None:
+        if pop_obj is not None and dst_ep is not None:
             ground_rtt = gk.get_or_estimate(
-                alloc.pop_code, flow_key.dst,
-                pop.lat_deg, pop.lon_deg,
+                best_pop, flow_key.dst,
+                pop_obj.lat_deg, pop_obj.lon_deg,
                 dst_ep.lat_deg, dst_ep.lon_deg,
             )
         else:
-            ground_rtt = gk.get(alloc.pop_code, flow_key.dst) or 0.0
+            ground_rtt = gk.get(best_pop, flow_key.dst) or 0.0
 
         total_rtt = satellite_rtt + ground_rtt
 
         outcomes.append(FlowOutcome(
             flow_key=flow_key,
-            pop_code=alloc.pop_code,
-            gs_id=alloc.gs_id,
-            user_sat=alloc.user_sat,
-            egress_sat=alloc.egress_sat,
+            pop_code=best_pop,
+            gs_id=best_gs,
+            user_sat=ingress,
+            egress_sat=best_egress,
             satellite_rtt=satellite_rtt,
             ground_rtt=ground_rtt,
             total_rtt=total_rtt,
@@ -105,13 +137,8 @@ def realize(
         ))
         routed_demand += flow_demand
 
-    # Count unrouted flows
-    for flow_key, flow_demand in demand.flows.items():
-        if flow_key not in intent.allocations:
-            total_demand += flow_demand
-
     return EpochResult(
-        epoch=intent.epoch,
+        epoch=tables.epoch,
         flow_outcomes=tuple(outcomes),
         total_demand_gbps=total_demand,
         routed_demand_gbps=routed_demand,

@@ -2,10 +2,10 @@
 
 from vantage.domain.ground import GroundStation, GSPoPEdge, PoP
 from vantage.domain.result import (
+    CostTables,
     EpochResult,
     FlowOutcome,
     PathAllocation,
-    RoutingIntent,
 )
 from vantage.domain.satellite import (
     AccessLink,
@@ -25,6 +25,7 @@ from vantage.domain.traffic import Endpoint, FlowKey, TrafficDemand
 __all__ = [
     "AccessLink",
     "ConstellationConfig",
+    "CostTables",
     "Endpoint",
     "EpochResult",
     "FlowKey",
@@ -38,7 +39,6 @@ __all__ = [
     "NetworkSnapshot",
     "PathAllocation",
     "PoP",
-    "RoutingIntent",
     "SatelliteState",
     "ShellConfig",
     "TrafficDemand",

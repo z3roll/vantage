@@ -1,10 +1,9 @@
-"""Vantage TE experiment runner — Greedy learning analysis."""
+"""Argus experiment runner — Greedy learning analysis."""
 
 import time
 from pathlib import Path
 
 from vantage.control.policy.greedy import VantageGreedyController
-from vantage.domain import EpochResult
 from vantage.engine import RunConfig, RunContext
 from vantage.engine_feedback import GroundDelayFeedback
 from vantage.forward import realize
@@ -59,68 +58,45 @@ def main() -> None:
 
     print(f"\nGreedy learning over {config.num_epochs} epochs "
           f"({n_flows} flows/epoch, {n_pops} PoPs, {n_dests} destinations)")
-    print(f"Cache capacity: {n_pops} x {n_dests} = {n_pops * n_dests} entries")
     print()
 
     print(f"{'Epoch':>5s}  {'AvgRTT':>8s}  {'Sat':>7s}  {'Gnd':>7s}  "
-          f"{'Cache':>7s}  {'Fill%':>6s}  {'Fallback':>8s}  {'Greedy':>7s}  {'Time':>7s}")
-    print("-" * 78)
+          f"{'Cache':>7s}  {'CtrlTime':>9s}  {'FwdTime':>8s}  {'PoPs':>5s}")
+    print("-" * 72)
 
     for epoch in range(config.num_epochs):
         snapshot = snapshots[epoch]
         demand = traffic.generate(epoch)
 
-        # Count cache entries before this epoch
         cache_before = len(gk._cache)
 
         t0 = time.perf_counter()
-        intent = ctrl.optimize(snapshot, demand)
-        result = realize(intent, snapshot, demand, ctx)
+        tables = ctrl.compute_tables(snapshot)
+        dt_ctrl = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        result = realize(tables, snapshot, demand, ctx)
+        dt_fwd = time.perf_counter() - t0
+
         feedback.observe(result)
-        dt = time.perf_counter() - t0
 
-        # Cache entries after
         cache_after = len(gk._cache)
-        fill_pct = cache_after / (n_pops * n_dests) * 100
 
-        # Count flows that went through fallback vs greedy search
-        # Fallback = flow routed to nearest PoP (no cache data available)
-        # We can detect this by checking: did the flow's PoP match nearest PoP?
         rtts = [f.total_rtt for f in result.flow_outcomes]
-        sat_rtts = [f.satellite_rtt for f in result.flow_outcomes]
-        gnd_rtts = [f.ground_rtt for f in result.flow_outcomes]
         avg_rtt = sum(rtts) / len(rtts) if rtts else 0.0
-        avg_sat = sum(sat_rtts) / len(sat_rtts) if sat_rtts else 0.0
-        avg_gnd = sum(gnd_rtts) / len(gnd_rtts) if gnd_rtts else 0.0
-
-        # Count unique PoPs used (proxy for exploration)
+        avg_sat = sum(f.satellite_rtt for f in result.flow_outcomes) / len(result.flow_outcomes)
+        avg_gnd = sum(f.ground_rtt for f in result.flow_outcomes) / len(result.flow_outcomes)
         pops_used = len({f.pop_code for f in result.flow_outcomes})
 
-        # New cache entries this epoch
-        new_entries = cache_after - cache_before
-
         print(f"{epoch:5d}  {avg_rtt:7.1f}ms  {avg_sat:6.1f}ms  {avg_gnd:6.1f}ms  "
-              f"{cache_after:4d}/{n_pops * n_dests:<3d}  {fill_pct:5.1f}%  "
-              f"+{new_entries:<7d}  {pops_used:4d}pop  {dt * 1000:5.0f}ms")
+              f"{cache_after:4d}/{n_pops * n_dests:<3d}  "
+              f"{dt_ctrl * 1000:7.1f}ms  {dt_fwd * 1000:6.1f}ms  {pops_used:5d}")
 
-    # ── Cache analysis ──────────────────────────────────────
-    print(f"\nCache final state: {len(gk._cache)} entries")
-    print(f"\nPer-destination coverage:")
+    print(f"\nCache final: {len(gk._cache)} entries")
+    print(f"Per-destination coverage:")
     for d in population.destinations:
         pops_with_data = sum(1 for p in ground.pops if gk.get(p.code, d.name) is not None)
         print(f"  {d.name:15s}  {pops_with_data}/{n_pops} PoPs cached")
-
-    # ── Epoch-over-epoch improvement ────────────────────────
-    print(f"\nLearning curve:")
-    # Show which PoPs are NOT in cache (exploration gap)
-    cached_pops = {pop_code for (pop_code, _) in gk._cache}
-    all_pops = {p.code for p in ground.pops}
-    missing = all_pops - cached_pops
-    if missing:
-        print(f"\nPoPs never explored ({len(missing)}/{n_pops}):")
-        for code in sorted(missing):
-            p = next(p for p in ground.pops if p.code == code)
-            print(f"  {code:10s}  ({p.name}, {p.lat_deg:.1f}, {p.lon_deg:.1f})")
 
 
 if __name__ == "__main__":

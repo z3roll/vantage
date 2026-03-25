@@ -1,4 +1,4 @@
-"""Forwarding result domain types.
+"""Forwarding result and cost table domain types.
 
 All delay/RTT values in ms.
 """
@@ -13,7 +13,7 @@ from vantage.domain.traffic import FlowKey
 
 @dataclass(frozen=True, slots=True)
 class PathAllocation:
-    """Fully resolved single path for a flow."""
+    """Fully resolved single path for a flow (internal use by forward)."""
 
     pop_code: str
     gs_id: str
@@ -22,11 +22,18 @@ class PathAllocation:
 
 
 @dataclass(frozen=True, slots=True)
-class RoutingIntent:
-    """Controller output: one fully resolved path per flow per epoch."""
+class CostTables:
+    """Controller output: precomputed cost tables for terminal-side PoP selection.
+
+    sat_cost: (ingress_sat, pop_code) → min satellite segment RTT (ISL + downlink + backhaul).
+    ground_cost: (pop_code, dest) → ground segment RTT.
+
+    Terminals select best PoP via: argmin over pop: sat_cost[ingress, pop] + ground_cost[pop, dest]
+    """
 
     epoch: int
-    allocations: Mapping[FlowKey, PathAllocation]
+    sat_cost: Mapping[tuple[int, str], float]  # (ingress_sat, pop_code) → RTT ms
+    ground_cost: Mapping[tuple[str, str], float]  # (pop_code, dest) → RTT ms
 
 
 @dataclass(frozen=True, slots=True)

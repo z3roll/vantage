@@ -2,15 +2,14 @@
 
 Execution pipeline per epoch:
 
-    world.snapshot_at(t)    → NetworkSnapshot        [truth layer]
-    traffic.generate(epoch) → TrafficDemand          [demand layer]
-    controller.optimize()   → RoutingIntent          [control layer]
-    forward.realize()       → EpochResult            [execution layer]
-    feedback.observe()      → ground_knowledge.put() [feedback layer]
+    world.snapshot_at(t)         → NetworkSnapshot          [truth layer]
+    traffic.generate(epoch)      → TrafficDemand            [demand layer]
+    controller.compute_tables()  → CostTables               [control layer]
+    forward.realize()            → EpochResult              [execution layer]
+    feedback.observe()           → ground_knowledge.put()   [feedback layer]
 
-The engine delegates feedback to a FeedbackObserver (default:
-GroundDelayFeedback), making the feedback mechanism explicit and
-replaceable.
+Controller precomputes cost tables (independent of flow count).
+Terminal-side PoP selection happens inside forward.realize().
 """
 
 from __future__ import annotations
@@ -70,8 +69,8 @@ def run(
     For each epoch:
     1. world.snapshot_at(t) → NetworkSnapshot
     2. traffic.generate(epoch) → TrafficDemand
-    3. controller.optimize(snapshot, demand) → RoutingIntent
-    4. forward.realize(intent, snapshot, demand, context) → EpochResult
+    3. controller.compute_tables(snapshot) → CostTables
+    4. forward.realize(tables, snapshot, demand, context) → EpochResult
     5. feedback.observe(result) → update ground knowledge
     """
     if config is None:
@@ -104,8 +103,8 @@ def run(
 
         snapshot = context.world.snapshot_at(epoch, t)
         demand = traffic.generate(epoch)
-        intent = controller.optimize(snapshot, demand)
-        result = realize(intent, snapshot, demand, context)
+        tables = controller.compute_tables(snapshot)
+        result = realize(tables, snapshot, demand, context)
         epoch_results.append(result)
 
         # Feedback: delegate to observer

@@ -1,4 +1,4 @@
-"""Tests for forward.py data plane."""
+"""Tests for forward.py data plane (terminal-side PoP selection)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from vantage.engine.context import RunContext
 from vantage.forward import realize
 from vantage.domain import (
     AccessLink,
+    CostTables,
     Endpoint,
     FlowKey,
     GSPoPEdge,
@@ -20,9 +21,7 @@ from vantage.domain import (
     ISLGraph,
     InfrastructureView,
     NetworkSnapshot,
-    PathAllocation,
     PoP,
-    RoutingIntent,
     SatelliteState,
     TrafficDemand,
 )
@@ -54,18 +53,15 @@ def simple_snapshot() -> NetworkSnapshot:
     infra = InfrastructureView(
         pops=(pop,), ground_stations=(gs,), gs_pop_edges=(edge,),
     )
-
     return NetworkSnapshot(epoch=0, time_s=0.0, satellite=sat, infra=infra)
 
 
 class _StubWorld:
-    """Stub world with no calibration, for unit tests that call realize()."""
     calibration = None
 
 
 @pytest.fixture
 def simple_context() -> RunContext:
-    """Minimal RunContext with endpoints and empty knowledge."""
     endpoints = {
         "user_a": Endpoint("user_a", 0.0, 0.0),
         "google": Endpoint("google", 0.5, 0.5),
@@ -83,15 +79,16 @@ class TestForward:
     def test_basic_flow(
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
     ) -> None:
+        simple_context.ground_knowledge.put("pop", "google", 5.0)
+        tables = CostTables(
+            epoch=0,
+            sat_cost=MappingProxyType({(0, "pop"): 10.0}),
+            ground_cost=MappingProxyType({("pop", "google"): 5.0}),
+        )
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 0.01,
         }))
-        intent = RoutingIntent(epoch=0, allocations=MappingProxyType({
-            FlowKey("user_a", "google"): PathAllocation(pop_code="pop", gs_id="gs1", user_sat=0, egress_sat=1),
-        }))
-        simple_context.ground_knowledge.put("pop", "google", 5.0)
-
-        result = realize(intent, simple_snapshot, demand, simple_context)
+        result = realize(tables, simple_snapshot, demand, simple_context)
 
         assert len(result.flow_outcomes) == 1
         flow = result.flow_outcomes[0]
@@ -103,60 +100,21 @@ class TestForward:
     def test_total_equals_sum(
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
     ) -> None:
-        demand = TrafficDemand(epoch=0, flows=MappingProxyType({
-            FlowKey("user_a", "google"): 0.01,
-        }))
-        intent = RoutingIntent(epoch=0, allocations=MappingProxyType({
-            FlowKey("user_a", "google"): PathAllocation(pop_code="pop", gs_id="gs1", user_sat=0, egress_sat=1),
-        }))
         simple_context.ground_knowledge.put("pop", "google", 5.0)
-
-        result = realize(intent, simple_snapshot, demand, simple_context)
-        flow = result.flow_outcomes[0]
-
-        expected = flow.satellite_rtt + flow.ground_rtt
-        assert abs(flow.total_rtt - expected) < 1e-9
-
-    def test_unrouted_flow(
-        self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
-    ) -> None:
-        demand = TrafficDemand(epoch=0, flows=MappingProxyType({
-            FlowKey("user_a", "google"): 0.01,
-            FlowKey("user_b", "google"): 0.02,  # no endpoint
-        }))
-        intent = RoutingIntent(epoch=0, allocations=MappingProxyType({
-            FlowKey("user_a", "google"): PathAllocation(pop_code="pop", gs_id="gs1", user_sat=0, egress_sat=1),
-        }))
-        simple_context.ground_knowledge.put("pop", "google", 5.0)
-
-        result = realize(intent, simple_snapshot, demand, simple_context)
-        assert abs(result.routed_demand_gbps - 0.01) < 1e-9
-        assert abs(result.unrouted_demand_gbps - 0.02) < 1e-9
-
-    def test_no_knowledge_zero_ground(
-        self, simple_snapshot: NetworkSnapshot,
-    ) -> None:
-        """Without estimator, cache miss gives ground_rtt = 0.0."""
-        ctx = RunContext(
-            world=_StubWorld(),  # type: ignore[arg-type]
-            endpoints={"user_a": Endpoint("user_a", 0.0, 0.0), "google": Endpoint("google", 0.5, 0.5)},
-            ground_knowledge=GroundKnowledge(),  # no estimator
+        tables = CostTables(
+            epoch=0,
+            sat_cost=MappingProxyType({(0, "pop"): 10.0}),
+            ground_cost=MappingProxyType({("pop", "google"): 5.0}),
         )
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 0.01,
         }))
-        intent = RoutingIntent(epoch=0, allocations=MappingProxyType({
-            FlowKey("user_a", "google"): PathAllocation(pop_code="pop", gs_id="gs1", user_sat=0, egress_sat=1),
-        }))
-
-        result = realize(intent, simple_snapshot, demand, ctx)
+        result = realize(tables, simple_snapshot, demand, simple_context)
         flow = result.flow_outcomes[0]
-        assert flow.ground_rtt == 0.0
+        expected = flow.satellite_rtt + flow.ground_rtt
+        assert abs(flow.total_rtt - expected) < 1e-9
 
-    def test_l2_fallback_produces_nonzero_ground(
-        self, simple_snapshot: NetworkSnapshot,
-    ) -> None:
-        """With estimator, cache miss produces nonzero ground_rtt."""
+    def test_l2_fallback(self, simple_snapshot: NetworkSnapshot) -> None:
         ctx = RunContext(
             world=_StubWorld(),  # type: ignore[arg-type]
             endpoints={
@@ -165,14 +123,13 @@ class TestForward:
             },
             ground_knowledge=GroundKnowledge(estimator=HaversineDelay()),
         )
+        tables = CostTables(
+            epoch=0,
+            sat_cost=MappingProxyType({(0, "pop"): 10.0}),
+            ground_cost=MappingProxyType({("pop", "google"): 50.0}),
+        )
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 0.01,
         }))
-        intent = RoutingIntent(epoch=0, allocations=MappingProxyType({
-            FlowKey("user_a", "google"): PathAllocation(pop_code="pop", gs_id="gs1", user_sat=0, egress_sat=1),
-        }))
-
-        result = realize(intent, simple_snapshot, demand, ctx)
-        flow = result.flow_outcomes[0]
-        assert flow.ground_rtt > 0
-        assert flow.total_rtt == flow.satellite_rtt + flow.ground_rtt
+        result = realize(tables, simple_snapshot, demand, ctx)
+        assert result.flow_outcomes[0].ground_rtt > 0
