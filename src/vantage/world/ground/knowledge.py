@@ -199,7 +199,3 @@ class GroundKnowledge:
         if best_pop is None:
             return None
         return best_pop, best_delay
-
-
-# Backward-compatible alias
-GroundDelayCache = GroundKnowledge
