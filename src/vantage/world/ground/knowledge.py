@@ -74,6 +74,10 @@ class GroundKnowledge:
         """Check if any PoP has delay data for this destination."""
         return dest in self._known_dests
 
+    def all_entries(self) -> dict[tuple[str, str], float]:
+        """Return a copy of all cached (pop_code, dest) → delay entries."""
+        return dict(self._cache)
+
     def best_pop_for(self, dest: str) -> tuple[str, float] | None:
         """Find the PoP with lowest delay to a destination."""
         best_pop: str | None = None

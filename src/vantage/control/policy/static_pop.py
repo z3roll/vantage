@@ -25,9 +25,7 @@ class StaticPoPController:
         sat_cost = precompute_sat_cost(snapshot)
 
         # Ground cost from cache only (no estimation fallback)
-        ground_cost: dict[tuple[str, str], float] = {}
-        for (pop_code, dest), delay in self._gk._cache.items():
-            ground_cost[(pop_code, dest)] = delay
+        ground_cost = self._gk.all_entries()
 
         return CostTables(
             epoch=snapshot.epoch,
