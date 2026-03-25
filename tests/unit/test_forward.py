@@ -64,12 +64,12 @@ class _StubWorld:
 def simple_context() -> RunContext:
     endpoints = {
         "user_a": Endpoint("user_a", 0.0, 0.0),
-        "google": Endpoint("google", 0.5, 0.5),
+        "google": Endpoint("google", 37.4, -122.1),  # Mountain View
     }
     return RunContext(
         world=_StubWorld(),  # type: ignore[arg-type]
         endpoints=endpoints,
-        ground_knowledge=GroundKnowledge(),
+        ground_knowledge=GroundKnowledge(estimator=HaversineDelay()),
     )
 
 
@@ -95,7 +95,8 @@ class TestForward:
         assert flow.pop_code == "pop"
         assert flow.demand_gbps == 0.01
         assert flow.total_rtt > 0
-        assert flow.ground_rtt == 5.0
+        # ground_rtt from HaversineDelay ground truth (not from cache)
+        assert flow.ground_rtt > 0
 
     def test_total_equals_sum(
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,

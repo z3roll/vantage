@@ -1,10 +1,13 @@
 """Data plane: terminal-side PoP selection + delay computation.
 
-Controller provides CostTables (precomputed sat_cost + ground_cost).
-For each flow, the terminal selects the best PoP via:
-    argmin over pop: sat_cost[ingress_sat, pop] + ground_cost[pop, dest]
+Two separate logics:
+1. DECISION: terminal selects PoP from cost tables.
+   - ground_cost present → use it for joint optimization
+   - ground_cost missing → fallback to nearest PoP (sat_cost only, like BGP)
+2. MEASUREMENT: compute actual E2E delay along resolved path.
+   - ground_rtt always computed from ground_truth model (physical reality)
+   - independent of whether controller had data for this pair
 
-Then actual E2E delays are computed along the resolved path.
 All delays in ms.
 """
 
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from vantage.common import haversine_km
 from vantage.control.policy.common.utils import find_ingress_satellite
 from vantage.domain import (
     CostTables,
@@ -24,6 +28,9 @@ from vantage.domain import (
 if TYPE_CHECKING:
     from vantage.engine.context import RunContext
 
+# Sentinel: ground_cost not available → fallback to sat_cost only
+_NO_GROUND_DATA = -1.0
+
 
 def realize(
     tables: CostTables,
@@ -31,17 +38,19 @@ def realize(
     demand: TrafficDemand,
     context: RunContext,
 ) -> EpochResult:
-    """Realize CostTables: terminal-side PoP selection + E2E delay computation.
+    """Terminal-side PoP selection + actual E2E delay computation.
 
-    For each flow:
-    1. Find ingress satellite (best visible from terminal)
-    2. Select best PoP: argmin(sat_cost + ground_cost)
-    3. Resolve best (GS, egress_sat) for that PoP
-    4. Compute actual segment delays
+    Decision: argmin(sat_cost + ground_cost) where ground_cost is available.
+              For PoPs without ground_cost data, they don't participate in
+              joint optimization — terminal falls back to lowest sat_cost.
+
+    Measurement: actual ground_rtt computed from ground_truth model
+                 (HaversineDelay), representing physical reality.
     """
     sat = snapshot.satellite
-    gk = context.ground_knowledge
     calibration = context.world.calibration
+    # Ground truth model for actual delay computation (NOT for decisions)
+    ground_truth = context.ground_knowledge.estimator
     outcomes: list[FlowOutcome] = []
     total_demand = 0.0
     routed_demand = 0.0
@@ -53,30 +62,47 @@ def realize(
         if src_ep is None:
             continue
 
-        # Terminal finds its ingress satellite
         uplink = find_ingress_satellite(src_ep, sat.positions)
         if uplink is None:
             continue
 
         ingress = uplink.sat_id
 
-        # Terminal-side PoP selection: argmin(sat_cost + ground_cost)
+        # ── DECISION: select best PoP ──────────────────────
+        # Two-tier selection:
+        #   1st: try joint optimization (PoPs with ground_cost data)
+        #   2nd: fallback to sat_cost only (nearest PoP, like BGP default)
         best_pop: str | None = None
-        best_total_cost = float("inf")
+        best_cost = float("inf")
+        fallback_pop: str | None = None
+        fallback_cost = float("inf")
+
         for pop in snapshot.infra.pops:
             sc = tables.sat_cost.get((ingress, pop.code))
-            gc = tables.ground_cost.get((pop.code, flow_key.dst), 0.0)
             if sc is None:
                 continue
-            total = sc + gc
-            if total < best_total_cost:
-                best_total_cost = total
-                best_pop = pop.code
+
+            # Track best fallback (sat_cost only, for BGP default)
+            if sc < fallback_cost:
+                fallback_cost = sc
+                fallback_pop = pop.code
+
+            # Joint optimization: only if ground_cost data exists
+            gc = tables.ground_cost.get((pop.code, flow_key.dst))
+            if gc is not None and gc >= 0:
+                total = sc + gc
+                if total < best_cost:
+                    best_cost = total
+                    best_pop = pop.code
+
+        # If no PoP had ground data → fallback to nearest (BGP)
+        if best_pop is None:
+            best_pop = fallback_pop
 
         if best_pop is None:
             continue
 
-        # Resolve best (GS, egress_sat) for the chosen PoP
+        # ── RESOLVE: best (GS, egress_sat) for chosen PoP ──
         best_gs: str | None = None
         best_egress: int = -1
         best_sat_rtt = float("inf")
@@ -110,17 +136,18 @@ def realize(
 
         satellite_rtt = best_sat_rtt
 
-        # Ground RTT from knowledge service
+        # ── MEASUREMENT: actual ground RTT (physical truth) ──
+        # This is what actually happens — independent of controller knowledge.
+        # Uses ground_truth model (e.g., HaversineDelay) to simulate real delay.
         pop_obj = snapshot.infra.pop_by_code(best_pop)
         dst_ep = context.endpoints.get(flow_key.dst)
-        if pop_obj is not None and dst_ep is not None:
-            ground_rtt = gk.get_or_estimate(
-                best_pop, flow_key.dst,
+        if pop_obj is not None and dst_ep is not None and ground_truth is not None:
+            ground_rtt = ground_truth.estimate(
                 pop_obj.lat_deg, pop_obj.lon_deg,
                 dst_ep.lat_deg, dst_ep.lon_deg,
-            )
+            ) * 2  # one-way → RTT
         else:
-            ground_rtt = gk.get(best_pop, flow_key.dst) or 0.0
+            ground_rtt = 0.0
 
         total_rtt = satellite_rtt + ground_rtt
 
