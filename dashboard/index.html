@@ -8,143 +8,129 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg:#0a0e17;--card:#111827;--border:#1e293b;
-    --text:#e2e8f0;--dim:#64748b;--muted:#475569;
-    --orange:#f97316;--cyan:#22d3ee;--green:#34d399;--red:#f87171;--purple:#a78bfa;
-    --cached:#059669;--empty:#1e293b;
-  }
+  :root{--bg:#0a0e17;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--muted:#475569;--orange:#f97316;--cyan:#22d3ee;--green:#34d399;--red:#f87171;--purple:#a78bfa}
   *{margin:0;padding:0;box-sizing:border-box}
   body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif}
-  .mono{font-family:'JetBrains Mono',monospace}
-
+  .m{font-family:'JetBrains Mono',monospace}
   .topbar{background:linear-gradient(135deg,#0f172a,#1e1b4b);border-bottom:1px solid var(--border);padding:14px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-  .topbar-title{font-size:20px;font-weight:700}.topbar-title span{color:var(--orange)}
-  .pills{display:flex;gap:24px;font-size:12px;color:var(--dim)}.pills .v{color:var(--text);font-weight:600;font-size:14px}
-
-  .epoch-bar{background:var(--card);border-bottom:1px solid var(--border);padding:12px 28px;display:flex;align-items:center;gap:16px;position:sticky;top:52px;z-index:99}
-  .epoch-bar label{font-size:12px;color:var(--dim);white-space:nowrap}
-  .epoch-bar input[type=range]{flex:1;accent-color:var(--orange)}
-  .epoch-bar .ev{font-size:22px;font-weight:700;color:var(--orange);min-width:36px;text-align:center}
-
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:20px 28px;max-width:1600px;margin:0 auto}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px}
-  .card h3{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
-
-  .stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;grid-column:1/-1}
+  .topbar h1{font-size:20px;font-weight:700}.topbar h1 span{color:var(--orange)}
+  .pills{display:flex;gap:24px;font-size:12px;color:var(--dim)}.pills b{color:var(--text);font-size:14px}
+  .ebar{background:var(--card);border-bottom:1px solid var(--border);padding:12px 28px;display:flex;align-items:center;gap:16px;position:sticky;top:52px;z-index:99}
+  .ebar label{font-size:12px;color:var(--dim)}
+  .ebar input[type=range]{flex:1;accent-color:var(--orange)}
+  .ebar .ev{font-size:22px;font-weight:700;color:var(--orange);min-width:36px;text-align:center}
+  .g{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:20px 28px;max-width:1600px;margin:0 auto}
+  .c{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .c h3{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
+  .sr{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;grid-column:1/-1}
   .sc{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
   .sc .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
   .sc .n{font-size:28px;font-weight:700;margin-top:4px}
   .sc .s{font-size:11px;color:var(--dim);margin-top:2px}
-
-  .cw{position:relative;height:280px}
-  .cw canvas{width:100%!important;height:100%!important}
-
+  .cw{position:relative;height:280px}.cw canvas{width:100%!important;height:100%!important}
   .tabs{display:flex;gap:6px;margin-bottom:10px}
-  .tab{font-size:11px;padding:5px 12px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;transition:all .15s}
-  .tab.on{border-color:var(--orange);color:var(--orange);background:rgba(249,115,22,.08)}
-
-  .hm-box{position:relative;overflow:auto;max-height:500px}
-  #hm-canvas{cursor:crosshair}
-  #hm-tip{position:absolute;display:none;pointer-events:none;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:11px;color:var(--text);white-space:nowrap;z-index:10}
+  .tb{font-size:11px;padding:5px 12px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}.tb.on{border-color:var(--orange);color:var(--orange);background:rgba(249,115,22,.08)}
+  .hb{position:relative;overflow:auto;max-height:500px}
+  #tip{position:absolute;display:none;pointer-events:none;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:11px;white-space:nowrap;z-index:10}
 </style>
 </head>
 <body>
-<div id="app"><div style="display:flex;align-items:center;justify-content:center;height:60vh;color:var(--dim)" class="mono">Loading…</div></div>
+<div id="app" class="m" style="display:flex;align-items:center;justify-content:center;height:60vh;color:var(--dim)">Loading…</div>
 <script>
-const C={nearest:'#f87171',g2:'#22d3ee',g10:'#34d399',sat:'#a78bfa',gnd:'#f97316'};
 let D,ch={},ep=0,strat='greedy_2';
 
 async function boot(){
   try{D=await(await fetch('data.json')).json();build()}
-  catch(e){document.getElementById('app').innerHTML='<div style="color:#f87171;text-align:center;margin-top:40vh" class="mono">data.json not found</div>'}
+  catch(e){document.getElementById('app').textContent='data.json not found'}
 }
 
 function build(){
-  const cfg=D.config,mx=cfg.num_epochs-1;
+  const c=D.config, mx=c.num_epochs-1;
   document.getElementById('app').innerHTML=`
-  <div class="topbar"><div class="topbar-title mono"><span>◆</span> ARGUS</div>
-    <div class="pills mono"><div>Epochs <span class="v">${cfg.num_epochs}</span></div><div>PoPs <span class="v">${cfg.n_pops}</span></div><div>Dests <span class="v">${cfg.n_dests}</span></div><div>Flows <span class="v">${cfg.n_flows.toLocaleString()}</span></div></div>
-  </div>
-  <div class="epoch-bar mono"><label>EPOCH</label><input type="range" id="sl" min="0" max="${mx}" value="0"><span class="ev" id="ev">0</span></div>
-  <div class="grid">
-    <div class="stats-row">
-      <div class="sc"><div class="l mono">Baseline RTT</div><div class="n mono" style="color:var(--red)" id="s0">—</div><div class="s">this epoch</div></div>
-      <div class="sc"><div class="l mono">Greedy RTT</div><div class="n mono" style="color:var(--green)" id="s1">—</div><div class="s">this epoch</div></div>
-      <div class="sc"><div class="l mono">Improvement</div><div class="n mono" style="color:var(--cyan)" id="s2">—</div><div class="s">ms saved</div></div>
-      <div class="sc"><div class="l mono">Cache Entries</div><div class="n mono" style="color:var(--purple)" id="s3">—</div><div class="s" id="s3s"></div></div>
-      <div class="sc"><div class="l mono">Flows</div><div class="n mono" style="color:var(--orange)" id="s4">—</div><div class="s">this epoch</div></div>
+  <div class="topbar"><h1 class="m"><span>◆</span> ARGUS</h1>
+  <div class="pills m"><div>Epochs <b>${c.num_epochs}</b></div><div>PoPs <b>${c.n_pops}</b></div><div>Dests <b>${c.n_dests}</b></div></div></div>
+  <div class="ebar m"><label>EPOCH</label><input type="range" id="sl" min="0" max="${mx}" value="0"><span class="ev" id="ev">0</span></div>
+  <div class="g">
+    <div class="sr">
+      <div class="sc"><div class="l m">Baseline</div><div class="n m" style="color:var(--red)" id="s0">—</div></div>
+      <div class="sc"><div class="l m">Greedy</div><div class="n m" style="color:var(--green)" id="s1">—</div></div>
+      <div class="sc"><div class="l m">Saved</div><div class="n m" style="color:var(--cyan)" id="s2">—</div></div>
+      <div class="sc"><div class="l m">Cache</div><div class="n m" style="color:var(--purple)" id="s3">—</div><div class="s" id="s3s"></div></div>
+      <div class="sc"><div class="l m">Flows</div><div class="n m" style="color:var(--orange)" id="s4">—</div></div>
     </div>
-    <div class="card"><h3>E2E Latency</h3><div class="cw"><canvas id="c-lat"></canvas></div></div>
-    <div class="card"><h3>Segment Breakdown</h3><div class="tabs" id="t-seg"></div><div class="cw"><canvas id="c-seg"></canvas></div></div>
-    <div class="card"><h3>PoP × Destination Cache</h3><div class="tabs" id="t-hm"></div><div class="hm-box"><canvas id="hm-canvas"></canvas><div id="hm-tip"></div></div></div>
-    <div class="card"><h3>Per-Destination Coverage</h3><div class="cw"><canvas id="c-dst"></canvas></div></div>
+    <div class="c"><h3>E2E Latency</h3><div class="cw"><canvas id="cL"></canvas></div></div>
+    <div class="c"><h3>Segment Breakdown</h3><div class="tabs" id="tS"></div><div class="cw"><canvas id="cS"></canvas></div></div>
+    <div class="c"><h3>PoP × Dest Cache</h3><div class="tabs" id="tH"></div><div class="hb"><canvas id="cH"></canvas><div id="tip"></div></div></div>
+    <div class="c"><h3>Per-Dest Coverage</h3><div class="cw"><canvas id="cD"></canvas></div></div>
   </div>`;
-  mkLat();mkSeg();mkDst();drawHM();updStats();mkTabs();
-  const sl=document.getElementById('sl'),ev=document.getElementById('ev');
-  sl.oninput=()=>{ep=+sl.value;ev.textContent=ep;tick()};
+  initLat(); initSeg(); initDst(); drawHM(); updAll(); mkTabs();
+  document.getElementById('sl').oninput=function(){ep=+this.value;document.getElementById('ev').textContent=ep;updAll()};
 }
 
-function tick(){updStats();updLat();mkSeg();drawHM();updDst()}
+function updAll(){updStats();updLat();updSeg();drawHM();updDst()}
 
 function updStats(){
-  const b=D.strategies.nearest_pop?.epochs[ep],g=D.strategies[strat]?.epochs[ep];
+  const b=D.strategies.nearest_pop?.epochs[ep], g=D.strategies[strat]?.epochs[ep];
   if(!b||!g)return;
   document.getElementById('s0').textContent=b.avg_rtt.toFixed(1)+'ms';
   document.getElementById('s1').textContent=g.avg_rtt.toFixed(1)+'ms';
-  document.getElementById('s2').textContent='+'+(b.avg_rtt-g.avg_rtt).toFixed(1)+'ms';
+  const d=b.avg_rtt-g.avg_rtt;
+  document.getElementById('s2').textContent=(d>0?'+':'')+d.toFixed(1)+'ms';
   document.getElementById('s3').textContent=g.gk_size;
-  document.getElementById('s3s').textContent=`of ${D.config.n_pops*D.config.n_dests}`;
-  document.getElementById('s4').textContent=g.n_flows||b.n_flows||'—';
+  document.getElementById('s3s').textContent='/ '+D.config.n_pops*D.config.n_dests;
+  document.getElementById('s4').textContent=g.n_flows||'—';
 }
 
-/* ── Latency: show data up to current epoch ── */
-function mkLat(){
-  const ctx=document.getElementById('c-lat').getContext('2d');
-  const labels=Array.from({length:D.config.num_epochs},(_,i)=>i);
-  const ds=Object.keys(D.strategies).map(k=>({
-    label:lbl(k),data:D.strategies[k].epochs.map(e=>e.avg_rtt),
-    borderColor:clr(k),borderWidth:2,pointRadius:2,tension:.3,fill:false,
-  }));
-  ch.lat=new Chart(ctx,{type:'line',data:{labels,datasets:ds},options:{...opts('RTT (ms)',true),
-    plugins:{...opts('',true).plugins,annotation:{annotations:{line:{type:'line',xMin:0,xMax:0,borderColor:'#f9731680',borderWidth:2,borderDash:[4,4]}}}}}});
+/* ── Latency chart ── */
+function initLat(){
+  const ctx=document.getElementById('cL');
+  const N=D.config.num_epochs;
+  const labels=Array.from({length:N},(_,i)=>i);
+  const datasets=Object.keys(D.strategies).map(k=>{
+    const col=kclr(k);
+    return{label:klbl(k),data:D.strategies[k].epochs.map(e=>e.avg_rtt),borderColor:col,borderWidth:2,pointRadius:2,tension:.3,fill:false};
+  });
+  ch.lat=new Chart(ctx,{type:'line',data:{labels,datasets},options:copts('RTT (ms)',true)});
 }
 
 function updLat(){
   if(!ch.lat)return;
-  // Dim points after current epoch
   ch.lat.data.datasets.forEach(ds=>{
-    ds.pointBackgroundColor=ds.data.map((_,i)=>i<=ep?ds.borderColor:ds.borderColor+'30');
-    ds.segment={borderColor:ctx=>ctx.p0DataIndex>=ep?ctx.dataset.borderColor+'25':ctx.dataset.borderColor};
+    const col=ds.borderColor;
+    ds.pointBackgroundColor=ds.data.map((_,i)=>i<=ep?col:'transparent');
+    ds.pointBorderColor=ds.data.map((_,i)=>i<=ep?col:'transparent');
+    ds.borderColor=col;
   });
-  ch.lat.options.plugins.annotation.annotations.line.xMin=ep;
-  ch.lat.options.plugins.annotation.annotations.line.xMax=ep;
+  // Redraw with clipped data appearance
   ch.lat.update('none');
 }
 
-/* ── Segment breakdown ── */
-function mkSeg(){
-  const ctx=document.getElementById('c-seg').getContext('2d');
-  if(ch.seg)ch.seg.destroy();
+/* ── Segment chart ── */
+function initSeg(){
+  const ctx=document.getElementById('cS');
+  ch.seg=new Chart(ctx,{type:'line',data:{labels:[],datasets:[
+    {label:'Satellite',data:[],borderColor:'#a78bfa',backgroundColor:'#a78bfa30',fill:true,tension:.3,borderWidth:2,pointRadius:1},
+    {label:'Ground',data:[],borderColor:'#f97316',backgroundColor:'#f9731630',fill:true,tension:.3,borderWidth:2,pointRadius:1},
+  ]},options:copts('RTT (ms)',true)});
+}
+
+function updSeg(){
+  if(!ch.seg)return;
   const data=D.strategies[strat]?.epochs||[];
-  const labels=data.map((_,i)=>i);
-  ch.seg=new Chart(ctx,{type:'line',data:{labels,datasets:[
-    {label:'Satellite',data:data.map(e=>e.avg_sat),borderColor:C.sat,backgroundColor:C.sat+'30',fill:true,tension:.3,borderWidth:2,pointRadius:1,
-     segment:{borderColor:ctx=>ctx.p0DataIndex>=ep?C.sat+'25':C.sat}},
-    {label:'Ground',data:data.map(e=>e.avg_gnd),borderColor:C.gnd,backgroundColor:C.gnd+'30',fill:true,tension:.3,borderWidth:2,pointRadius:1,
-     segment:{borderColor:ctx=>ctx.p0DataIndex>=ep?C.gnd+'25':C.gnd}},
-  ]},options:{...opts('RTT (ms)',true),animation:{duration:0},
-    plugins:{...opts('',true).plugins,annotation:{annotations:{line:{type:'line',xMin:ep,xMax:ep,borderColor:'#f9731680',borderWidth:2,borderDash:[4,4]}}}}}});
+  const show=data.slice(0,ep+1);
+  ch.seg.data.labels=show.map((_,i)=>i);
+  ch.seg.data.datasets[0].data=show.map(e=>e.avg_sat);
+  ch.seg.data.datasets[1].data=show.map(e=>e.avg_gnd);
+  ch.seg.update('none');
 }
 
 /* ── Dest coverage ── */
-function mkDst(){
-  const ctx=document.getElementById('c-dst').getContext('2d');
-  const cov=D.strategies[strat]?.epochs[0]?.coverage||{};
+function initDst(){
+  const ctx=document.getElementById('cD');
   ch.dst=new Chart(ctx,{type:'bar',data:{labels:D.dest_names,datasets:[{
-    label:'PoPs',data:D.dest_names.map(d=>cov[d]||0),
-    backgroundColor:C.g10+'80',borderColor:C.g10,borderWidth:1,borderRadius:3
-  }]},options:{...opts('PoPs cached'),indexAxis:D.dest_names.length>15?'y':'x',animation:{duration:0}}});
+    label:'PoPs cached',data:D.dest_names.map(()=>0),
+    backgroundColor:'#34d39980',borderColor:'#34d399',borderWidth:1,borderRadius:3,
+  }]},options:{...copts('PoPs'),indexAxis:D.dest_names.length>15?'y':'x'}});
 }
 
 function updDst(){
@@ -156,69 +142,55 @@ function updDst(){
 
 /* ── Heatmap (canvas) ── */
 function drawHM(){
-  const canvas=document.getElementById('hm-canvas'),tip=document.getElementById('hm-tip');
-  const pops=D.pop_names,dests=D.dest_names;
-  const np=pops.length,nd=dests.length;
+  const cv=document.getElementById('cH'),tip=document.getElementById('tip');
+  const pops=D.pop_names,dests=D.dest_names,np=pops.length,nd=dests.length;
   const padL=54;
-  const cellW=Math.max(12,Math.min(22,Math.floor((Math.min(canvas.parentElement.clientWidth,800)-padL)/nd)));
-  const cellH=Math.max(8,Math.min(16,Math.floor(450/np)));
-
-  canvas.width=padL+nd*cellW+4;
-  canvas.height=np*cellH+4;
-  const ctx=canvas.getContext('2d');
-
+  const cW=Math.max(12,Math.min(20,Math.floor((Math.min(cv.parentElement.clientWidth,780)-padL)/nd)));
+  const cH=Math.max(8,Math.min(14,Math.floor(440/np)));
+  cv.width=padL+nd*cW+4;cv.height=np*cH+4;
+  const ctx=cv.getContext('2d');
   const matrix=D.coverage_matrix?.[strat]?.[ep]||[];
-  const cached=new Set(matrix.map(([p,d])=>`${p},${d}`));
-
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  ctx.font='8px JetBrains Mono';
-  ctx.fillStyle='#475569';
-  ctx.textAlign='right';
-  ctx.textBaseline='middle';
-  for(let pi=0;pi<np;pi++) ctx.fillText(pops[pi],padL-4,pi*cellH+cellH/2);
-
-  for(let pi=0;pi<np;pi++){
-    for(let di=0;di<nd;di++){
-      ctx.fillStyle=cached.has(`${pi},${di}`)?'#059669':'#1e293b';
-      ctx.fillRect(padL+di*cellW, pi*cellH, cellW-1, cellH-1);
-    }
+  const set=new Set(matrix.map(([p,d])=>`${p},${d}`));
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.font='8px JetBrains Mono';ctx.fillStyle='#475569';ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let i=0;i<np;i++)ctx.fillText(pops[i],padL-4,i*cH+cH/2);
+  for(let pi=0;pi<np;pi++)for(let di=0;di<nd;di++){
+    ctx.fillStyle=set.has(`${pi},${di}`)?'#059669':'#1e293b';
+    ctx.fillRect(padL+di*cW,pi*cH,cW-1,cH-1);
   }
-
-  canvas.onmousemove=(e)=>{
-    const r=canvas.getBoundingClientRect();
-    const mx=e.clientX-r.left,my=e.clientY-r.top;
-    const di=Math.floor((mx-padL)/cellW),pi=Math.floor(my/cellH);
+  cv.onmousemove=e=>{
+    const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    const di=Math.floor((mx-padL)/cW),pi=Math.floor(my/cH);
     if(di>=0&&di<nd&&pi>=0&&pi<np){
-      const ok=cached.has(`${pi},${di}`);
-      tip.style.display='block';
-      tip.style.left=(mx+14)+'px';
-      tip.style.top=(my-10)+'px';
-      tip.innerHTML=`<span class="mono" style="color:${ok?'#34d399':'#64748b'}">${ok?'●':'○'}</span> <b>${pops[pi]}</b> → <b>${dests[di]}</b>`;
-    } else tip.style.display='none';
+      const ok=set.has(`${pi},${di}`);
+      tip.style.display='block';tip.style.left=(mx+14)+'px';tip.style.top=(my-10)+'px';
+      tip.innerHTML=`<span style="color:${ok?'#34d399':'#64748b'}">${ok?'●':'○'}</span> <b>${pops[pi]}</b> → <b>${dests[di]}</b>`;
+    }else tip.style.display='none';
   };
-  canvas.onmouseleave=()=>{tip.style.display='none'};
+  cv.onmouseleave=()=>{tip.style.display='none'};
 }
 
 /* ── Tabs ── */
 function mkTabs(){
   const keys=Object.keys(D.strategies).filter(k=>k!=='nearest_pop');
-  for(const id of['t-seg','t-hm']){
+  ['tS','tH'].forEach(id=>{
     const c=document.getElementById(id);c.innerHTML='';
     keys.forEach(k=>{
       const b=document.createElement('button');
-      b.className='tab mono'+(k===strat?' on':'');b.textContent=lbl(k);
-      b.onclick=()=>{strat=k;document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.textContent===lbl(k)));tick()};
+      b.className='tb m'+(k===strat?' on':'');b.textContent=klbl(k);
+      b.onclick=()=>{strat=k;document.querySelectorAll('.tb').forEach(t=>t.classList.toggle('on',t.textContent===klbl(k)));updAll()};
       c.appendChild(b);
     });
-  }
+  });
 }
 
-function lbl(k){return{nearest_pop:'Nearest PoP',greedy_2:'Greedy (2)',greedy_10:'Greedy (10)'}[k]||k}
-function clr(k){if(k==='nearest_pop')return C.nearest;if(k.includes('2'))return C.g2;return C.g10}
-function opts(yL,leg=false){return{responsive:true,maintainAspectRatio:false,animation:{duration:0},
-  plugins:{legend:{display:leg,labels:{color:'#94a3b8',font:{family:'JetBrains Mono',size:10},boxWidth:10,padding:12}},tooltip:{backgroundColor:'#1e293b',titleFont:{family:'JetBrains Mono',size:11},bodyFont:{family:'DM Sans',size:11},borderColor:'#334155',borderWidth:1,cornerRadius:5,padding:8}},
-  scales:{x:{title:{display:true,text:'Epoch',color:'#64748b',font:{family:'JetBrains Mono',size:10}},grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:9}}},
+/* ── Helpers ── */
+function klbl(k){return{nearest_pop:'Nearest PoP',greedy_2:'Greedy (2)',greedy_10:'Greedy (10)'}[k]||k}
+function kclr(k){return k==='nearest_pop'?'#f87171':k.includes('2')?'#22d3ee':'#34d399'}
+function copts(yL,leg=false){return{responsive:true,maintainAspectRatio:false,animation:false,
+  plugins:{legend:{display:leg,labels:{color:'#94a3b8',font:{family:'JetBrains Mono',size:10},boxWidth:10,padding:12}},
+    tooltip:{backgroundColor:'#1e293b',titleFont:{family:'JetBrains Mono',size:11},bodyFont:{family:'DM Sans',size:11},borderColor:'#334155',borderWidth:1,cornerRadius:5,padding:8}},
+  scales:{x:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:9}}},
     y:{title:{display:!!yL,text:yL,color:'#64748b',font:{family:'JetBrains Mono',size:10}},grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:9}},beginAtZero:true}}}}
 
 boot();
