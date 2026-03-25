@@ -1,13 +1,13 @@
 """StaticPoP controller: best static PoP per destination from cache.
 
-Fills sat_cost with zeros, ground_cost from GroundKnowledge cache.
-Terminal picks PoP with lowest cached ground delay.
+Uses real sat_cost + ground_cost from cache only (no estimation).
 """
 
 from __future__ import annotations
 
 from types import MappingProxyType
 
+from vantage.control.policy.common.sat_cost import precompute_sat_cost
 from vantage.domain import CostTables, NetworkSnapshot
 from vantage.world.ground import GroundKnowledge
 
@@ -22,14 +22,12 @@ class StaticPoPController:
         self._gk = ground_knowledge or GroundKnowledge()
 
     def compute_tables(self, snapshot: NetworkSnapshot) -> CostTables:
-        sat_cost: dict[tuple[int, str], float] = {}
+        sat_cost = precompute_sat_cost(snapshot)
 
-        # Ground cost from cache only (no estimation)
+        # Ground cost from cache only (no estimation fallback)
         ground_cost: dict[tuple[str, str], float] = {}
-        for pop in snapshot.infra.pops:
-            for (pop_code, dest), delay in self._gk._cache.items():
-                if pop_code == pop.code:
-                    ground_cost[(pop_code, dest)] = delay
+        for (pop_code, dest), delay in self._gk._cache.items():
+            ground_cost[(pop_code, dest)] = delay
 
         return CostTables(
             epoch=snapshot.epoch,

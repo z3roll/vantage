@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from vantage.control.policy.common.sat_cost import precompute_sat_cost
 from vantage.domain import CostTables, Endpoint, NetworkSnapshot
 from vantage.world.ground import GroundDelay, HaversineDelay
 
@@ -24,8 +25,9 @@ class GroundOnlyController:
         self._ground_delay: GroundDelay = ground_delay or HaversineDelay()
 
     def compute_tables(self, snapshot: NetworkSnapshot) -> CostTables:
-        # Sat cost = 0 for all → terminal picks purely by ground cost
-        sat_cost: dict[tuple[int, str], float] = {}
+        # Sat cost populated but not used for ranking — ground cost dominates.
+        # Still needed so forward.py can find valid (ingress, pop) entries.
+        sat_cost = precompute_sat_cost(snapshot)
 
         # Ground cost = L2 estimate for all (PoP, dest) pairs
         ground_cost: dict[tuple[str, str], float] = {}
