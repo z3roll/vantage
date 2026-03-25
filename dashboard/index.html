@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argus — Satellite TE Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-deep: #0a0e17;
+    --bg-card: #111827;
+    --bg-card-hover: #1a2332;
+    --border: #1e293b;
+    --text: #e2e8f0;
+    --text-dim: #64748b;
+    --text-muted: #475569;
+    --accent-orange: #f97316;
+    --accent-cyan: #22d3ee;
+    --accent-green: #34d399;
+    --accent-red: #f87171;
+    --accent-purple: #a78bfa;
+    --grid-green: #059669;
+    --grid-empty: #1e293b;
+    --radius: 10px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-deep);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Top bar ──────────────────────────────── */
+  .topbar {
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(20px);
+  }
+
+  .topbar-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: -0.5px;
+  }
+
+  .topbar-title span { color: var(--accent-orange); }
+
+  .topbar-stats {
+    display: flex;
+    gap: 28px;
+  }
+
+  .stat-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .stat-pill .val {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  /* ── Grid layout ──────────────────────────── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 24px 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    transition: border-color 0.2s;
+  }
+
+  .card:hover { border-color: #334155; }
+
+  .card-full { grid-column: 1 / -1; }
+
+  .card h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 16px;
+  }
+
+  /* ── Stats row ────────────────────────────── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    grid-column: 1 / -1;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+  }
+
+  .stat-card .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .stat-card .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 32px;
+    font-weight: 700;
+    margin-top: 6px;
+  }
+
+  .stat-card .sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  .val-green { color: var(--accent-green); }
+  .val-orange { color: var(--accent-orange); }
+  .val-cyan { color: var(--accent-cyan); }
+  .val-purple { color: var(--accent-purple); }
+
+  /* ── Epoch slider ─────────────────────────── */
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .slider-row label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .slider-row input[type=range] {
+    flex: 1;
+    accent-color: var(--accent-orange);
+    height: 4px;
+  }
+
+  .slider-row .epoch-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent-orange);
+    min-width: 30px;
+    text-align: right;
+  }
+
+  /* ── Coverage grid (heatmap) ──────────────── */
+  .heatmap-container {
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 400px;
+  }
+
+  .heatmap {
+    display: grid;
+    gap: 1px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+  }
+
+  .heatmap-cell {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 2px;
+    transition: background 0.15s;
+  }
+
+  .heatmap-cell.cached { background: var(--grid-green); }
+  .heatmap-cell.empty { background: var(--grid-empty); }
+
+  .heatmap-labels-y {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-right: 4px;
+  }
+
+  .heatmap-labels-y span {
+    font-size: 8px;
+    color: var(--text-muted);
+    height: 14px;
+    line-height: 14px;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 60px;
+  }
+
+  .heatmap-wrap {
+    display: flex;
+  }
+
+  .heatmap-labels-x {
+    display: flex;
+    margin-left: 64px;
+    margin-top: 4px;
+  }
+
+  .heatmap-labels-x span {
+    font-size: 7px;
+    color: var(--text-muted);
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    height: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ── Canvas sizing ────────────────────────── */
+  .chart-container {
+    position: relative;
+    height: 300px;
+  }
+
+  .chart-container canvas {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ── Loading ──────────────────────────────── */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .loading::after {
+    content: '';
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-orange);
+    border-radius: 50%;
+    margin-left: 12px;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Strategy selector ────────────────────── */
+  .strategy-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .strategy-tab {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .strategy-tab.active {
+    border-color: var(--accent-orange);
+    color: var(--accent-orange);
+    background: rgba(249, 115, 22, 0.08);
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="loading">Loading simulation data</div>
+</div>
+
+<script>
+const COLORS = {
+  nearest: '#f87171',
+  greedy2: '#22d3ee',
+  greedy10: '#34d399',
+  sat: '#a78bfa',
+  gnd: '#f97316',
+};
+
+let DATA = null;
+let charts = {};
+let selectedEpoch = 0;
+let selectedStrategy = 'greedy_2';
+
+async function loadData() {
+  try {
+    const resp = await fetch('data.json');
+    DATA = await resp.json();
+    render();
+  } catch (e) {
+    document.getElementById('app').innerHTML =
+      '<div class="loading" style="color:#f87171">Failed to load data.json — run the simulator first</div>';
+  }
+}
+
+function render() {
+  const c = DATA.config;
+  const maxEpoch = c.num_epochs - 1;
+
+  document.getElementById('app').innerHTML = `
+    <div class="topbar">
+      <div class="topbar-title"><span>◆</span> ARGUS</div>
+      <div class="topbar-stats">
+        <div class="stat-pill">Epochs <span class="val">${c.num_epochs}</span></div>
+        <div class="stat-pill">PoPs <span class="val">${c.n_pops}</span></div>
+        <div class="stat-pill">Destinations <span class="val">${c.n_dests}</span></div>
+        <div class="stat-pill">Flows/epoch <span class="val">${c.n_flows.toLocaleString()}</span></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <!-- Stats row -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="label">Baseline RTT</div>
+          <div class="value val-orange" id="stat-baseline">—</div>
+          <div class="sub">nearest PoP avg</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Best Greedy RTT</div>
+          <div class="value val-green" id="stat-best">—</div>
+          <div class="sub">steady state avg</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Improvement</div>
+          <div class="value val-cyan" id="stat-improve">—</div>
+          <div class="sub">ms saved</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Cache Coverage</div>
+          <div class="value val-purple" id="stat-coverage">—</div>
+          <div class="sub">of ${c.n_pops * c.n_dests} pairs</div>
+        </div>
+      </div>
+
+      <!-- Latency chart -->
+      <div class="card">
+        <h3>E2E Latency Over Epochs</h3>
+        <div class="chart-container"><canvas id="chart-latency"></canvas></div>
+      </div>
+
+      <!-- Segment breakdown -->
+      <div class="card">
+        <h3>Delay Decomposition (Satellite vs Ground)</h3>
+        <div class="strategy-tabs" id="segment-tabs"></div>
+        <div class="chart-container"><canvas id="chart-segments"></canvas></div>
+      </div>
+
+      <!-- Coverage heatmap -->
+      <div class="card">
+        <h3>Cache Coverage Heatmap (PoP × Destination)</h3>
+        <div class="slider-row">
+          <label>Epoch</label>
+          <input type="range" id="epoch-slider" min="0" max="${maxEpoch}" value="0">
+          <span class="epoch-val" id="epoch-display">0</span>
+        </div>
+        <div class="strategy-tabs" id="heatmap-tabs"></div>
+        <div id="heatmap-area"></div>
+      </div>
+
+      <!-- Per-dest coverage -->
+      <div class="card">
+        <h3>Per-Destination Coverage</h3>
+        <div class="chart-container"><canvas id="chart-destcov"></canvas></div>
+      </div>
+    </div>
+  `;
+
+  buildLatencyChart();
+  buildSegmentChart();
+  buildDestCovChart();
+  buildHeatmap();
+  computeStats();
+  setupSlider();
+  setupTabs();
+}
+
+function getStrategyKeys() {
+  return Object.keys(DATA.strategies);
+}
+
+function getStrategyLabel(key) {
+  const labels = {
+    nearest_pop: 'Nearest PoP',
+    greedy_2: 'Greedy (budget=2)',
+    greedy_10: 'Greedy (budget=10)',
+  };
+  return labels[key] || key;
+}
+
+function getStrategyColor(key) {
+  if (key === 'nearest_pop') return COLORS.nearest;
+  if (key.includes('2')) return COLORS.greedy2;
+  return COLORS.greedy10;
+}
+
+/* ── Charts ────────────────────────────────── */
+
+function buildLatencyChart() {
+  const ctx = document.getElementById('chart-latency').getContext('2d');
+  const labels = Array.from({length: DATA.config.num_epochs}, (_, i) => i);
+
+  const datasets = getStrategyKeys().map(key => ({
+    label: getStrategyLabel(key),
+    data: DATA.strategies[key].epochs.map(e => e.avg_rtt),
+    borderColor: getStrategyColor(key),
+    backgroundColor: getStrategyColor(key) + '18',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointHoverRadius: 6,
+    tension: 0.3,
+    fill: false,
+  }));
+
+  charts.latency = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: chartOpts('RTT (ms)', true),
+  });
+}
+
+function buildSegmentChart() {
+  const ctx = document.getElementById('chart-segments').getContext('2d');
+  updateSegmentChart(ctx, selectedStrategy);
+}
+
+function updateSegmentChart(ctx, stratKey) {
+  if (charts.segments) charts.segments.destroy();
+
+  const epochs = DATA.strategies[stratKey]?.epochs || [];
+  const labels = Array.from({length: epochs.length}, (_, i) => i);
+
+  charts.segments = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Satellite RTT',
+          data: epochs.map(e => e.avg_sat),
+          borderColor: COLORS.sat,
+          backgroundColor: COLORS.sat + '30',
+          fill: true,
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 2,
+        },
+        {
+          label: 'Ground RTT',
+          data: epochs.map(e => e.avg_gnd),
+          borderColor: COLORS.gnd,
+          backgroundColor: COLORS.gnd + '30',
+          fill: true,
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 2,
+        },
+      ],
+    },
+    options: chartOpts('RTT (ms)', true),
+  });
+}
+
+function buildDestCovChart() {
+  updateDestCovChart(0);
+}
+
+function updateDestCovChart(epoch) {
+  const ctx = document.getElementById('chart-destcov').getContext('2d');
+  if (charts.destcov) charts.destcov.destroy();
+
+  const stratKey = selectedStrategy;
+  const ep = DATA.strategies[stratKey]?.epochs[epoch];
+  const coverage = ep?.coverage || {};
+  const dests = DATA.dest_names;
+
+  charts.destcov = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: dests,
+      datasets: [{
+        label: 'PoPs with data',
+        data: dests.map(d => coverage[d] || 0),
+        backgroundColor: COLORS.greedy10 + '80',
+        borderColor: COLORS.greedy10,
+        borderWidth: 1,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ...chartOpts('PoPs cached'),
+      indexAxis: dests.length > 15 ? 'y' : 'x',
+    },
+  });
+}
+
+/* ── Heatmap ───────────────────────────────── */
+
+function buildHeatmap() {
+  updateHeatmap(0);
+}
+
+function updateHeatmap(epoch) {
+  const area = document.getElementById('heatmap-area');
+  const stratKey = selectedStrategy;
+  const matrix = DATA.coverage_matrix?.[stratKey]?.[epoch] || [];
+  const cachedSet = new Set(matrix.map(([p, d]) => `${p},${d}`));
+  const pops = DATA.pop_names;
+  const dests = DATA.dest_names;
+
+  const cellSize = Math.max(10, Math.min(18, Math.floor(600 / dests.length)));
+
+  let html = '<div class="heatmap-wrap">';
+  html += '<div class="heatmap-labels-y">';
+  for (const p of pops) {
+    html += `<span style="height:${cellSize}px;line-height:${cellSize}px">${p}</span>`;
+  }
+  html += '</div>';
+  html += `<div><div class="heatmap" style="grid-template-columns:repeat(${dests.length},${cellSize}px)">`;
+  for (let pi = 0; pi < pops.length; pi++) {
+    for (let di = 0; di < dests.length; di++) {
+      const cls = cachedSet.has(`${pi},${di}`) ? 'cached' : 'empty';
+      html += `<div class="heatmap-cell ${cls}" title="${pops[pi]} → ${dests[di]}"></div>`;
+    }
+  }
+  html += '</div>';
+  html += '<div class="heatmap-labels-x" style="display:flex">';
+  for (const d of dests) {
+    html += `<span style="width:${cellSize}px">${d}</span>`;
+  }
+  html += '</div></div></div>';
+
+  area.innerHTML = html;
+}
+
+/* ── Stats ─────────────────────────────────── */
+
+function computeStats() {
+  const baseline = DATA.strategies.nearest_pop;
+  const best = DATA.strategies.greedy_10 || DATA.strategies.greedy_2;
+
+  if (!baseline || !best) return;
+
+  const baseAvg = avg(baseline.epochs.map(e => e.avg_rtt));
+  const bestAvgs = best.epochs.map(e => e.avg_rtt);
+  const steadyState = avg(bestAvgs.slice(1));
+  const improvement = baseAvg - steadyState;
+
+  const lastEp = best.epochs[best.epochs.length - 1];
+  const totalPairs = DATA.config.n_pops * DATA.config.n_dests;
+  const covPct = ((lastEp.gk_size / totalPairs) * 100).toFixed(0);
+
+  document.getElementById('stat-baseline').textContent = baseAvg.toFixed(1) + 'ms';
+  document.getElementById('stat-best').textContent = steadyState.toFixed(1) + 'ms';
+  document.getElementById('stat-improve').textContent = '+' + improvement.toFixed(1) + 'ms';
+  document.getElementById('stat-coverage').textContent = covPct + '%';
+}
+
+/* ── Controls ──────────────────────────────── */
+
+function setupSlider() {
+  const slider = document.getElementById('epoch-slider');
+  const display = document.getElementById('epoch-display');
+  slider.addEventListener('input', () => {
+    selectedEpoch = parseInt(slider.value);
+    display.textContent = selectedEpoch;
+    updateHeatmap(selectedEpoch);
+    updateDestCovChart(selectedEpoch);
+  });
+}
+
+function setupTabs() {
+  const greedyKeys = getStrategyKeys().filter(k => k !== 'nearest_pop');
+
+  for (const containerId of ['segment-tabs', 'heatmap-tabs']) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    for (const key of greedyKeys) {
+      const btn = document.createElement('button');
+      btn.className = 'strategy-tab' + (key === selectedStrategy ? ' active' : '');
+      btn.textContent = getStrategyLabel(key);
+      btn.addEventListener('click', () => {
+        selectedStrategy = key;
+        container.querySelectorAll('.strategy-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // Sync other tab group
+        document.querySelectorAll(`#segment-tabs .strategy-tab, #heatmap-tabs .strategy-tab`).forEach(b => {
+          b.classList.toggle('active', b.textContent === btn.textContent);
+        });
+        updateSegmentChart(document.getElementById('chart-segments').getContext('2d'), key);
+        updateHeatmap(selectedEpoch);
+        updateDestCovChart(selectedEpoch);
+      });
+      container.appendChild(btn);
+    }
+  }
+}
+
+/* ── Helpers ────────────────────────────────── */
+
+function avg(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+
+function chartOpts(yLabel, showLegend = false) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: showLegend,
+        labels: {
+          color: '#94a3b8',
+          font: { family: 'JetBrains Mono', size: 11 },
+          boxWidth: 12,
+          padding: 16,
+        },
+      },
+      tooltip: {
+        backgroundColor: '#1e293b',
+        titleFont: { family: 'JetBrains Mono', size: 12 },
+        bodyFont: { family: 'DM Sans', size: 12 },
+        borderColor: '#334155',
+        borderWidth: 1,
+        cornerRadius: 6,
+        padding: 10,
+      },
+    },
+    scales: {
+      x: {
+        title: { display: true, text: 'Epoch', color: '#64748b', font: { family: 'JetBrains Mono', size: 11 } },
+        grid: { color: '#1e293b' },
+        ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 10 } },
+      },
+      y: {
+        title: { display: true, text: yLabel, color: '#64748b', font: { family: 'JetBrains Mono', size: 11 } },
+        grid: { color: '#1e293b' },
+        ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 10 } },
+        beginAtZero: true,
+      },
+    },
+  };
+}
+
+loadData();
+</script>
+</body>
+</html>

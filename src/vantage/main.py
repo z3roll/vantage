@@ -1,5 +1,6 @@
-"""Argus experiment runner — probe-based learning comparison."""
+"""Argus experiment runner — exports results for dashboard visualization."""
 
+import json
 import time
 from pathlib import Path
 
@@ -19,13 +20,13 @@ from vantage.world.world import WorldModel
 
 DATA_DIR = Path(__file__).resolve().parent / "config"
 STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink.xml")
+DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
-NUM_EPOCHS = 15
+NUM_EPOCHS = 20
 EPOCH_INTERVAL = 300.0
 
 
 def setup():
-    """Build world, endpoints, traffic (shared across experiments)."""
     ground = GroundInfrastructure(DATA_DIR)
     satellite = SatelliteSegment(
         constellation=XMLConstellationModel(str(STARPERF_XML), dt_s=15.0),
@@ -55,42 +56,37 @@ def setup():
 
 
 def run_nearest_pop(world, ground, endpoints, traffic, config, snapshots):
-    """Baseline: no ground knowledge, nearest PoP always."""
-    print("\n" + "=" * 70)
-    print("EXPERIMENT 1: Nearest PoP (baseline, no ground knowledge)")
-    print("=" * 70)
-
     ctrl = create_controller("nearest_pop")
-    # Estimator needed by forward for actual delay computation (ground truth)
     gk = GroundKnowledge(estimator=HaversineDelay())
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
 
-    avgs = []
+    epoch_data = []
     for epoch in range(config.num_epochs):
         tables = ctrl.compute_tables(snapshots[epoch])
         demand = traffic.generate(epoch)
         result = realize(tables, snapshots[epoch], demand, ctx)
 
-        rtts = [f.total_rtt for f in result.flow_outcomes]
-        avg = sum(rtts) / len(rtts) if rtts else 0.0
-        avgs.append(avg)
+        flows = result.flow_outcomes
+        n = max(len(flows), 1)
+        epoch_data.append({
+            "avg_rtt": round(sum(f.total_rtt for f in flows) / n, 2),
+            "avg_sat": round(sum(f.satellite_rtt for f in flows) / n, 2),
+            "avg_gnd": round(sum(f.ground_rtt for f in flows) / n, 2),
+            "gk_size": 0,
+            "coverage": {},
+            "pops_used": len({f.pop_code for f in flows}),
+        })
+        print(f"  nearest_pop  epoch {epoch:2d}  rtt={epoch_data[-1]['avg_rtt']:.1f}ms")
 
-    print(f"{'Ep':>3s}  {'AvgRTT':>8s}")
-    print("-" * 14)
-    for i, avg in enumerate(avgs):
-        print(f"{i:3d}  {avg:7.1f}ms")
-    return avgs
+    return {"epochs": epoch_data}
 
 
 def run_greedy(world, ground, endpoints, traffic, config, snapshots,
-               probe_budget: int, label: str):
-    """Greedy with probe-based learning."""
-    print(f"\n{'=' * 70}")
-    print(f"EXPERIMENT: {label} (probe budget={probe_budget}/PoP/cycle)")
-    print(f"{'=' * 70}")
+               probe_budget: int, key: str):
+    pop_names = [p.code for p in ground.pops]
+    dest_names = [e.name for e in endpoints.values() if not e.name.startswith("terminal_")]
+    n_pops = len(pop_names)
 
-    # Estimator = ground truth for forward's delay computation (always available)
-    # Cache = what controller knows (starts empty, fills via probing)
     gk = GroundKnowledge(estimator=HaversineDelay(), pop_capacity=100, eviction=LRUEviction())
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
     ctrl = VantageGreedyController(endpoints=endpoints, ground_knowledge=gk)
@@ -107,88 +103,108 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
         probe_interval_s=EPOCH_INTERVAL,
     )
 
-    n_pops = len(ground.pops)
-    n_dests = len([e for e in endpoints.values() if not e.name.startswith("terminal_")])
+    epoch_data = []
+    coverage_matrix = []  # per epoch: list of [pop_idx, dest_idx] pairs
 
-    print(f"{'Ep':>3s}  {'AvgRTT':>8s}  {'Sat':>7s}  {'Gnd':>7s}  "
-          f"{'GK':>6s}  {'New':>5s}  {'Cover':>8s}  {'PoPs':>4s}")
-    print("-" * 62)
-
-    avgs = []
     for epoch in range(config.num_epochs):
         t = epoch * EPOCH_INTERVAL
         snapshot = snapshots[epoch]
         demand = traffic.generate(epoch)
 
-        # Active probe
-        n_new = probe_mgr.collect("active_probe", current_time_s=t)
-
-        # Controller
+        probe_mgr.collect("active_probe", current_time_s=t)
         tables = ctrl.compute_tables(snapshot)
-
-        # Forward
         result = realize(tables, snapshot, demand, ctx)
-
-        # Passive sample + update policy
-        n_passive = probe_mgr.collect("passive_sample", epoch_result=result)
-        n_new += n_passive
+        probe_mgr.collect("passive_sample", epoch_result=result)
         target_policy.update_stats(probe_mgr.get_stats())
 
-        # Metrics
-        rtts = [f.total_rtt for f in result.flow_outcomes]
-        avg = sum(rtts) / len(rtts) if rtts else 0.0
-        avg_sat = sum(f.satellite_rtt for f in result.flow_outcomes) / max(len(result.flow_outcomes), 1)
-        avg_gnd = sum(f.ground_rtt for f in result.flow_outcomes) / max(len(result.flow_outcomes), 1)
-        pops_used = len({f.pop_code for f in result.flow_outcomes})
-        gk_size = gk.total_size()
+        flows = result.flow_outcomes
+        n = max(len(flows), 1)
 
-        # Coverage: how many (pop, dest) pairs have data
-        coverage = gk_size
-        total_pairs = n_pops * n_dests
+        # Per-dest coverage count
+        coverage = {}
+        for d in dest_names:
+            coverage[d] = sum(1 for p in pop_names if gk.get(p, d) is not None)
 
-        avgs.append(avg)
-        print(f"{epoch:3d}  {avg:7.1f}ms  {avg_sat:6.1f}ms  {avg_gnd:6.1f}ms  "
-              f"{gk_size:6d}  +{n_new:<4d}  {coverage}/{total_pairs:<4d}  {pops_used:4d}")
+        # Coverage matrix for heatmap
+        cached_pairs = []
+        for pi, p in enumerate(pop_names):
+            for di, d in enumerate(dest_names):
+                if gk.get(p, d) is not None:
+                    cached_pairs.append([pi, di])
 
-    # Coverage summary
-    print(f"\nPer-dest coverage:")
-    for name in [e.name for e in endpoints.values() if not e.name.startswith("terminal_")]:
-        n = sum(1 for p in ground.pops if gk.get(p.code, name) is not None)
-        print(f"  {name:15s}  {n}/{n_pops}")
+        coverage_matrix.append(cached_pairs)
 
-    return avgs
+        epoch_data.append({
+            "avg_rtt": round(sum(f.total_rtt for f in flows) / n, 2),
+            "avg_sat": round(sum(f.satellite_rtt for f in flows) / n, 2),
+            "avg_gnd": round(sum(f.ground_rtt for f in flows) / n, 2),
+            "gk_size": gk.total_size(),
+            "coverage": coverage,
+            "pops_used": len({f.pop_code for f in flows}),
+        })
+
+        print(f"  {key:12s}  epoch {epoch:2d}  rtt={epoch_data[-1]['avg_rtt']:.1f}ms  "
+              f"gk={gk.total_size()}  cover={len(cached_pairs)}")
+
+    return {"epochs": epoch_data}, coverage_matrix
 
 
 def main() -> None:
     world, ground, endpoints, population, traffic, config, snapshots = setup()
 
+    pop_names = [p.code for p in ground.pops]
+    dest_names = [e.name for e in endpoints.values() if not e.name.startswith("terminal_")]
     n_flows = len(population.sources) * len(population.destinations)
-    n_pops = len(ground.pops)
-    n_dests = len(population.destinations)
-    print(f"\n{n_pops} PoPs, {n_dests} dests, {n_flows} flows/epoch, {NUM_EPOCHS} epochs")
+    print(f"\n{len(pop_names)} PoPs, {len(dest_names)} dests, {n_flows} flows/epoch, {NUM_EPOCHS} epochs\n")
 
     # Run experiments
-    baseline = run_nearest_pop(world, ground, endpoints, traffic, config, snapshots)
-    greedy_slow = run_greedy(world, ground, endpoints, traffic, config, snapshots,
-                             probe_budget=1, label="Greedy (slow probe)")
-    greedy_fast = run_greedy(world, ground, endpoints, traffic, config, snapshots,
-                             probe_budget=5, label="Greedy (fast probe)")
+    print("Running nearest_pop...")
+    nearest = run_nearest_pop(world, ground, endpoints, traffic, config, snapshots)
 
-    # Summary comparison
-    print(f"\n{'=' * 70}")
-    print("COMPARISON")
-    print(f"{'=' * 70}")
-    print(f"{'Ep':>3s}  {'Nearest':>9s}  {'Greedy-1':>9s}  {'Greedy-5':>9s}  "
-          f"{'Δ1':>7s}  {'Δ5':>7s}")
-    print("-" * 50)
-    for i in range(NUM_EPOCHS):
-        d1 = baseline[i] - greedy_slow[i]
-        d5 = baseline[i] - greedy_fast[i]
-        print(f"{i:3d}  {baseline[i]:8.1f}ms  {greedy_slow[i]:8.1f}ms  "
-              f"{greedy_fast[i]:8.1f}ms  {d1:+6.1f}ms  {d5:+6.1f}ms")
+    print("\nRunning greedy (budget=2)...")
+    greedy2, cov_matrix_2 = run_greedy(world, ground, endpoints, traffic, config, snapshots,
+                                        probe_budget=2, key="greedy_2")
 
-    print(f"\nAvg improvement (Greedy-1): {sum(baseline)/len(baseline) - sum(greedy_slow)/len(greedy_slow):+.1f}ms")
-    print(f"Avg improvement (Greedy-5): {sum(baseline)/len(baseline) - sum(greedy_fast)/len(greedy_fast):+.1f}ms")
+    print("\nRunning greedy (budget=10)...")
+    greedy10, cov_matrix_10 = run_greedy(world, ground, endpoints, traffic, config, snapshots,
+                                          probe_budget=10, key="greedy_10")
+
+    # Export JSON for dashboard
+    data = {
+        "config": {
+            "num_epochs": NUM_EPOCHS,
+            "n_pops": len(pop_names),
+            "n_dests": len(dest_names),
+            "n_flows": n_flows,
+        },
+        "strategies": {
+            "nearest_pop": nearest,
+            "greedy_2": greedy2,
+            "greedy_10": greedy10,
+        },
+        "pop_names": pop_names,
+        "dest_names": dest_names,
+        "coverage_matrix": {
+            "greedy_2": cov_matrix_2,
+            "greedy_10": cov_matrix_10,
+        },
+    }
+
+    out_path = DASHBOARD_DIR / "data.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(data, f)
+
+    print(f"\nExported dashboard data → {out_path}")
+    print(f"Open dashboard: open {DASHBOARD_DIR / 'index.html'}")
+
+    # Print summary
+    base_avg = sum(e["avg_rtt"] for e in nearest["epochs"]) / NUM_EPOCHS
+    g2_avg = sum(e["avg_rtt"] for e in greedy2["epochs"][1:]) / (NUM_EPOCHS - 1)
+    g10_avg = sum(e["avg_rtt"] for e in greedy10["epochs"][1:]) / (NUM_EPOCHS - 1)
+    print(f"\nBaseline: {base_avg:.1f}ms")
+    print(f"Greedy-2 (steady): {g2_avg:.1f}ms  ({base_avg - g2_avg:+.1f}ms)")
+    print(f"Greedy-10 (steady): {g10_avg:.1f}ms  ({base_avg - g10_avg:+.1f}ms)")
 
 
 if __name__ == "__main__":
