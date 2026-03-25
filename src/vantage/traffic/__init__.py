@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from vantage.domain import TrafficDemand
-from vantage.traffic.generators import GravityGenerator, UniformGenerator
+from vantage.traffic.generators import GravityGenerator, RealisticGenerator, UniformGenerator
 from vantage.traffic.population import (
     DEFAULT_DESTINATIONS,
     EndpointPopulation,
@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_DESTINATIONS",
     "EndpointPopulation",
     "GravityGenerator",
+    "RealisticGenerator",
     "TrafficGenerator",
     "UniformGenerator",
 ]

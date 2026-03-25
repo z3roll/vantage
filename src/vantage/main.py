@@ -9,7 +9,7 @@ from vantage.control.policy.greedy import VantageGreedyController
 from vantage.engine import RunConfig, RunContext
 from vantage.forward import realize
 from vantage.probe import ProbeManager, TrafficDrivenPolicy
-from vantage.traffic import EndpointPopulation, UniformGenerator
+from vantage.traffic import EndpointPopulation, RealisticGenerator
 from vantage.world.ground import GroundInfrastructure, GroundKnowledge, HaversineDelay
 from vantage.world.ground.knowledge import LRUEviction
 from vantage.world.satellite import SatelliteSegment
@@ -22,7 +22,7 @@ DATA_DIR = Path(__file__).resolve().parent / "config"
 STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink.xml")
 DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
-NUM_EPOCHS = 20
+NUM_EPOCHS = 30
 EPOCH_INTERVAL = 300.0
 
 
@@ -44,7 +44,8 @@ def setup():
     for d in population.destinations:
         endpoints[d.name] = d
 
-    traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
+    traffic = RealisticGenerator(population, demand_per_flow_gbps=0.01,
+                                 initial_dests_per_terminal=3, new_dest_probability=0.15)
     config = RunConfig(num_epochs=NUM_EPOCHS, epoch_interval_s=EPOCH_INTERVAL)
 
     print("Precomputing snapshots...", end=" ", flush=True)
@@ -75,8 +76,9 @@ def run_nearest_pop(world, ground, endpoints, traffic, config, snapshots):
             "gk_size": 0,
             "coverage": {},
             "pops_used": len({f.pop_code for f in flows}),
+            "n_flows": len(flows),
         })
-        print(f"  nearest_pop  epoch {epoch:2d}  rtt={epoch_data[-1]['avg_rtt']:.1f}ms")
+        print(f"  nearest_pop  epoch {epoch:2d}  rtt={epoch_data[-1]['avg_rtt']:.1f}ms  flows={len(flows)}")
 
     return {"epochs": epoch_data}
 
@@ -99,7 +101,7 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
         endpoints=endpoints,
         target_policy=target_policy,
         probe_budget_per_pop=probe_budget,
-        passive_sample_rate=1.0,
+        passive_sample_rate=0.3,  # 30% sampling — gradual learning
         probe_interval_s=EPOCH_INTERVAL,
     )
 
@@ -141,6 +143,7 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
             "gk_size": gk.total_size(),
             "coverage": coverage,
             "pops_used": len({f.pop_code for f in flows}),
+            "n_flows": len(flows),
         })
 
         print(f"  {key:12s}  epoch {epoch:2d}  rtt={epoch_data[-1]['avg_rtt']:.1f}ms  "
