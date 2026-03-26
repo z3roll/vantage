@@ -7,7 +7,6 @@ from pathlib import Path
 
 from vantage.domain import Endpoint
 
-
 # Well-known CDN/server locations — global distribution
 DEFAULT_DESTINATIONS: tuple[Endpoint, ...] = (
     # North America

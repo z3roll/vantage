@@ -62,6 +62,7 @@ def create_controller(name: str, **kwargs: object) -> TEController:
     from vantage.control.policy.greedy import VantageGreedyController
     from vantage.control.policy.ground_only import GroundOnlyController
     from vantage.control.policy.nearest_pop import NearestPoPController
+    from vantage.control.policy.service_aware import ServiceAwareController
     from vantage.control.policy.static_pop import StaticPoPController
 
     controllers: dict[str, type] = {
@@ -70,6 +71,7 @@ def create_controller(name: str, **kwargs: object) -> TEController:
         "static_pop": StaticPoPController,
         "latency_only": VantageGreedyController,
         "greedy": VantageGreedyController,
+        "service_aware": ServiceAwareController,
     }
 
     cls = controllers.get(name)

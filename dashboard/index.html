@@ -46,7 +46,12 @@ async function boot(){
 
 function build(){
   const c=D.config, mx=c.num_epochs-1;
-  document.getElementById('app').innerHTML=`
+  // Determine dynamic height for dest coverage chart
+  const destH = c.n_dests > 15 ? Math.max(280, c.n_dests * 22) : 280;
+  const appEl=document.getElementById('app');
+  appEl.removeAttribute('style');  // Clear loading-state inline styles
+  appEl.className='';
+  appEl.innerHTML=`
   <div class="topbar"><h1 class="m"><span>◆</span> ARGUS</h1>
   <div class="pills m"><div>Epochs <b>${c.num_epochs}</b></div><div>PoPs <b>${c.n_pops}</b></div><div>Dests <b>${c.n_dests}</b></div></div></div>
   <div class="ebar m"><label>EPOCH</label><input type="range" id="sl" min="0" max="${mx}" value="0"><span class="ev" id="ev">0</span></div>
@@ -54,14 +59,14 @@ function build(){
     <div class="sr">
       <div class="sc"><div class="l m">Baseline</div><div class="n m" style="color:var(--red)" id="s0">—</div></div>
       <div class="sc"><div class="l m">Greedy</div><div class="n m" style="color:var(--green)" id="s1">—</div></div>
-      <div class="sc"><div class="l m">Saved</div><div class="n m" style="color:var(--cyan)" id="s2">—</div></div>
+      <div class="sc"><div class="l m">Saved</div><div class="n m" id="s2">—</div></div>
       <div class="sc"><div class="l m">Cache</div><div class="n m" style="color:var(--purple)" id="s3">—</div><div class="s" id="s3s"></div></div>
       <div class="sc"><div class="l m">Flows</div><div class="n m" style="color:var(--orange)" id="s4">—</div></div>
     </div>
     <div class="c"><h3>E2E Latency</h3><div class="cw"><canvas id="cL"></canvas></div></div>
     <div class="c"><h3>Segment Breakdown</h3><div class="tabs" id="tS"></div><div class="cw"><canvas id="cS"></canvas></div></div>
     <div class="c"><h3>PoP × Dest Cache</h3><div class="tabs" id="tH"></div><div class="hb"><canvas id="cH"></canvas><div id="tip"></div></div></div>
-    <div class="c"><h3>Per-Dest Coverage</h3><div class="cw"><canvas id="cD"></canvas></div></div>
+    <div class="c"><h3>Per-Dest Coverage</h3><div class="cw" style="height:${destH}px"><canvas id="cD"></canvas></div></div>
   </div>`;
   initLat(); initSeg(); initDst(); drawHM(); updAll(); mkTabs();
   document.getElementById('sl').oninput=function(){ep=+this.value;document.getElementById('ev').textContent=ep;updAll()};
@@ -76,9 +81,11 @@ function updStats(){
   document.getElementById('s1').textContent=g.avg_rtt.toFixed(1)+'ms';
   const d=b.avg_rtt-g.avg_rtt;
   document.getElementById('s2').textContent=(d>0?'+':'')+d.toFixed(1)+'ms';
-  document.getElementById('s3').textContent=g.gk_size;
+  // Color "Saved" green when positive (improvement), red when negative (regression)
+  document.getElementById('s2').style.color=d>=0?'var(--green)':'var(--red)';
+  document.getElementById('s3').textContent=g.gk_size ?? '—';
   document.getElementById('s3s').textContent='/ '+D.config.n_pops*D.config.n_dests;
-  document.getElementById('s4').textContent=g.n_flows||'—';
+  document.getElementById('s4').textContent=g.n_flows != null ? g.n_flows : '—';
 }
 
 /* ── Latency chart ── */
@@ -88,20 +95,38 @@ function initLat(){
   const labels=Array.from({length:N},(_,i)=>i);
   const datasets=Object.keys(D.strategies).map(k=>{
     const col=kclr(k);
-    return{label:klbl(k),data:D.strategies[k].epochs.map(e=>e.avg_rtt),borderColor:col,borderWidth:2,pointRadius:2,tension:.3,fill:false};
+    // Initially show data up to current epoch, null for future
+    const allData=D.strategies[k].epochs.map(e=>e.avg_rtt);
+    return{label:klbl(k),data:allData.map((v,i)=>i<=ep?v:null),
+      _fullData:allData,
+      borderColor:col,borderWidth:2,pointRadius:3,pointHoverRadius:5,
+      tension:.3,fill:false,spanGaps:false};
   });
-  ch.lat=new Chart(ctx,{type:'line',data:{labels,datasets},options:copts('RTT (ms)',true)});
+  const baseOpts=copts('RTT (ms)',true);
+  ch.lat=new Chart(ctx,{type:'line',data:{labels,datasets},options:{
+    ...baseOpts,
+    plugins:{
+      ...baseOpts.plugins,
+      annotation:{annotations:{
+        epochLine:{type:'line',xMin:ep,xMax:ep,borderColor:'rgba(249,115,22,0.5)',borderWidth:2,borderDash:[4,4]}
+      }}
+    }
+  }});
 }
 
 function updLat(){
   if(!ch.lat)return;
   ch.lat.data.datasets.forEach(ds=>{
-    const col=ds.borderColor;
-    ds.pointBackgroundColor=ds.data.map((_,i)=>i<=ep?col:'transparent');
-    ds.pointBorderColor=ds.data.map((_,i)=>i<=ep?col:'transparent');
-    ds.borderColor=col;
+    // Clip data beyond current epoch to null so line segments don't render
+    if(ds._fullData){
+      ds.data=ds._fullData.map((v,i)=>i<=ep?v:null);
+    }
   });
-  // Redraw with clipped data appearance
+  // Move epoch annotation line
+  if(ch.lat.options.plugins.annotation?.annotations?.epochLine){
+    ch.lat.options.plugins.annotation.annotations.epochLine.xMin=ep;
+    ch.lat.options.plugins.annotation.annotations.epochLine.xMax=ep;
+  }
   ch.lat.update('none');
 }
 
@@ -109,8 +134,8 @@ function updLat(){
 function initSeg(){
   const ctx=document.getElementById('cS');
   ch.seg=new Chart(ctx,{type:'line',data:{labels:[],datasets:[
-    {label:'Satellite',data:[],borderColor:'#a78bfa',backgroundColor:'#a78bfa30',fill:true,tension:.3,borderWidth:2,pointRadius:1},
-    {label:'Ground',data:[],borderColor:'#f97316',backgroundColor:'#f9731630',fill:true,tension:.3,borderWidth:2,pointRadius:1},
+    {label:'Ground',data:[],borderColor:'#f97316',backgroundColor:'rgba(249,115,22,0.15)',fill:'origin',tension:.3,borderWidth:2,pointRadius:1,order:2},
+    {label:'Satellite',data:[],borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,0.15)',fill:'origin',tension:.3,borderWidth:2,pointRadius:1,order:1},
   ]},options:copts('RTT (ms)',true)});
 }
 
@@ -119,18 +144,31 @@ function updSeg(){
   const data=D.strategies[strat]?.epochs||[];
   const show=data.slice(0,ep+1);
   ch.seg.data.labels=show.map((_,i)=>i);
-  ch.seg.data.datasets[0].data=show.map(e=>e.avg_sat);
-  ch.seg.data.datasets[1].data=show.map(e=>e.avg_gnd);
+  // Ground shows total ground delay, Satellite shows satellite delay
+  // Ground is typically larger, so it renders behind
+  ch.seg.data.datasets[0].data=show.map(e=>e.avg_gnd);
+  ch.seg.data.datasets[1].data=show.map(e=>e.avg_sat);
   ch.seg.update('none');
 }
 
 /* ── Dest coverage ── */
 function initDst(){
   const ctx=document.getElementById('cD');
+  const isHorizontal=D.dest_names.length>15;
   ch.dst=new Chart(ctx,{type:'bar',data:{labels:D.dest_names,datasets:[{
     label:'PoPs cached',data:D.dest_names.map(()=>0),
     backgroundColor:'#34d39980',borderColor:'#34d399',borderWidth:1,borderRadius:3,
-  }]},options:{...copts('PoPs'),indexAxis:D.dest_names.length>15?'y':'x'}});
+  }]},options:{...copts('PoPs'),indexAxis:isHorizontal?'y':'x',
+    scales:{
+      ...(isHorizontal?{
+        x:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:9}},beginAtZero:true,title:{display:true,text:'PoPs',color:'#64748b',font:{family:'JetBrains Mono',size:10}}},
+        y:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{family:'JetBrains Mono',size:9}}}
+      }:{
+        x:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:8},maxRotation:90,minRotation:45}},
+        y:{grid:{color:'#1e293b'},ticks:{color:'#64748b',font:{size:9}},beginAtZero:true,title:{display:true,text:'PoPs',color:'#64748b',font:{family:'JetBrains Mono',size:10}}}
+      })
+    }
+  }});
 }
 
 function updDst(){
@@ -143,17 +181,18 @@ function updDst(){
 /* ── Heatmap (canvas) ── */
 function drawHM(){
   const cv=document.getElementById('cH'),tip=document.getElementById('tip');
+  if(!cv)return;
   const pops=D.pop_names,dests=D.dest_names,np=pops.length,nd=dests.length;
-  const padL=54;
-  const cW=Math.max(12,Math.min(20,Math.floor((Math.min(cv.parentElement.clientWidth,780)-padL)/nd)));
-  const cH=Math.max(8,Math.min(14,Math.floor(440/np)));
+  const padL=60;
+  const cW=Math.max(14,Math.min(22,Math.floor((Math.min(cv.parentElement.clientWidth,900)-padL)/nd)));
+  const cH=Math.max(10,Math.min(16,Math.floor(520/np)));
   cv.width=padL+nd*cW+4;cv.height=np*cH+4;
   const ctx=cv.getContext('2d');
   const matrix=D.coverage_matrix?.[strat]?.[ep]||[];
   const set=new Set(matrix.map(([p,d])=>`${p},${d}`));
   ctx.clearRect(0,0,cv.width,cv.height);
-  ctx.font='8px JetBrains Mono';ctx.fillStyle='#475569';ctx.textAlign='right';ctx.textBaseline='middle';
-  for(let i=0;i<np;i++)ctx.fillText(pops[i],padL-4,i*cH+cH/2);
+  ctx.font='9px JetBrains Mono';ctx.fillStyle='#64748b';ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let i=0;i<np;i++)ctx.fillText(pops[i],padL-6,i*cH+cH/2);
   for(let pi=0;pi<np;pi++)for(let di=0;di<nd;di++){
     ctx.fillStyle=set.has(`${pi},${di}`)?'#059669':'#1e293b';
     ctx.fillRect(padL+di*cW,pi*cH,cW-1,cH-1);
@@ -163,8 +202,17 @@ function drawHM(){
     const di=Math.floor((mx-padL)/cW),pi=Math.floor(my/cH);
     if(di>=0&&di<nd&&pi>=0&&pi<np){
       const ok=set.has(`${pi},${di}`);
-      tip.style.display='block';tip.style.left=(mx+14)+'px';tip.style.top=(my-10)+'px';
-      tip.innerHTML=`<span style="color:${ok?'#34d399':'#64748b'}">${ok?'●':'○'}</span> <b>${pops[pi]}</b> → <b>${dests[di]}</b>`;
+      // Account for scroll offset of parent container
+      const parent=cv.parentElement;
+      tip.style.display='block';
+      tip.style.left=(mx+14+parent.scrollLeft)+'px';
+      tip.style.top=(my-10+parent.scrollTop)+'px';
+      tip.textContent='';
+      const dot=document.createElement('span');
+      dot.style.color=ok?'#34d399':'#64748b';
+      dot.textContent=ok?'● ':'○ ';
+      tip.appendChild(dot);
+      tip.appendChild(document.createTextNode(pops[pi]+' \u2192 '+dests[di]));
     }else tip.style.display='none';
   };
   cv.onmouseleave=()=>{tip.style.display='none'};
@@ -178,7 +226,8 @@ function mkTabs(){
     keys.forEach(k=>{
       const b=document.createElement('button');
       b.className='tb m'+(k===strat?' on':'');b.textContent=klbl(k);
-      b.onclick=()=>{strat=k;document.querySelectorAll('.tb').forEach(t=>t.classList.toggle('on',t.textContent===klbl(k)));updAll()};
+      b.dataset.key=k;
+      b.onclick=()=>{strat=k;document.querySelectorAll('.tb').forEach(t=>t.classList.toggle('on',t.dataset.key===k));updAll()};
       c.appendChild(b);
     });
   });

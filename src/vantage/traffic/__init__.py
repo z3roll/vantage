@@ -14,6 +14,9 @@ from vantage.traffic.population import (
     DEFAULT_DESTINATIONS,
     EndpointPopulation,
 )
+from vantage.traffic.radar_data import PopHourlyDemand, ServiceMixSchedule
+from vantage.traffic.service_population import ServiceClassPopulation
+from vantage.traffic.time_varying import TimeVaryingServiceMixGenerator
 
 
 class TrafficGenerator(Protocol):
@@ -28,7 +31,11 @@ __all__ = [
     "DEFAULT_DESTINATIONS",
     "EndpointPopulation",
     "GravityGenerator",
+    "PopHourlyDemand",
     "RealisticGenerator",
+    "ServiceClassPopulation",
+    "ServiceMixSchedule",
+    "TimeVaryingServiceMixGenerator",
     "TrafficGenerator",
     "UniformGenerator",
 ]

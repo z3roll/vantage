@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -431,7 +431,7 @@ def main() -> None:
     }
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "generator": "vantage.config.preprocess",
         "source_hashes": {
             name: _sha256(path) for name, path in source_files.items()

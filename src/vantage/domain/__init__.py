@@ -16,6 +16,7 @@ from vantage.domain.satellite import (
     SatelliteState,
     ShellConfig,
 )
+from vantage.domain.service import SERVICE_CLASSES
 from vantage.domain.snapshot import (
     InfrastructureView,
     NetworkSnapshot,
@@ -39,6 +40,7 @@ __all__ = [
     "NetworkSnapshot",
     "PathAllocation",
     "PoP",
+    "SERVICE_CLASSES",
     "SatelliteState",
     "ShellConfig",
     "TrafficDemand",

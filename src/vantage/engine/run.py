@@ -17,11 +17,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from vantage.engine.context import RunContext
 from vantage.control.controller import SupportsGroundFeedback, TEController
-from vantage.engine_feedback import FeedbackObserver, GroundDelayFeedback
-from vantage.forward import realize
 from vantage.domain import EpochResult
+from vantage.engine.context import RunContext
+from vantage.engine.feedback import FeedbackObserver, GroundDelayFeedback
+from vantage.forward import realize
 from vantage.traffic import TrafficGenerator
 
 
@@ -104,7 +104,14 @@ def run(
         snapshot = context.world.snapshot_at(epoch, t)
         demand = traffic.generate(epoch)
         tables = controller.compute_tables(snapshot)
-        result = realize(tables, snapshot, demand, context)
+        result = realize(
+            tables,
+            snapshot,
+            demand,
+            context,
+            epoch_interval_s=config.epoch_interval_s,
+            simulation_start_utc=context.simulation_start_utc,
+        )
         epoch_results.append(result)
 
         # Feedback: delegate to observer

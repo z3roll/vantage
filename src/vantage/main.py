@@ -87,7 +87,6 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
                probe_budget: int, key: str):
     pop_names = [p.code for p in ground.pops]
     dest_names = [e.name for e in endpoints.values() if not e.name.startswith("terminal_")]
-    n_pops = len(pop_names)
 
     gk = GroundKnowledge(estimator=HaversineDelay(), pop_capacity=100, eviction=LRUEviction())
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
@@ -111,8 +110,8 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
     for epoch in range(config.num_epochs):
         t = epoch * EPOCH_INTERVAL
         snapshot = snapshots[epoch]
-        demand = traffic.generate(epoch)
 
+        demand = traffic.generate(epoch)
         probe_mgr.collect("active_probe", current_time_s=t)
         tables = ctrl.compute_tables(snapshot)
         result = realize(tables, snapshot, demand, ctx)

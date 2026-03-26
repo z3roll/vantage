@@ -16,9 +16,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Literal, Protocol
 
-from vantage.domain import EpochResult, Endpoint, PoP
+from vantage.domain import Endpoint, EpochResult, PoP
 from vantage.world.ground import GroundDelay, GroundKnowledge
-
 
 # ---------------------------------------------------------------------------
 # Probe target policy: decides WHAT each PoP should probe

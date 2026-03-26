@@ -13,9 +13,10 @@ All delays in ms.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from vantage.common import haversine_km
+from vantage.common.time import resolve_local_time
 from vantage.control.policy.common.utils import find_ingress_satellite
 from vantage.domain import (
     CostTables,
@@ -28,15 +29,15 @@ from vantage.domain import (
 if TYPE_CHECKING:
     from vantage.engine.context import RunContext
 
-# Sentinel: ground_cost not available → fallback to sat_cost only
-_NO_GROUND_DATA = -1.0
-
 
 def realize(
     tables: CostTables,
     snapshot: NetworkSnapshot,
     demand: TrafficDemand,
     context: RunContext,
+    *,
+    epoch_interval_s: float = 3600.0,
+    simulation_start_utc: datetime | None = None,
 ) -> EpochResult:
     """Terminal-side PoP selection + actual E2E delay computation.
 
@@ -141,11 +142,23 @@ def realize(
         # Uses ground_truth model (e.g., HaversineDelay) to simulate real delay.
         pop_obj = snapshot.infra.pop_by_code(best_pop)
         dst_ep = context.endpoints.get(flow_key.dst)
-        if pop_obj is not None and dst_ep is not None and ground_truth is not None:
+
+        if dst_ep is not None and pop_obj is not None and ground_truth is not None:
+            # Legacy path: geographic destination with lat/lon
             ground_rtt = ground_truth.estimate(
                 pop_obj.lat_deg, pop_obj.lon_deg,
                 dst_ep.lat_deg, dst_ep.lon_deg,
             ) * 2  # one-way → RTT
+        elif context.service_ground_delay is not None and pop_obj is not None:
+            # Service-class destination: use profiled model
+            local_hour, day_type = resolve_local_time(
+                demand.epoch, epoch_interval_s, simulation_start_utc,
+                getattr(context.service_ground_delay, "pop_timezones", {}),
+                best_pop,
+            )
+            ground_rtt = context.service_ground_delay.estimate_service(
+                best_pop, flow_key.dst, local_hour, day_type,
+            )
         else:
             ground_rtt = 0.0
 

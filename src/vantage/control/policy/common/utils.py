@@ -3,8 +3,6 @@
 Common helpers:
 - find_nearest_pop: geographic PoP selection
 - find_ingress_satellite: user→satellite uplink resolution
-
-Path enumeration and scoring are in candidate.py and scoring.py.
 """
 
 from __future__ import annotations
@@ -12,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from vantage.domain import AccessLink, Endpoint, PoP
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG, haversine_km
+from vantage.domain import AccessLink, Endpoint, PoP
 from vantage.world.satellite.visibility import SphericalAccessModel
 
 # Module-level singleton — SphericalAccessModel is stateless.

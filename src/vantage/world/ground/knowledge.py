@@ -9,8 +9,11 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Protocol
 
+from vantage.world.ground.cache_keys import encode_class_key, is_class_key
+
 if TYPE_CHECKING:
     from vantage.world.ground.delay import GroundDelay
+    from vantage.world.ground.profiled_delay import ServiceGroundDelay
 
 
 class CacheEvictionPolicy(Protocol):
@@ -123,9 +126,15 @@ class GroundKnowledge:
             return
 
         # New entry — check capacity
-        if self._pop_capacity > 0 and len(pop_cache) >= self._pop_capacity:
-            if self._eviction is not None:
-                victim = self._eviction.select_victim(pop_code, pop_cache)
+        if (
+            self._pop_capacity > 0
+            and len(pop_cache) >= self._pop_capacity
+            and self._eviction is not None
+        ):
+            # Class-level keys are protected from eviction
+            evictable = {k: v for k, v in pop_cache.items() if not is_class_key(k)}
+            if evictable:
+                victim = self._eviction.select_victim(pop_code, evictable)
                 if victim is not None:
                     del pop_cache[victim]
 
@@ -158,9 +167,7 @@ class GroundKnowledge:
         if cached is not None:
             return cached
         if self._estimator is not None:
-            return self._estimator.estimate(
-                pop_lat, pop_lon, dest_lat, dest_lon
-            ) * 2
+            return self._estimator.estimate(pop_lat, pop_lon, dest_lat, dest_lon) * 2
         return 0.0
 
     def has(self, dest: str) -> bool:
@@ -199,3 +206,62 @@ class GroundKnowledge:
         if best_pop is None:
             return None
         return best_pop, best_delay
+
+    # ── Service-class cache methods ──────────────────────
+
+    def put_class(self, pop_code: str, service_class: str, delay_rtt: float) -> None:
+        """Write a class-level ground delay RTT value.
+
+        Class-level keys are protected from eviction by LRU/LFU policies.
+        """
+        key = encode_class_key(service_class)
+        self.put(pop_code, key, delay_rtt)
+
+    def put_class_time(
+        self,
+        pop_code: str,
+        service_class: str,
+        day_type: str,
+        local_hour: int,
+        delay_rtt: float,
+    ) -> None:
+        """Write a time-scoped class-level ground delay RTT value."""
+        key = encode_class_key(service_class, day_type, local_hour)
+        self.put(pop_code, key, delay_rtt)
+
+    def get_class(
+        self,
+        pop_code: str,
+        service_class: str,
+        day_type: str | None = None,
+        local_hour: int | None = None,
+    ) -> float | None:
+        """Read a class-level ground delay RTT."""
+        if day_type is not None and local_hour is not None:
+            key = encode_class_key(service_class, day_type, local_hour)
+            val = self.get(pop_code, key)
+            if val is not None:
+                return val
+        key = encode_class_key(service_class)
+        return self.get(pop_code, key)
+
+    def get_class_or_estimate(
+        self,
+        pop_code: str,
+        service_class: str,
+        service_estimator: ServiceGroundDelay | None = None,
+        local_hour: int = 12,
+        day_type: str = "weekday",
+    ) -> float:
+        """Read class-level cache, falling back to ServiceGroundDelay estimation.
+
+        If an estimate is computed, it is cached for future lookups.
+        """
+        cached = self.get_class(pop_code, service_class, day_type, local_hour)
+        if cached is not None:
+            return cached
+        if service_estimator is not None:
+            rtt = service_estimator.estimate_service(pop_code, service_class, local_hour, day_type)
+            self.put_class_time(pop_code, service_class, day_type, local_hour, rtt)
+            return rtt
+        return 0.0

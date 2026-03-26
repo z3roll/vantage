@@ -7,16 +7,17 @@ Current implementation: XML-based (matching StarPerf's approach).
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from math import sqrt
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 from sgp4.api import WGS72, Satrec
 from skyfield.api import EarthSatellite, load, wgs84
 
-from vantage.common.constants import EARTH_RADIUS_KM, EARTH_RADIUS_M
+from vantage.common.constants import EARTH_RADIUS_M
 from vantage.domain import ConstellationConfig, ShellConfig
 
 # Orbital mechanics constants (StarPerf-specific)

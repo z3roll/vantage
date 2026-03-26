@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from vantage.common import haversine_km
 from vantage.domain import FlowKey, TrafficDemand
 from vantage.traffic.population import EndpointPopulation
-from vantage.common import haversine_km
 
 
 class UniformGenerator:

@@ -15,9 +15,8 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from vantage.domain import AccessLink
-
 from vantage.common.constants import C_VACUUM_KM_S, EARTH_RADIUS_KM
+from vantage.domain import AccessLink
 
 __all__ = [
     "AccessModel",

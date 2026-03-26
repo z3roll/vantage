@@ -1,5 +1,5 @@
-"""Policy subsystem: controllers, candidate enumeration, and scoring.
+"""Policy subsystem: TE controller strategies for PoP selection.
 
-New code should import from ``vantage.policy`` instead of
-``vantage.control.policy``.
+Each policy implements the TEController protocol, producing CostTables
+that terminals use for PoP selection in the data plane (forward.py).
 """

@@ -7,6 +7,11 @@ from vantage.world.ground.delay import (
 )
 from vantage.world.ground.infrastructure import GroundInfrastructure
 from vantage.world.ground.knowledge import GroundKnowledge
+from vantage.world.ground.profiled_delay import (
+    ProfiledGroundDelay,
+    ServiceGroundDelay,
+    create_profiled_delay,
+)
 
 __all__ = [
     "FiberGraphDelay",
@@ -14,4 +19,7 @@ __all__ = [
     "GroundInfrastructure",
     "GroundKnowledge",
     "HaversineDelay",
+    "ProfiledGroundDelay",
+    "ServiceGroundDelay",
+    "create_profiled_delay",
 ]

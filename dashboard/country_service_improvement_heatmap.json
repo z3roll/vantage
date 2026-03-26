@@ -1,0 +1,79 @@
+{
+  "svg": "/Users/zerol/PhD/argus/dashboard/country_service_improvement_heatmap.svg",
+  "csv": "/Users/zerol/PhD/argus/dashboard/country_service_improvement_heatmap.csv",
+  "countries": [
+    "CA",
+    "NZ",
+    "AR",
+    "BG",
+    "GB",
+    "BD",
+    "US",
+    "AU",
+    "CO",
+    "QA",
+    "DE",
+    "ZA",
+    "IT",
+    "PH",
+    "NG",
+    "ES",
+    "JP",
+    "CL",
+    "PL"
+  ],
+  "services": [
+    "video_streaming",
+    "social_media",
+    "messaging",
+    "music_audio",
+    "news",
+    "generative_ai",
+    "gaming",
+    "financial_services",
+    "ecommerce",
+    "general_web"
+  ],
+  "top_country_avg_pct": [
+    {
+      "country_code": "CA",
+      "avg_total_improve_pct": 47.802420404298566
+    },
+    {
+      "country_code": "NZ",
+      "avg_total_improve_pct": 44.53564114711279
+    },
+    {
+      "country_code": "AR",
+      "avg_total_improve_pct": 36.965814617609915
+    },
+    {
+      "country_code": "BG",
+      "avg_total_improve_pct": 36.005059836571064
+    },
+    {
+      "country_code": "GB",
+      "avg_total_improve_pct": 32.94853708420561
+    },
+    {
+      "country_code": "BD",
+      "avg_total_improve_pct": 21.449135712250275
+    },
+    {
+      "country_code": "US",
+      "avg_total_improve_pct": 19.93939889269566
+    },
+    {
+      "country_code": "AU",
+      "avg_total_improve_pct": 17.079147419601455
+    },
+    {
+      "country_code": "CO",
+      "avg_total_improve_pct": 14.469095419537709
+    },
+    {
+      "country_code": "QA",
+      "avg_total_improve_pct": 11.82995807933958
+    }
+  ]
+}

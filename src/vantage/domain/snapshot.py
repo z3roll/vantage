@@ -7,6 +7,7 @@ All delay values in ms.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 from vantage.domain.ground import GroundStation, GSPoPEdge, PoP
 from vantage.domain.satellite import SatelliteState
 
