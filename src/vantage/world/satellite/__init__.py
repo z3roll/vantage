@@ -10,6 +10,7 @@ routing: fixed topology built once, only edge weights recomputed per timeslot.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from types import MappingProxyType
 
 from vantage.domain import (
@@ -69,6 +70,22 @@ class SatelliteSegment:
         # Timeslot → SatelliteState cache
         self._state_cache: dict[int, SatelliteState] = {}
 
+    @property
+    def shell(self) -> ShellConfig:
+        """Return the :class:`ShellConfig` this segment operates on.
+
+        Cached at construction via :meth:`_get_shell`; exposed as a
+        public read-only property so callers (capacity views, multi-
+        shell aware policies, etc.) don't have to reach into private
+        state.
+        """
+        return self._shell
+
+    @property
+    def ground_stations(self) -> tuple[GroundStation, ...]:
+        """Static ground-station tuple this segment was configured with."""
+        return self._ground_stations
+
     def state_at(self, timeslot: int) -> SatelliteState:
         """Compute full satellite segment state at a given timeslot.
 
@@ -111,20 +128,22 @@ class SatelliteSegment:
         if not self._ground_stations or self._visibility is None:
             return GatewayAttachments(attachments={})
 
-        attachments: dict[str, tuple[AccessLink, ...]] = {}
-        for gs in self._ground_stations:
-            if not gs.enabled:
-                continue
-            visible = self._visibility.compute_access(
-                gs.lat_deg,
-                gs.lon_deg,
-                0.0,
-                positions,
-                gs.min_elevation_deg,
+        enabled_gs = [gs for gs in self._ground_stations if gs.enabled]
+        vis = self._visibility
+        top_k = self._gateway_top_k
+
+        def _compute_one(gs: GroundStation) -> tuple[str, tuple[AccessLink, ...]] | None:
+            visible = vis.compute_access(
+                gs.lat_deg, gs.lon_deg, 0.0, positions, gs.min_elevation_deg,
             )
-            top_k = visible[: self._gateway_top_k]
-            if top_k:
-                attachments[gs.gs_id] = top_k
+            links = visible[:top_k]
+            return (gs.gs_id, links) if links else None
+
+        attachments: dict[str, tuple[AccessLink, ...]] = {}
+        with ThreadPoolExecutor() as pool:
+            for result in pool.map(_compute_one, enabled_gs):
+                if result is not None:
+                    attachments[result[0]] = result[1]
 
         return GatewayAttachments(attachments=MappingProxyType(attachments))
 

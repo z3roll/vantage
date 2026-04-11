@@ -7,8 +7,10 @@ physical network state. Only builds snapshots — no routing policy.
 from __future__ import annotations
 
 from vantage.domain import (
+    GroundStation,
     InfrastructureView,
     NetworkSnapshot,
+    ShellConfig,
 )
 from vantage.world.ground import GroundInfrastructure
 from vantage.world.satellite import SatelliteSegment
@@ -42,6 +44,20 @@ class WorldModel:
     @property
     def calibration(self) -> SatelliteDelayCalibration | None:
         return self._calibration
+
+    @property
+    def shell(self) -> ShellConfig:
+        """Return the satellite segment's :class:`ShellConfig`.
+
+        Exposed so capacity views (and future multi-shell aware
+        consumers) don't have to reach into private state.
+        """
+        return self._satellite.shell
+
+    @property
+    def ground_stations(self) -> tuple[GroundStation, ...]:
+        """Return the static ground-station tuple from infrastructure."""
+        return self._ground.ground_stations
 
     def snapshot_at(self, epoch: int, time_s: float) -> NetworkSnapshot:
         """Build a complete, frozen network snapshot.
