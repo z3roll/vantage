@@ -46,6 +46,14 @@ DATA_DIR = Path(__file__).resolve().parent / "config"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TRACEROUTE_DIR = PROJECT_ROOT / "data" / "probe_trace" / "traceroute"
 
+# Global land mask used to enumerate every res-5 H3 hex that could host
+# a user. Natural Earth's country boundary set is the simplest and most
+# widely available source — it already ships in ``dashboard/`` from a
+# prior session. The enumerated cell set is cached under
+# data/processed/ so subsequent runs skip the polygon sweep.
+LAND_GEOJSON = PROJECT_ROOT / "dashboard" / "ne_countries.geojson"
+CELL_CACHE = PROJECT_ROOT / "data" / "processed" / "land_cells_res5.json"
+
 # Constellation XML location. Environment override wins so CI and
 # non-Mac workstations don't have to patch the module. TODO: the
 # legacy main.py still hardcodes the same path; fold these into a
@@ -114,11 +122,23 @@ def _setup():
     endpoints: dict[str, object] = {s.name: s for s in population.sources}
     endpoints.update({d.name: d for d in population.destinations})
 
-    # CellGrid is built once from every endpoint name we might see as a
-    # flow source; the legacy forward never needed this because PoP
-    # assignment was per-flow.
-    cell_grid = CellGrid.from_endpoints(
-        [(e.name, e.lat_deg, e.lon_deg) for e in endpoints.values()]
+    # Global cell grid from the Natural Earth land mask. Every res-5
+    # hex whose centre is inside any country polygon becomes a known
+    # cell (~500k globally), so a satellite's "visible cell" query
+    # reflects its real ~9500-cell FOR rather than the handful of
+    # endpoint hexes. Endpoints are augmented on top so every
+    # flow source still resolves even if its hex was missed by the
+    # polygon sweep (common for coastal locations).
+    if not LAND_GEOJSON.exists():
+        raise FileNotFoundError(
+            f"Natural Earth land mask not found at {LAND_GEOJSON}. "
+            "Move or symlink ne_countries.geojson here, or pass a "
+            "different path to CellGrid.from_polygon_coverage."
+        )
+    cell_grid = CellGrid.from_polygon_coverage(
+        LAND_GEOJSON,
+        endpoints=[(e.name, e.lat_deg, e.lon_deg) for e in endpoints.values()],
+        cache_path=CELL_CACHE,
     )
 
     traffic = RealisticGenerator(
