@@ -17,3 +17,10 @@ DEFAULT_DETOUR_FACTOR = 1.5
 
 DEFAULT_MIN_ELEVATION_DEG = 25.0
 """Default minimum satellite elevation angle for user access links (degrees)."""
+
+DEFAULT_FLOW_CIR_GBPS = 0.005
+"""Per-flow Committed Information Rate (Gbps).
+
+5 Mbps matches the household CIR declared in Starlink's RDOF filings.
+Used by the SLA subsystem to decide whether a flow's served throughput
+meets its guarantee."""
