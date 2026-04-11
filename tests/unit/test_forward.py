@@ -25,7 +25,14 @@ from vantage.domain import (
     SatelliteState,
     TrafficDemand,
 )
-from vantage.world.ground import GroundKnowledge, HaversineDelay
+from vantage.world.ground import GroundKnowledge, MeasuredGroundDelay
+
+
+def _stub_ground_truth() -> MeasuredGroundDelay:
+    """Hand-injected measurement table for the simple 2-sat fixture."""
+    return MeasuredGroundDelay(
+        one_way_rtt_ms={("pop", "google"): 2.5},  # 5 ms round-trip
+    )
 
 
 @pytest.fixture
@@ -47,7 +54,7 @@ def simple_snapshot() -> NetworkSnapshot:
         delay_matrix=delay_matrix, predecessor_matrix=pred_matrix,
         gateway_attachments=gw,
     )
-    gs = GroundStation("gs1", 0.5, 0.5, "XX", "Test", 8, 25.0, True, 2.1, 1.3, 25000.0, 32000.0, False)
+    gs = GroundStation("gs1", 0.5, 0.5, "XX", "Test", 8, 25.0, True, 2.1, 1.3, 80.0, False)
     pop = PoP("pop1", "pop", "POP", 0.5, 0.5)
     edge = GSPoPEdge("gs1", "pop", 10.0, 0.05, 100.0)
     infra = InfrastructureView(
@@ -69,7 +76,7 @@ def simple_context() -> RunContext:
     return RunContext(
         world=_StubWorld(),  # type: ignore[arg-type]
         endpoints=endpoints,
-        ground_knowledge=GroundKnowledge(estimator=HaversineDelay()),
+        ground_knowledge=GroundKnowledge(estimator=_stub_ground_truth()),
     )
 
 
@@ -95,8 +102,8 @@ class TestForward:
         assert flow.pop_code == "pop"
         assert flow.demand_gbps == 0.01
         assert flow.total_rtt > 0
-        # ground_rtt from HaversineDelay ground truth (not from cache)
-        assert flow.ground_rtt > 0
+        # ground_rtt = measurement table one-way (2.5 ms) × 2 = 5 ms
+        assert flow.ground_rtt == pytest.approx(5.0)
 
     def test_total_equals_sum(
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
@@ -122,7 +129,7 @@ class TestForward:
                 "user_a": Endpoint("user_a", 0.0, 0.0),
                 "google": Endpoint("google", 37.4, -122.1),
             },
-            ground_knowledge=GroundKnowledge(estimator=HaversineDelay()),
+            ground_knowledge=GroundKnowledge(estimator=_stub_ground_truth()),
         )
         tables = CostTables(
             epoch=0,
@@ -133,4 +140,7 @@ class TestForward:
             FlowKey("user_a", "google"): 0.01,
         }))
         result = realize(tables, simple_snapshot, demand, ctx)
-        assert result.flow_outcomes[0].ground_rtt > 0
+        # Measurement table returns 2.5 ms one-way → 5.0 ms round-trip.
+        # A weaker "> 0" assertion would silently pass a fabricated
+        # fallback value, which is exactly what this refactor forbids.
+        assert result.flow_outcomes[0].ground_rtt == pytest.approx(5.0)

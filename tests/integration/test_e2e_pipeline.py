@@ -13,7 +13,11 @@ from vantage.engine import RunConfig, run
 from vantage.domain import Endpoint
 from vantage.traffic import EndpointPopulation, UniformGenerator
 from vantage.world.satellite.visibility import SphericalAccessModel
-from vantage.world.ground import GroundInfrastructure, GroundKnowledge, HaversineDelay
+from vantage.world.ground import (
+    GroundInfrastructure,
+    GroundKnowledge,
+    MeasuredGroundDelay,
+)
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
 from vantage.world.satellite.topology import PlusGridTopology
@@ -21,6 +25,9 @@ from vantage.world.world import WorldModel
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "src" / "vantage" / "config"
 STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink.xml")
+TRACEROUTE_DIR = (
+    Path(__file__).resolve().parents[2] / "data" / "probe_trace" / "traceroute"
+)
 
 
 @pytest.fixture(scope="module")
@@ -49,10 +56,11 @@ def endpoints() -> dict[str, Endpoint]:
 
 
 def _make_context(world: WorldModel, endpoints: dict[str, Endpoint]) -> RunContext:
+    ground_truth = MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
     return RunContext(
         world=world,
         endpoints=endpoints,
-        ground_knowledge=GroundKnowledge(estimator=HaversineDelay()),
+        ground_knowledge=GroundKnowledge(estimator=ground_truth),
     )
 
 

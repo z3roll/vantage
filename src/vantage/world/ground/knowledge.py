@@ -153,22 +153,28 @@ class GroundKnowledge:
             self._eviction.record_access(pop_code, dest)
         return val
 
-    def get_or_estimate(
-        self,
-        pop_code: str,
-        dest: str,
-        pop_lat: float,
-        pop_lon: float,
-        dest_lat: float,
-        dest_lon: float,
-    ) -> float:
-        """Read cached value, falling back to L2/L3 estimation."""
+    def get_or_estimate(self, pop_code: str, dest: str) -> float:
+        """Read cached value, falling back to the measurement estimator.
+
+        The estimator (when present) is a :class:`GroundDelay` that
+        returns **one-way** RTT in ms. We double it here so consumers
+        get a round-trip value consistent with the cached values.
+
+        Raises:
+            KeyError: If the pair has neither a cached entry nor a
+                measurement available in the estimator. Callers that
+                want a graceful miss should call :meth:`get` and
+                handle ``None`` themselves.
+        """
         cached = self.get(pop_code, dest)
         if cached is not None:
             return cached
-        if self._estimator is not None:
-            return self._estimator.estimate(pop_lat, pop_lon, dest_lat, dest_lon) * 2
-        return 0.0
+        if self._estimator is None:
+            raise KeyError(
+                f"no cached RTT and no estimator for "
+                f"(pop={pop_code!r}, dest={dest!r})"
+            )
+        return self._estimator.estimate(pop_code, dest) * 2
 
     def has(self, dest: str) -> bool:
         """Check if any PoP has delay data for this destination."""
@@ -256,12 +262,22 @@ class GroundKnowledge:
         """Read class-level cache, falling back to ServiceGroundDelay estimation.
 
         If an estimate is computed, it is cached for future lookups.
+
+        Raises:
+            KeyError: If the pair has no cached class-level entry and
+                no ``service_estimator`` is provided. The strict
+                measurement contract in this codebase forbids a silent
+                zero fallback; callers that want a graceful miss should
+                call :meth:`get_class` and handle ``None`` themselves.
         """
         cached = self.get_class(pop_code, service_class, day_type, local_hour)
         if cached is not None:
             return cached
-        if service_estimator is not None:
-            rtt = service_estimator.estimate_service(pop_code, service_class, local_hour, day_type)
-            self.put_class_time(pop_code, service_class, day_type, local_hour, rtt)
-            return rtt
-        return 0.0
+        if service_estimator is None:
+            raise KeyError(
+                f"no cached class-level RTT and no service_estimator for "
+                f"(pop={pop_code!r}, service={service_class!r})"
+            )
+        rtt = service_estimator.estimate_service(pop_code, service_class, local_hour, day_type)
+        self.put_class_time(pop_code, service_class, day_type, local_hour, rtt)
+        return rtt

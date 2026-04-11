@@ -181,10 +181,14 @@ class ProbeManager:
                 dst_ep = self._endpoints.get(dest_name)
                 if dst_ep is None:
                     continue
-                delay_rtt = self._ground_truth.estimate(
-                    pop.lat_deg, pop.lon_deg,
-                    dst_ep.lat_deg, dst_ep.lon_deg,
-                ) * 2
-                self._knowledge.put(pop.code, dest_name, delay_rtt)
+                # The ground truth is a measurement table keyed by
+                # (pop_code, dest_name). Pairs that were never measured
+                # raise KeyError — the probe simply skips them instead
+                # of fabricating a geographic estimate.
+                try:
+                    one_way_ms = self._ground_truth.estimate(pop.code, dest_name)
+                except KeyError:
+                    continue
+                self._knowledge.put(pop.code, dest_name, one_way_ms * 2)
                 written += 1
         return written

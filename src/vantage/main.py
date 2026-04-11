@@ -2,6 +2,7 @@
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from vantage.control.controller import create_controller
@@ -10,7 +11,11 @@ from vantage.engine import RunConfig, RunContext
 from vantage.forward import realize
 from vantage.probe import ProbeManager, TrafficDrivenPolicy
 from vantage.traffic import EndpointPopulation, RealisticGenerator
-from vantage.world.ground import GroundInfrastructure, GroundKnowledge, HaversineDelay
+from vantage.world.ground import (
+    GroundInfrastructure,
+    GroundKnowledge,
+    MeasuredGroundDelay,
+)
 from vantage.world.ground.knowledge import LRUEviction
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
@@ -19,8 +24,10 @@ from vantage.world.satellite.visibility import SphericalAccessModel
 from vantage.world.world import WorldModel
 
 DATA_DIR = Path(__file__).resolve().parent / "config"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TRACEROUTE_DIR = PROJECT_ROOT / "data" / "probe_trace" / "traceroute"
 STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink.xml")
-DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
+DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 
 NUM_EPOCHS = 30
 EPOCH_INTERVAL = 300.0
@@ -50,7 +57,11 @@ def setup():
 
     print("Precomputing snapshots...", end=" ", flush=True)
     t0 = time.perf_counter()
-    snapshots = [world.snapshot_at(e, e * EPOCH_INTERVAL) for e in range(NUM_EPOCHS)]
+    with ThreadPoolExecutor() as pool:
+        snapshots = list(pool.map(
+            lambda e: world.snapshot_at(e, e * EPOCH_INTERVAL),
+            range(NUM_EPOCHS),
+        ))
     print(f"{time.perf_counter() - t0:.1f}s")
 
     return world, ground, endpoints, population, traffic, config, snapshots
@@ -58,7 +69,8 @@ def setup():
 
 def run_nearest_pop(world, ground, endpoints, traffic, config, snapshots):
     ctrl = create_controller("nearest_pop")
-    gk = GroundKnowledge(estimator=HaversineDelay())
+    ground_truth = MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
+    gk = GroundKnowledge(estimator=ground_truth)
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
 
     epoch_data = []
@@ -88,13 +100,16 @@ def run_greedy(world, ground, endpoints, traffic, config, snapshots,
     pop_names = [p.code for p in ground.pops]
     dest_names = [e.name for e in endpoints.values() if not e.name.startswith("terminal_")]
 
-    gk = GroundKnowledge(estimator=HaversineDelay(), pop_capacity=100, eviction=LRUEviction())
+    ground_truth = MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
+    gk = GroundKnowledge(
+        estimator=ground_truth, pop_capacity=100, eviction=LRUEviction()
+    )
     ctx = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk)
     ctrl = VantageGreedyController(endpoints=endpoints, ground_knowledge=gk)
 
     target_policy = TrafficDrivenPolicy()
     probe_mgr = ProbeManager(
-        ground_truth=HaversineDelay(),
+        ground_truth=ground_truth,
         knowledge=gk,
         pops=ground.pops,
         endpoints=endpoints,

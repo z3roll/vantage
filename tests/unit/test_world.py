@@ -1,91 +1,170 @@
-"""Tests for WorldModel, NetworkSnapshot, and GroundDelayModel."""
+"""Tests for WorldModel, NetworkSnapshot, and MeasuredGroundDelay."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pytest
 
 from vantage.domain import NetworkSnapshot
-from vantage.world.satellite.visibility import SphericalAccessModel
-from vantage.world.ground import FiberGraphDelay, GroundInfrastructure, HaversineDelay
+from vantage.world.ground import (
+    DEFAULT_MEASURED_SERVICES,
+    GroundInfrastructure,
+    MeasuredGroundDelay,
+)
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
 from vantage.world.satellite.topology import PlusGridTopology
+from vantage.world.satellite.visibility import SphericalAccessModel
 from vantage.world.world import WorldModel
+
+TRACEROUTE_DIR = (
+    Path(__file__).resolve().parents[2] / "data" / "probe_trace" / "traceroute"
+)
 
 
 # ---------------------------------------------------------------------------
-# GroundDelayModel
+# MeasuredGroundDelay
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestHaversineDelay:
-    """Test haversine-based ground delay estimation."""
+class TestMeasuredGroundDelayInMemory:
+    """Direct construction + strict lookup semantics."""
 
-    def test_same_location_zero_delay(self) -> None:
-        model = HaversineDelay()
-        delay = model.estimate(0.0, 0.0, 0.0, 0.0)
-        assert delay == 0.0
+    def test_lookup_returns_measured_value(self) -> None:
+        model = MeasuredGroundDelay(
+            one_way_rtt_ms={("fra", "google"): 12.5, ("fra", "facebook"): 9.75},
+        )
+        assert model.estimate("fra", "google") == 12.5
+        assert model.estimate("fra", "facebook") == 9.75
 
-    def test_delay_increases_with_distance(self) -> None:
-        model = HaversineDelay()
-        d1 = model.estimate(0.0, 0.0, 1.0, 0.0)  # ~111 km
-        d2 = model.estimate(0.0, 0.0, 10.0, 0.0)  # ~1111 km
-        assert d2 > d1
+    def test_unknown_pair_raises(self) -> None:
+        model = MeasuredGroundDelay(one_way_rtt_ms={("fra", "google"): 12.5})
+        with pytest.raises(KeyError, match="no measured ground RTT"):
+            model.estimate("fra", "wikipedia")
+        with pytest.raises(KeyError, match="no measured ground RTT"):
+            model.estimate("lhr", "google")
 
-    def test_delay_is_positive(self) -> None:
-        model = HaversineDelay()
-        delay = model.estimate(40.0, -74.0, 37.0, -122.0)  # NY → SF
-        assert delay > 0
+    def test_empty_raises_on_every_lookup(self) -> None:
+        model = MeasuredGroundDelay.empty()
+        assert len(model) == 0
+        with pytest.raises(KeyError):
+            model.estimate("fra", "google")
 
-    def test_ny_to_sf_realistic(self) -> None:
-        """NY → SF ~3900 km, fiber ~29 ms one-way with 1.5x detour."""
-        model = HaversineDelay()
-        delay = model.estimate(40.7, -74.0, 37.8, -122.4)
-        # 3900 * 1.5 / 200000 * 1000 ≈ 29 ms
-        assert 20 < delay < 40
+    def test_has_and_pops_and_destinations(self) -> None:
+        model = MeasuredGroundDelay(
+            one_way_rtt_ms={
+                ("fra", "google"): 1.0,
+                ("fra", "facebook"): 2.0,
+                ("lhr", "google"): 3.0,
+            }
+        )
+        assert model.has("fra", "google")
+        assert not model.has("lhr", "wikipedia")
+        assert model.pops() == frozenset({"fra", "lhr"})
+        assert model.destinations() == frozenset({"google", "facebook"})
+        assert len(model) == 3
 
-    def test_custom_fiber_speed(self) -> None:
-        fast = HaversineDelay(c_fiber_km_s=300_000.0, detour_factor=1.0)
-        slow = HaversineDelay(c_fiber_km_s=150_000.0, detour_factor=1.0)
-        d_fast = fast.estimate(0.0, 0.0, 10.0, 0.0)
-        d_slow = slow.estimate(0.0, 0.0, 10.0, 0.0)
-        assert d_slow > d_fast
+    def test_direct_dict_is_frozen_on_construction(self) -> None:
+        live: dict[tuple[str, str], float] = {("fra", "google"): 10.0}
+        model = MeasuredGroundDelay(one_way_rtt_ms=live)
+        # Tampering with the original dict must not change the model.
+        live[("fra", "google")] = 0.0
+        live[("hacker", "google")] = 9999.0
+        assert model.estimate("fra", "google") == 10.0
+        assert not model.has("hacker", "google")
+
+    def test_frozen_dataclass(self) -> None:
+        model = MeasuredGroundDelay(one_way_rtt_ms={("fra", "google"): 10.0})
+        with pytest.raises(AttributeError):
+            model.one_way_rtt_ms = MappingProxyType({})  # type: ignore[misc]
 
 
-@pytest.mark.integration
-class TestFiberGraphDelay:
-    """Test fiber-graph-based ground delay."""
+@pytest.mark.unit
+class TestMeasuredGroundDelayFromTraceroute:
+    """Loader semantics over the real traceroute summaries in data/."""
 
     @pytest.fixture
-    def model(self) -> FiberGraphDelay:
-        path = Path(__file__).resolve().parents[2] / "data/processed/fiber_graph.json"
-        return FiberGraphDelay(path)
+    def model(self) -> MeasuredGroundDelay:
+        return MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
 
-    def test_same_location_near_zero(self, model: FiberGraphDelay) -> None:
-        delay = model.estimate(0.0, 0.0, 0.01, 0.01)
-        assert delay < 1.0  # < 1 ms
+    def test_covers_29_pops_times_3_services(
+        self, model: MeasuredGroundDelay
+    ) -> None:
+        """Expected shape: 29 PoPs × 3 services = 87 measured pairs."""
+        assert len(model) == 29 * len(DEFAULT_MEASURED_SERVICES)
+        assert len(model.pops()) == 29
+        assert model.destinations() == frozenset(DEFAULT_MEASURED_SERVICES)
 
-    def test_delay_positive(self, model: FiberGraphDelay) -> None:
-        # NY → SF
-        delay = model.estimate(40.7, -74.0, 37.8, -122.4)
-        assert delay > 0
+    def test_every_measured_pair_is_positive(
+        self, model: MeasuredGroundDelay
+    ) -> None:
+        for pop in model.pops():
+            for svc in DEFAULT_MEASURED_SERVICES:
+                assert model.estimate(pop, svc) > 0
 
-    def test_delay_increases_with_distance(self, model: FiberGraphDelay) -> None:
-        d_short = model.estimate(51.5, -0.1, 48.9, 2.3)   # London → Paris
-        d_long = model.estimate(51.5, -0.1, 35.7, 139.7)   # London → Tokyo
-        assert d_long > d_short
+    def test_values_are_one_way_not_round_trip(
+        self, model: MeasuredGroundDelay
+    ) -> None:
+        """Loader divides round-trip measurements by 2.
 
-    def test_fiber_longer_than_haversine(self, model: FiberGraphDelay) -> None:
-        """Fiber path should be longer than straight-line haversine."""
-        haversine = HaversineDelay(c_fiber_km_s=200_000.0, detour_factor=1.0)
-        fiber_delay = model.estimate(51.5, -0.1, 48.9, 2.3)
-        haversine_delay = haversine.estimate(51.5, -0.1, 48.9, 2.3)
-        # Fiber graph path >= haversine (usually longer due to routing)
-        assert fiber_delay >= haversine_delay * 0.9  # allow 10% tolerance
+        We can't verify the exact source value here, but a sanity
+        bound is: every one-way RTT should be below the slowest
+        plausible trans-Pacific round-trip (~300 ms one-way = 600 ms
+        RTT), well above zero.
+        """
+        for pop in model.pops():
+            for svc in DEFAULT_MEASURED_SERVICES:
+                v = model.estimate(pop, svc)
+                assert 0 < v < 300
+
+    def test_unknown_pair_still_raises(
+        self, model: MeasuredGroundDelay
+    ) -> None:
+        with pytest.raises(KeyError):
+            model.estimate("fra", "tencent")  # tencent is not measured
+        with pytest.raises(KeyError):
+            model.estimate("narita_fake", "google")
+
+    def test_missing_directory_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            MeasuredGroundDelay.from_traceroute_dir(tmp_path / "nope")
+
+    def test_empty_directory_raises(self, tmp_path: Path) -> None:
+        (tmp_path / "traceroute").mkdir()
+        with pytest.raises(FileNotFoundError, match="no traceroute summary"):
+            MeasuredGroundDelay.from_traceroute_dir(tmp_path / "traceroute")
+
+    def test_partial_directory_raises_by_default(self, tmp_path: Path) -> None:
+        """With the default ``require_all_services=True``, a directory
+        containing only a subset of the requested service files must
+        raise so experiments can't silently degrade to partial data."""
+        import shutil
+
+        sub = tmp_path / "traceroute"
+        sub.mkdir()
+        # Copy only google's file, leave facebook/wikipedia missing.
+        shutil.copy(TRACEROUTE_DIR / "google_summary.json", sub / "google_summary.json")
+        with pytest.raises(FileNotFoundError, match="require_all_services"):
+            MeasuredGroundDelay.from_traceroute_dir(sub)
+
+    def test_partial_directory_accepted_when_explicit(self, tmp_path: Path) -> None:
+        """Opting in via ``require_all_services=False`` returns the
+        partial table — this is the tooling/test escape hatch."""
+        import shutil
+
+        sub = tmp_path / "traceroute"
+        sub.mkdir()
+        shutil.copy(TRACEROUTE_DIR / "google_summary.json", sub / "google_summary.json")
+        model = MeasuredGroundDelay.from_traceroute_dir(
+            sub, require_all_services=False
+        )
+        # Only google should be present.
+        assert model.destinations() == frozenset({"google"})
+        assert len(model) == len(model.pops())  # 1 service × 29 PoPs
 
 
 # ---------------------------------------------------------------------------
