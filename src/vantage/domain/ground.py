@@ -10,7 +10,16 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class GroundStation:
-    """A Starlink ground station (gateway)."""
+    """A Starlink ground station (gateway).
+
+    ``max_capacity`` is the aggregate per-GS feeder throughput in
+    **Gbps**: the total traffic this station can absorb across all of
+    its Ka antennas from every satellite it is simultaneously serving.
+    A typical 9-antenna site handles roughly ``9 × 10 = 90 Gbps``, so
+    the preprocessor derives the value as ``num_antennas × 10.0``.
+    This field is the authoritative per-GS feeder cap used by
+    :class:`vantage.domain.capacity_view.CapacityView`.
+    """
 
     gs_id: str
     lat_deg: float
@@ -22,8 +31,7 @@ class GroundStation:
     enabled: bool
     uplink_ghz: float
     downlink_ghz: float
-    min_capacity: float
-    max_capacity: float
+    max_capacity: float  # per-GS aggregate feeder Gbps
     temporary: bool
 
 

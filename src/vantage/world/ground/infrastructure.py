@@ -13,7 +13,7 @@ from vantage.domain import GroundStation, GSPoPEdge, PoP
 
 _T = TypeVar("_T", GroundStation, PoP, GSPoPEdge)
 
-EXPECTED_SCHEMA_VERSION = 1
+EXPECTED_SCHEMA_VERSION = 2
 
 
 class GroundInfrastructure:

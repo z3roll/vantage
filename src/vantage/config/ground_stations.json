@@ -10,8 +10,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -25,8 +24,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -40,8 +38,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -55,8 +52,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -70,8 +66,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -85,8 +80,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -100,8 +94,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -115,8 +108,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -130,8 +122,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -145,8 +136,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -160,8 +150,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -175,8 +164,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -190,8 +178,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -205,8 +192,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -220,8 +206,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -235,8 +220,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -250,8 +234,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -265,8 +248,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -280,8 +262,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -295,8 +276,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -310,8 +290,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -325,8 +304,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -340,8 +318,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -355,8 +332,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -370,8 +346,7 @@
     "enabled": true,
     "uplink_ghz": 1.6,
     "downlink_ghz": 1.3,
-    "min_capacity": 19047.61904761905,
-    "max_capacity": 24380.95238095238,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -385,8 +360,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -400,8 +374,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -415,8 +388,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -430,8 +402,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -445,8 +416,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -460,8 +430,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -475,8 +444,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -490,8 +458,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -505,8 +472,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -520,8 +486,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -535,8 +500,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -550,8 +514,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -565,8 +528,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -580,8 +542,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -595,8 +556,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -610,8 +570,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -625,8 +584,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -640,8 +598,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -655,8 +612,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -670,8 +626,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -685,8 +640,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -700,8 +654,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -715,8 +668,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -730,8 +682,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -745,8 +696,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -760,8 +710,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -775,8 +724,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -790,8 +738,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -805,8 +752,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -820,8 +766,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -835,8 +780,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -850,8 +794,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -865,8 +808,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -880,8 +822,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -895,8 +836,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -910,8 +850,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -925,8 +864,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -940,8 +878,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -955,8 +892,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -970,8 +906,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -985,8 +920,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1000,8 +934,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1015,8 +948,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1030,8 +962,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1045,8 +976,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1060,8 +990,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1075,8 +1004,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1084,14 +1012,13 @@
     "lat_deg": 44.7809519,
     "lon_deg": -0.5373232,
     "country": "FR",
-    "town": "Villenave d’Ornon",
+    "town": "Villenave d\u2019Ornon",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1105,8 +1032,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1120,8 +1046,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1135,8 +1060,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1150,8 +1074,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1165,8 +1088,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1180,8 +1102,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1195,8 +1116,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1210,8 +1130,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1225,8 +1144,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1240,8 +1158,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1255,8 +1172,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1270,8 +1186,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1285,8 +1200,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1300,8 +1214,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1315,8 +1228,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1330,8 +1242,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1345,8 +1256,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1360,8 +1270,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1375,8 +1284,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1390,8 +1298,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1405,8 +1312,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1420,8 +1326,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1435,8 +1340,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.25,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1450,8 +1354,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 40.0,
     "temporary": false
   },
   {
@@ -1465,8 +1368,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1480,8 +1382,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1495,8 +1396,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1510,8 +1410,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1525,8 +1424,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1540,8 +1438,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1555,8 +1452,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1570,8 +1466,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1585,8 +1480,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1600,8 +1494,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1615,8 +1508,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1630,8 +1522,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1645,8 +1536,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1660,8 +1550,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1675,8 +1564,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1690,8 +1578,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1705,8 +1592,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1720,8 +1606,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1735,8 +1620,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1750,8 +1634,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1765,8 +1648,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 40.0,
     "temporary": false
   },
   {
@@ -1780,8 +1662,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1795,8 +1676,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1810,8 +1690,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1825,8 +1704,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1834,14 +1712,13 @@
     "lat_deg": 21.731434,
     "lon_deg": -102.27532,
     "country": "MX",
-    "town": "Peñuelas",
+    "town": "Pe\u00f1uelas",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1855,8 +1732,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1870,8 +1746,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1885,8 +1760,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1900,8 +1774,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1915,8 +1788,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1930,8 +1802,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1945,8 +1816,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1960,8 +1830,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1969,14 +1838,13 @@
     "lat_deg": -12.748333333333333,
     "lon_deg": -38.2830555555555,
     "country": "BR",
-    "town": "Camaçari",
+    "town": "Cama\u00e7ari",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1990,8 +1858,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -1999,14 +1866,13 @@
     "lat_deg": -22.696666666666665,
     "lon_deg": -42.872777777777664,
     "country": "BR",
-    "town": "Itaboraí",
+    "town": "Itabora\u00ed",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2014,14 +1880,13 @@
     "lat_deg": -5.546111111111,
     "lon_deg": -35.81694444444433,
     "country": "BR",
-    "town": "João Câmara",
+    "town": "Jo\u00e3o C\u00e2mara",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2035,8 +1900,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2050,8 +1914,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2059,14 +1922,13 @@
     "lat_deg": -5.156944444444333,
     "lon_deg": -37.353611111111,
     "country": "BR",
-    "town": "Mossoró",
+    "town": "Mossor\u00f3",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2080,8 +1942,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2095,8 +1956,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2110,8 +1970,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2125,8 +1984,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2134,14 +1992,13 @@
     "lat_deg": -23.456388888888835,
     "lon_deg": -46.94222222222216,
     "country": "BR",
-    "town": "Santana de Parnaíba",
+    "town": "Santana de Parna\u00edba",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2149,14 +2006,13 @@
     "lat_deg": -3.6747222222221665,
     "lon_deg": -39.10277777777767,
     "country": "BR",
-    "town": "São Gonçalo do Amarante",
+    "town": "S\u00e3o Gon\u00e7alo do Amarante",
     "num_antennas": 8,
     "min_elevation_deg": 25.0,
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2170,8 +2026,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2185,8 +2040,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2200,8 +2054,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2215,8 +2068,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2230,8 +2082,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2245,8 +2096,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2260,8 +2110,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2275,8 +2124,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2290,8 +2138,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2305,8 +2152,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2320,8 +2166,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2335,8 +2180,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2350,8 +2194,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2365,8 +2208,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2380,8 +2222,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2395,8 +2236,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2410,8 +2250,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2425,8 +2264,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2440,8 +2278,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2455,8 +2292,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   },
   {
@@ -2470,8 +2306,7 @@
     "enabled": true,
     "uplink_ghz": 2.1,
     "downlink_ghz": 1.3,
-    "min_capacity": 25000.0,
-    "max_capacity": 32000.0,
+    "max_capacity": 80.0,
     "temporary": false
   }
 ]

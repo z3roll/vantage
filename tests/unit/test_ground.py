@@ -23,10 +23,10 @@ class TestGroundInfrastructure:
         gs = [
             {"gs_id": "gs1", "lat_deg": 47.2, "lon_deg": -119.9, "country": "US",
              "town": "Quincy, WA", "num_antennas": 8, "min_elevation_deg": 25, "enabled": True,
-             "uplink_ghz": 2.1, "downlink_ghz": 1.3, "min_capacity": 25000.0, "max_capacity": 32000.0, "temporary": False},
+             "uplink_ghz": 2.1, "downlink_ghz": 1.3, "max_capacity": 80.0, "temporary": False},
             {"gs_id": "gs2", "lat_deg": 41.5, "lon_deg": -93.8, "country": "US",
              "town": "Des Moines, IA", "num_antennas": 4, "min_elevation_deg": 25, "enabled": True,
-             "uplink_ghz": 2.1, "downlink_ghz": 1.3, "min_capacity": 25000.0, "max_capacity": 32000.0, "temporary": False},
+             "uplink_ghz": 2.1, "downlink_ghz": 1.3, "max_capacity": 40.0, "temporary": False},
         ]
         # Each GS connects to its nearest PoP only
         edges = [
@@ -35,7 +35,7 @@ class TestGroundInfrastructure:
             {"gs_id": "gs2", "pop_code": "ord", "distance_km": 450.0,
              "backhaul_delay": 2.475, "capacity_gbps": 100.0},
         ]
-        manifest = {"schema_version": 1}
+        manifest = {"schema_version": 2}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         (tmp_path / "pops.json").write_text(json.dumps(pops))
         (tmp_path / "ground_stations.json").write_text(json.dumps(gs))
@@ -92,13 +92,13 @@ class TestGroundInfrastructure:
             GroundInfrastructure(tmp_path)
 
     def test_missing_data_file_raises(self, tmp_path: Path) -> None:
-        manifest = {"schema_version": 1}
+        manifest = {"schema_version": 2}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         with pytest.raises(FileNotFoundError, match="preprocess"):
             GroundInfrastructure(tmp_path)
 
     def test_corrupt_json_raises(self, tmp_path: Path) -> None:
-        manifest = {"schema_version": 1}
+        manifest = {"schema_version": 2}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         (tmp_path / "pops.json").write_text("not json")
         with pytest.raises(ValueError, match="Corrupt JSON"):

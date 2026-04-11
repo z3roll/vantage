@@ -21,7 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RAW_DIR = PROJECT_ROOT / "data"
 OUT_DIR = PROJECT_ROOT / "data" / "processed"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# v2 (2026-04-11): GroundStation.min_capacity removed; max_capacity
+# reinterpreted as per-GS aggregate Ka feeder capacity in Gbps
+# (= num_antennas × 10.0). See domain/capacity_view.py.
 
 
 def _sha256(path: Path) -> str:
@@ -41,21 +44,28 @@ def preprocess_ground_stations() -> list[dict[str, Any]]:
     with path.open() as f:
         raw: dict[str, dict[str, Any]] = json.load(f)
 
+    # Per-GS feeder aggregate capacity: each Ka antenna handles ~10 Gbps,
+    # so the station total is num_antennas × 10.0 Gbps. This is the
+    # single physical fact source for GroundStation.max_capacity; the
+    # original raw FCC "mincapacity/maxcapacity" fields were RF bandwidth
+    # metadata and are intentionally discarded here.
+    PER_ANTENNA_GBPS = 10.0
+
     stations: list[dict[str, Any]] = []
     for uuid, entry in raw.items():
+        num_antennas = int(entry["numAntennas"])
         stations.append({
             "gs_id": uuid,
             "lat_deg": float(entry["lat"]),
             "lon_deg": float(entry["lng"]),
             "country": str(entry["country"]),
             "town": str(entry.get("town", "")),
-            "num_antennas": int(entry["numAntennas"]),
+            "num_antennas": num_antennas,
             "min_elevation_deg": float(entry["minElevation"]),
             "enabled": bool(entry["enabled"]),
             "uplink_ghz": float(entry.get("uplinkGhz", 0.0)),
             "downlink_ghz": float(entry.get("downlinkGhz", 0.0)),
-            "min_capacity": float(entry.get("mincapacity", 0.0)),
-            "max_capacity": float(entry.get("maxcapacity", 0.0)),
+            "max_capacity": num_antennas * PER_ANTENNA_GBPS,
             "temporary": bool(entry.get("temporary", False)),
         })
 

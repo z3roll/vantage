@@ -92,7 +92,8 @@ class TestISLEdgeCapacity:
 
     def test_default_capacity(self) -> None:
         edge = ISLEdge(0, 1, 1.0, 300.0, "intra_orbit")
-        assert edge.capacity_gbps == 20.0
+        # Default matches Starlink v2 mini laser ISL.
+        assert edge.capacity_gbps == 96.0
 
     def test_custom_capacity(self) -> None:
         edge = ISLEdge(0, 1, 1.0, 300.0, "intra_orbit", capacity_gbps=40.0)
