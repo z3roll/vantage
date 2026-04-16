@@ -14,9 +14,9 @@ from vantage.engine import RunConfig, run_routing
 from vantage.traffic import EndpointPopulation, UniformGenerator
 from vantage.world.satellite.visibility import SphericalAccessModel
 from vantage.world.ground import (
+    GeographicGroundDelay,
     GroundInfrastructure,
     GroundKnowledge,
-    MeasuredGroundDelay,
 )
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
@@ -25,9 +25,6 @@ from vantage.world.world import WorldModel
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "src" / "vantage" / "config"
 STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink.xml")
-TRACEROUTE_DIR = (
-    Path(__file__).resolve().parents[2] / "data" / "probe_trace" / "traceroute"
-)
 LAND_GEOJSON = Path(__file__).resolve().parents[2] / "dashboard" / "ne_countries.geojson"
 CELL_CACHE = Path(__file__).resolve().parents[2] / "data" / "processed" / "land_cells_res5.json"
 
@@ -47,13 +44,37 @@ def world() -> WorldModel:
 
 
 @pytest.fixture(scope="module")
-def endpoints() -> dict[str, Endpoint]:
-    population = EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json")
-    ep = {}
-    for s in population.sources:
-        ep[s.name] = s
-    for d in population.destinations:
-        ep[d.name] = d
+def population() -> EndpointPopulation:
+    """Hand-built tiny endpoint set for the integration tests.
+
+    Pre-2026-04-17 used ``EndpointPopulation.from_terminal_registry``
+    against ``src/vantage/config/terminals.json``; that JSON was
+    deleted in the data-pipeline consolidation and ``from_terminal_registry``
+    now requires explicit ``destinations``. Building the population
+    inline keeps this test file self-contained — no hidden dependency
+    on a generated config artifact, and the destination set matches
+    the ``data/probe_trace/traceroute/{google,facebook}/`` directories
+    so the ``MeasuredGroundDelay`` estimator has data for every
+    (PoP, dest) pair the controllers consult.
+    """
+    sources = (
+        Endpoint(name="term_nyc", lat_deg=40.7, lon_deg=-74.0),
+        Endpoint(name="term_lon", lat_deg=51.5, lon_deg=-0.1),
+        Endpoint(name="term_tok", lat_deg=35.7, lon_deg=139.7),
+        Endpoint(name="term_syd", lat_deg=-33.9, lon_deg=151.2),
+        Endpoint(name="term_sao", lat_deg=-23.5, lon_deg=-46.6),
+    )
+    destinations = (
+        Endpoint(name="google", lat_deg=37.4, lon_deg=-122.1),
+        Endpoint(name="facebook", lat_deg=37.5, lon_deg=-122.2),
+    )
+    return EndpointPopulation(sources=sources, destinations=destinations)
+
+
+@pytest.fixture(scope="module")
+def endpoints(population: EndpointPopulation) -> dict[str, Endpoint]:
+    ep: dict[str, Endpoint] = {s.name: s for s in population.sources}
+    ep.update({d.name: d for d in population.destinations})
     return ep
 
 
@@ -67,11 +88,31 @@ def cell_grid(endpoints: dict[str, Endpoint]) -> CellGrid:
 
 
 def _make_context(world: WorldModel, endpoints: dict[str, Endpoint]) -> RunContext:
-    ground_truth = MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
+    """Build a RunContext with a GeographicGroundDelay estimator.
+
+    The 2026-04-17 progressive fix made `_ground_cost` raise on
+    missing measurements; the older `MeasuredGroundDelay`
+    (traceroute-backed, ~29 PoPs covered) doesn't have data for
+    every PoP in the snapshot (~49) and would now KeyError. Using
+    the haversine-based GeographicGroundDelay keeps the integration
+    test self-contained and guarantees an estimate for every
+    (PoP, destination) pair that any controller might consult.
+    """
+    infra = world.snapshot_at(0, 0.0).infra
+    pop_coords = {p.code: (p.lat_deg, p.lon_deg) for p in infra.pops}
+    service_locations = {
+        ep.name: [{"lat": ep.lat_deg, "lon": ep.lon_deg}]
+        for ep in endpoints.values()
+        if not ep.name.startswith("term_")
+    }
+    estimator = GeographicGroundDelay(
+        pop_coords=pop_coords,
+        service_locations=service_locations,
+    )
     return RunContext(
         world=world,
         endpoints=endpoints,
-        ground_knowledge=GroundKnowledge(estimator=ground_truth),
+        ground_knowledge=GroundKnowledge(estimator=estimator),
     )
 
 
@@ -80,13 +121,10 @@ class TestE2EPipeline:
 
     def test_nearest_pop_runs(
         self, world: WorldModel, endpoints: dict[str, Endpoint],
-        cell_grid: CellGrid,
+        cell_grid: CellGrid, population: EndpointPopulation,
     ) -> None:
         ctx = _make_context(world, endpoints)
-        traffic = UniformGenerator(
-            EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
-            demand_per_flow_gbps=0.01,
-        )
+        traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
         controller = create_controller("nearest_pop")
         config = RunConfig(num_epochs=1, epoch_interval_s=300.0)
 
@@ -101,13 +139,10 @@ class TestE2EPipeline:
 
     def test_greedy_runs(
         self, world: WorldModel, endpoints: dict[str, Endpoint],
-        cell_grid: CellGrid,
+        cell_grid: CellGrid, population: EndpointPopulation,
     ) -> None:
         ctx = _make_context(world, endpoints)
-        traffic = UniformGenerator(
-            EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
-            demand_per_flow_gbps=0.01,
-        )
+        traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
         controller = ProgressiveController(
             ground_knowledge=ctx.ground_knowledge,
         )
@@ -123,13 +158,10 @@ class TestE2EPipeline:
 
     def test_feedback_populates_knowledge(
         self, world: WorldModel, endpoints: dict[str, Endpoint],
-        cell_grid: CellGrid,
+        cell_grid: CellGrid, population: EndpointPopulation,
     ) -> None:
         ctx = _make_context(world, endpoints)
-        traffic = UniformGenerator(
-            EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
-            demand_per_flow_gbps=0.01,
-        )
+        traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
         controller = ProgressiveController(
             ground_knowledge=ctx.ground_knowledge,
         )
@@ -145,13 +177,10 @@ class TestE2EPipeline:
 
     def test_flow_delay_decomposition(
         self, world: WorldModel, endpoints: dict[str, Endpoint],
-        cell_grid: CellGrid,
+        cell_grid: CellGrid, population: EndpointPopulation,
     ) -> None:
         ctx = _make_context(world, endpoints)
-        traffic = UniformGenerator(
-            EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
-            demand_per_flow_gbps=0.01,
-        )
+        traffic = UniformGenerator(population, demand_per_flow_gbps=0.01)
         controller = create_controller("nearest_pop")
         config = RunConfig(num_epochs=1, epoch_interval_s=300.0)
 
