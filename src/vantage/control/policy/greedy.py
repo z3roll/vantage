@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     build_satellite_fibs,
+    compute_cell_ingress,
     compute_cell_sat_cost,
     rank_pops_by_e2e,
 )
@@ -52,6 +53,7 @@ from vantage.domain import (
     NetworkSnapshot,
     RoutingPlane,
 )
+from vantage.forward import compute_egress_options
 from vantage.world.ground import GroundKnowledge
 
 if TYPE_CHECKING:
@@ -124,7 +126,7 @@ class ProgressiveController:
         cell_grid: CellGrid,
         *,
         demand_per_pair: dict[tuple[str, str], float] | None = None,
-        pop_capacity_gbps: dict[str, float] | None = None,
+        sat_feeder_cap_gbps: float = 20.0,
         version: int = 0,
     ) -> RoutingPlane:
         pops = snapshot.infra.pops
@@ -148,15 +150,25 @@ class ProgressiveController:
             dest_names=self.resolve_dest_names(),
         )
 
-        # 3. Improvement-first greedy assignment.
+        # 3. Improvement-first greedy assignment with per-sat-feeder
+        # capacity tracking. The egress-sat callback tells
+        # `_progressive_filling` which sat a given (cell, pop) pair
+        # will contend for so it can sum load against the 20 Gbps
+        # per-Ka-feeder cap rather than the 160 Gbps per-PoP
+        # aggregate. Data plane (RoutingPlaneForward) still has the
+        # last word via its multi-egress reroute + baseline fallback
+        # if the controller's plan proves wrong at realize time.
+        cell_ingress = compute_cell_ingress(snapshot, cell_grid)
+        cell_pop_egress = _build_egress_resolver(snapshot, cell_ingress)
         assignments = _progressive_filling(
             rankings=rankings,
             baseline=baseline,
             cell_grid=cell_grid,
             cell_sat_cost=cell_sat_cost,
             ground_cost_fn=self._ground_cost,
+            cell_pop_egress=cell_pop_egress,
             demand_per_pair=demand_per_pair or {},
-            pop_capacity_gbps=pop_capacity_gbps or {},
+            sat_feeder_cap_gbps=sat_feeder_cap_gbps,
         )
 
         # 4. Assemble RoutingPlane. Only emit overrides where the
@@ -184,14 +196,42 @@ class ProgressiveController:
         )
 
 
+def _build_egress_resolver(
+    snapshot: NetworkSnapshot,
+    cell_ingress: dict[int, int],
+) -> Callable[[int, str], int | None]:
+    """Build a cached ``(cell, pop) → primary_egress_sat`` callback.
+
+    Wraps :func:`compute_egress_options` (the same helper the data
+    plane uses) so the controller's capacity check charges the same
+    sat the data plane will actually route flows through. Cache key
+    is ``(ingress, pop)`` — multiple cells sharing the same ingress
+    reuse the same result.
+    """
+    cache: dict[tuple[int, str], int | None] = {}
+
+    def resolver(cell_id: int, pop_code: str) -> int | None:
+        ingress = cell_ingress.get(cell_id)
+        if ingress is None:
+            return None
+        key = (ingress, pop_code)
+        if key not in cache:
+            opts = compute_egress_options(snapshot, ingress, pop_code, k=1)
+            cache[key] = opts[0].egress_sat if opts else None
+        return cache[key]
+
+    return resolver
+
+
 def _progressive_filling(
     rankings: dict[tuple[int, str], list[tuple[str, float]]],
     baseline: CellToPopTable,
     cell_grid: CellGrid,
     cell_sat_cost: dict[tuple[int, str], float],
     ground_cost_fn: Callable[[str, str], float],
+    cell_pop_egress: Callable[[int, str], int | None],
     demand_per_pair: dict[tuple[str, str], float],
-    pop_capacity_gbps: dict[str, float],
+    sat_feeder_cap_gbps: float,
 ) -> dict[tuple[int, str], str]:
     """Greedy first-fit assignment ordered by ``improvement × demand``.
 
@@ -215,12 +255,19 @@ def _progressive_filling(
 
     Surviving items are processed in descending order of
     ``improvement × demand``. Each picks the first PoP in its ranking
-    with remaining capacity. **Overflow** (no candidate has room): the
-    cell falls back to its geographic nearest PoP. Each cell's
-    nearest differs, so overflow scatters by geography rather than
-    piling onto the most popular E2E-best PoP. The fallback still
-    increments ``pop_load[nearest]`` so downstream cells considering
-    the same nearest see the realised overflow.
+    whose *primary egress sat* has remaining Ka-feeder cap
+    (``sat_feeder_cap_gbps``, 20 Gbps per antenna). Per-sat tracking
+    is what the data plane also uses, so the controller's plan
+    aligns with realize-time capacity decisions: each sat can absorb
+    20 Gbps total regardless of how many PoPs route through it, and
+    the controller spreads demand across alternate PoPs whose
+    primary egress sats still have room.
+
+    Overflow (no candidate's primary egress has room): the cell
+    falls back to its geographic nearest PoP (= data-plane
+    baseline). Each cell's nearest differs, so overflow scatters by
+    geography. The fallback still increments the nearest's primary
+    egress sat load so downstream cells see realistic saturation.
 
     Returns ``{(cell, dest) → pop}`` for explicitly assigned cells.
     Cells absent from the result get baseline via
@@ -268,31 +315,49 @@ def _progressive_filling(
     # deterministic tie-break across runs with identical inputs.
     queue.sort()
 
-    # ── Greedy first-fit by improvement × demand ──
-    pop_load: dict[str, float] = {}
+    # ── Greedy first-fit: per-sat-feeder capacity ──
+    sat_load: dict[int, float] = {}
     assignments: dict[tuple[int, str], str] = {}
     for _priority, cell_id, dest, demand in queue:
         ranked = rankings[(cell_id, dest)]
         assigned = False
         for pop_code, _cost in ranked:
-            cap = pop_capacity_gbps.get(pop_code, float("inf"))
-            current = pop_load.get(pop_code, 0.0)
-            if current + demand <= cap:
+            egress_sat = cell_pop_egress(cell_id, pop_code)
+            if egress_sat is None:
+                continue
+            current = sat_load.get(egress_sat, 0.0)
+            if current + demand <= sat_feeder_cap_gbps:
                 assignments[(cell_id, dest)] = pop_code
-                pop_load[pop_code] = current + demand
+                sat_load[egress_sat] = current + demand
                 assigned = True
                 break
 
         if not assigned:
             # Overflow: degrade gracefully to the cell's geographic
-            # nearest PoP (= baseline). Spreads overflow naturally
-            # because each cell's nearest differs. Recording the
-            # assignment in `pop_load` keeps later cells' capacity
-            # view consistent if they consider the same PoP — but
-            # the assignment will not be written as an override
-            # because it equals baseline.
-            nearest = baseline.mapping[cell_id]
-            assignments[(cell_id, dest)] = nearest
-            pop_load[nearest] = pop_load.get(nearest, 0.0) + demand
+            # nearest PoP. Its primary egress sat still gets charged
+            # in ``sat_load`` so downstream cells considering the
+            # same sat see realistic saturation; the assignment
+            # itself is not written as an override because it equals
+            # baseline (compute_routing_plane filters it out).
+            nearest_pop = baseline.mapping[cell_id]
+            nearest_egress = cell_pop_egress(cell_id, nearest_pop)
+            assignments[(cell_id, dest)] = nearest_pop
+            if nearest_egress is not None:
+                sat_load[nearest_egress] = (
+                    sat_load.get(nearest_egress, 0.0) + demand
+                )
+            else:
+                # Should not happen: baseline is by definition the
+                # cell's geographic nearest PoP and the cell itself
+                # had a satellite path (compute_cell_ingress returned
+                # a sat for it). If we land here the snapshot is in a
+                # peculiar state; surface it so the operator notices
+                # rather than silently undercount sat_load.
+                _log.warning(
+                    "_progressive_filling: cell %d's overflow lands on "
+                    "baseline pop %r but cell_pop_egress returned None "
+                    "— sat_load tracking will be inaccurate for this "
+                    "cell's contribution.", cell_id, nearest_pop,
+                )
 
     return assignments

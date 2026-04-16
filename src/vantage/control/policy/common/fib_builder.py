@@ -46,6 +46,7 @@ __all__ = [
     "build_routing_plane_nearest_pop",
     "build_routing_plane_with_overrides",
     "build_satellite_fibs",
+    "compute_cell_ingress",
     "compute_cell_sat_cost",
     "compute_e2e_overrides",
     "rank_pops_by_e2e",
@@ -238,33 +239,29 @@ def _vectorized_nearest_index(
     return a.argmin(axis=1)
 
 
-def compute_cell_sat_cost(
+def compute_cell_ingress(
     snapshot: NetworkSnapshot,
     cell_grid: CellGrid,
-) -> dict[tuple[int, str], float]:
-    """Compute sat_cost from each *cell*'s representative ingress to every PoP.
+) -> dict[int, int]:
+    """Pick a representative ingress satellite for each active cell.
 
-    Iterates over the unique set of cells that host at least one
-    endpoint (``set(cell_grid.endpoint_to_cell.values())``). For each
-    active cell, picks its top-elevation ingress satellite from the
-    cell-centre coordinates and looks up
-    ``sat_cost[(ingress, pop_code)]`` for every PoP. The result is a
-    ``{(cell_id, pop_code) → sat_rtt_ms}`` table used by per-dest
-    override computation.
+    For each cell that hosts at least one endpoint, returns the
+    top-elevation visible satellite from the cell centre. Used by
+    both :func:`compute_cell_sat_cost` (to look up per-PoP sat-segment
+    costs) and the controller's per-sat-feeder capacity tracking
+    (which needs to know which egress sat each cell's flows will
+    contend for).
 
-    Earlier code iterated over every endpoint and overwrote the same
-    ``(cell, pop)`` keys repeatedly — same data, just wasted work
-    (and pre-Bug-9 it also advanced the shared module RNG once per
-    endpoint, perturbing forward.realize's stochastic ingress).
+    Cells whose centre has no visible satellite are silently omitted
+    from the result; callers that iterate ``cell_grid`` should treat
+    a missing key the same way they treat a missing endpoint.
     """
     from vantage.control.policy.common.utils import find_ingress_satellite
 
-    sat_cost_table = precompute_sat_cost(snapshot)
     sat_positions = snapshot.satellite.positions
-    pop_codes = [p.code for p in snapshot.infra.pops]
     active_cell_ids = set(cell_grid.endpoint_to_cell.values())
 
-    result: dict[tuple[int, str], float] = {}
+    out: dict[int, int] = {}
     for cell_id in active_cell_ids:
         cell = cell_grid.cells.get(cell_id)
         if cell is None:
@@ -274,10 +271,34 @@ def compute_cell_sat_cost(
         # mistakenly think it's an actual endpoint.
         ep = Endpoint(name="_cell_centre", lat_deg=cell.lat_deg, lon_deg=cell.lon_deg)
         uplink = find_ingress_satellite(ep, sat_positions, top_prob=1.0)
-        if uplink is None:
-            continue
+        if uplink is not None:
+            out[cell_id] = uplink.sat_id
+    return out
+
+
+def compute_cell_sat_cost(
+    snapshot: NetworkSnapshot,
+    cell_grid: CellGrid,
+) -> dict[tuple[int, str], float]:
+    """Compute sat_cost from each *cell*'s representative ingress to every PoP.
+
+    Iterates the unique active cells (via :func:`compute_cell_ingress`),
+    looks up ``sat_cost[(ingress, pop_code)]`` for every PoP, and
+    returns a ``{(cell_id, pop_code) → sat_rtt_ms}`` table.
+
+    Earlier code iterated over every endpoint and overwrote the same
+    ``(cell, pop)`` keys repeatedly — same data, just wasted work
+    (and pre-Bug-9 it also advanced the shared module RNG once per
+    endpoint, perturbing forward.realize's stochastic ingress).
+    """
+    sat_cost_table = precompute_sat_cost(snapshot)
+    pop_codes = [p.code for p in snapshot.infra.pops]
+    cell_ingress = compute_cell_ingress(snapshot, cell_grid)
+
+    result: dict[tuple[int, str], float] = {}
+    for cell_id, ingress_sat in cell_ingress.items():
         for pc in pop_codes:
-            sc = sat_cost_table.get((uplink.sat_id, pc))
+            sc = sat_cost_table.get((ingress_sat, pc))
             if sc is not None:
                 result[(cell_id, pc)] = sc
     return result

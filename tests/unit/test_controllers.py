@@ -77,91 +77,112 @@ class TestProgressiveFilling:
             return value
         return _fn
 
+    @staticmethod
+    def _stub_egress(mapping: dict[tuple[int, str], int]):
+        """Build a ``cell_pop_egress`` callback from a pre-built dict.
+
+        Returns ``None`` for any (cell, pop) not in ``mapping`` —
+        same convention as the production resolver in greedy.py.
+        """
+        def _fn(cell_id: int, pop_code: str) -> int | None:
+            return mapping.get((cell_id, pop_code))
+        return _fn
+
     def test_demand_aggregates_across_endpoints_in_same_cell(self) -> None:
-        """Two endpoints in one cell, both sending to the same dest, must
+        """Two endpoints in one cell sending to the same dest must
         contribute their *summed* demand to the capacity check.
 
-        Repro: cell={epA, epB}, both → destX. demand epA=5, epB=7
-        (sum=12). POP1 cap=8 (can hold 5 OR 7 alone but not the 12
-        sum). POP2 cap=100. Rankings put POP1 first (best E2E).
-        Baseline is POP3 with high E2E cost so this (cell, dest) has
-        positive improvement and actually enters the work queue.
-        With the demand-aggregation fix, the algorithm sees the full
-        12 Gbps, can't fit on POP1 (cap=8), spills to POP2.
+        Repro under the per-sat-feeder cap model: cell={epA, epB},
+        both → destX. demand epA=5, epB=7 (sum=12). The chosen PoP's
+        primary egress sat has cap 10 — it fits 5 OR 7 alone but not
+        the 12 sum. With aggregate-demand tracking, the cell falls
+        through to the baseline (no other ranking entry in this
+        fixture). Without aggregation (the pre-2026-04-17 bug), the
+        algorithm would see only 5 Gbps and incorrectly assign POP1.
         """
         grid = self._grid({"epA": 1, "epB": 1})
-        rankings = {(1, "destX"): [("POP1", 10.0), ("POP2", 20.0)]}
+        rankings = {(1, "destX"): [("POP1", 10.0)]}
         baseline = CellToPopTable(
-            mapping=MappingProxyType({1: "POP3"}),  # baseline ≠ any rank
+            mapping=MappingProxyType({1: "POP_NEAR"}),
             version=0, built_at=0.0,
         )
-        cell_sat_cost = {(1, "POP3"): 50.0}
-        # baseline_cost(1, destX) = 50 + 50 = 100; improvement = 100 - 10 = 90.
-        ground_cost_fn = self._const_gc(50.0)
+        cell_sat_cost = {(1, "POP_NEAR"): 50.0}
+        ground_cost_fn = self._const_gc(50.0)   # baseline = 100, impr = 90
+        cell_pop_egress = self._stub_egress({
+            (1, "POP1"): 5,        # primary egress for POP1 = sat 5
+            (1, "POP_NEAR"): 6,    # baseline egress = sat 6
+        })
         demand_per_pair = {("epA", "destX"): 5.0, ("epB", "destX"): 7.0}
-        pop_capacity = {"POP1": 8.0, "POP2": 100.0}
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=10.0,
         )
 
-        assert result == {(1, "destX"): "POP2"}, (
-            "expected POP2 (aggregate 12 Gbps exceeds POP1 cap 8); "
+        # Aggregate 12 > sat cap 10 → POP1 unavailable → fallback to
+        # baseline POP_NEAR. With the bug (demand=5), POP1 would fit
+        # and be chosen instead.
+        assert result == {(1, "destX"): "POP_NEAR"}, (
+            f"expected fallback to POP_NEAR (aggregate 12 > 10 sat cap); "
             f"got {result}"
         )
 
-    def test_sorts_by_improvement_times_demand(self) -> None:
-        """Two cells compete for limited capacity on PoP 'BEST'.
-
-        - Cell 1: demand 0.5 Gbps, baseline 20, best 10 → impr 10,
-          value = 10 × 0.5 = 5.
-        - Cell 2: demand 10 Gbps, baseline 15, best 10 → impr 5,
-          value = 5 × 10 = 50.
-
-        Pure improvement sort would prefer cell 1 (impr 10 > 5).
-        ``improvement × demand`` sort prefers cell 2 (50 > 5),
-        because giving it the BEST PoP saves more total RTT-Gbps.
-        BEST cap=10 fits exactly one of the two; verify cell 2 wins.
-        """
-        grid = self._grid({"ep1": 1, "ep2": 2})
+    def test_progressive_uses_sat_feeder_cap_to_pick_alternate_pop(self) -> None:
+        """When a cell's primary-PoP-via-primary-sat is saturated by an
+        earlier high-priority cell, the next cell should pick a PoP
+        whose primary egress is a *different* sat (rather than queueing
+        onto the saturated one)."""
+        grid = self._grid({"epA": 1, "epB": 2})
         rankings = {
-            (1, "destX"): [("BEST", 10.0), ("ALT", 30.0)],
-            (2, "destX"): [("BEST", 10.0), ("ALT", 30.0)],
+            (1, "destX"): [("POP_BEST", 10.0), ("POP_ALT", 20.0)],
+            (2, "destX"): [("POP_BEST", 10.0), ("POP_ALT", 20.0)],
         }
         baseline = CellToPopTable(
-            mapping=MappingProxyType({1: "BASE1", 2: "BASE2"}),
+            mapping=MappingProxyType({1: "POP_BASE", 2: "POP_BASE"}),
             version=0, built_at=0.0,
         )
         cell_sat_cost = {
-            (1, "BASE1"): 10.0,  # baseline_cost(1) = 10 + 10 = 20
-            (2, "BASE2"): 5.0,   # baseline_cost(2) = 5 + 10 = 15
+            (1, "POP_BASE"): 50.0, (2, "POP_BASE"): 50.0,
         }
-        ground_cost_fn = self._const_gc(10.0)
-        demand_per_pair = {("ep1", "destX"): 0.5, ("ep2", "destX"): 10.0}
-        pop_capacity = {"BEST": 10.0, "ALT": 100.0}
+        ground_cost_fn = self._const_gc(50.0)   # baseline = 100, impr = 90
+        # Both cells share the same primary egress sat for POP_BEST
+        # (sat 5) and the same alternate sat for POP_ALT (sat 6).
+        cell_pop_egress = self._stub_egress({
+            (1, "POP_BEST"): 5, (1, "POP_ALT"): 6, (1, "POP_BASE"): 7,
+            (2, "POP_BEST"): 5, (2, "POP_ALT"): 6, (2, "POP_BASE"): 7,
+        })
+        # Cell 1 demand 12 fills sat 5 (cap 15) almost full. Cell 2
+        # demand 6 wouldn't fit on sat 5 (12+6 > 15) → must pick
+        # POP_ALT via sat 6.
+        demand_per_pair = {("epA", "destX"): 12.0, ("epB", "destX"): 6.0}
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=15.0,
         )
 
+        # Cell 1 priority = 90 × 12 = 1080 (higher), processed first
+        # → POP_BEST (sat 5 charged 12). Cell 2 priority = 90 × 6 =
+        # 540, sat 5 is at 12 + 6 = 18 > 15 → falls through to
+        # POP_ALT (sat 6 empty).
         assert result == {
-            (2, "destX"): "BEST",
-            (1, "destX"): "ALT",
+            (1, "destX"): "POP_BEST",
+            (2, "destX"): "POP_ALT",
         }, (
-            f"cell 2 (improvement × demand = 50) should win BEST over "
-            f"cell 1 (= 5); got {result}"
+            f"cell 2 should be displaced to POP_ALT by cell 1's load "
+            f"on the shared sat 5; got {result}"
         )
 
     def test_overflow_falls_back_to_nearest_pop(self) -> None:
-        """When every PoP in a cell's ranking is over capacity, the
-        cell falls back to its geographic nearest PoP (baseline), not
-        to ranked[0]. Pre-fix piled all overflow onto the most popular
-        E2E-best PoP; new behaviour scatters overflow across nearests.
-        """
+        """When every ranked PoP's primary egress sat is saturated,
+        the cell falls back to its geographic nearest PoP (baseline),
+        not to ranked[0]."""
         grid = self._grid({"epA": 1})
         rankings = {(1, "destX"): [("HOT", 10.0)]}
         baseline = CellToPopTable(
@@ -169,14 +190,19 @@ class TestProgressiveFilling:
             version=0, built_at=0.0,
         )
         cell_sat_cost = {(1, "NEAR"): 50.0}
-        ground_cost_fn = self._const_gc(50.0)  # baseline_cost = 100
+        ground_cost_fn = self._const_gc(50.0)
+        cell_pop_egress = self._stub_egress({
+            (1, "HOT"): 5,
+            (1, "NEAR"): 6,
+        })
         demand_per_pair = {("epA", "destX"): 5.0}
-        pop_capacity = {"HOT": 0.0}  # no room → forced overflow
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=0.0,    # nothing fits → forced overflow
         )
 
         assert result == {(1, "destX"): "NEAR"}, (
@@ -185,8 +211,7 @@ class TestProgressiveFilling:
 
     def test_zero_improvement_is_skipped(self) -> None:
         """If a cell's nearest PoP is already its best E2E option
-        (improvement ≤ 0), the cell is not assigned an override —
-        data plane will fall back to baseline at lookup time."""
+        (improvement ≤ 0), the cell is not assigned an override."""
         grid = self._grid({"epA": 1})
         rankings = {(1, "destX"): [("POP1", 10.0)]}
         baseline = CellToPopTable(
@@ -194,23 +219,23 @@ class TestProgressiveFilling:
             version=0, built_at=0.0,
         )
         cell_sat_cost = {(1, "POP1"): 5.0}
-        ground_cost_fn = self._const_gc(5.0)  # baseline = 5+5 = 10 = best
+        ground_cost_fn = self._const_gc(5.0)   # baseline = 10 = best
+        cell_pop_egress = self._stub_egress({(1, "POP1"): 5})
         demand_per_pair = {("epA", "destX"): 1.0}
-        pop_capacity = {"POP1": 100.0}
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=20.0,
         )
 
-        assert result == {}, (
-            f"zero-improvement cells must not be assigned; got {result}"
-        )
+        assert result == {}
 
     def test_zero_demand_is_skipped(self) -> None:
         """A (cell, dest) with positive improvement but zero current
-        demand is skipped — there's no point spending capacity on a
+        demand is skipped — no point spending capacity on a
         non-existent flow."""
         grid = self._grid({"epA": 1})
         rankings = {(1, "destX"): [("BEST", 10.0)]}
@@ -219,62 +244,71 @@ class TestProgressiveFilling:
             version=0, built_at=0.0,
         )
         cell_sat_cost = {(1, "WORSE"): 50.0}
-        ground_cost_fn = self._const_gc(50.0)  # impr = 100 - 10 = 90
-        demand_per_pair: dict[tuple[str, str], float] = {}  # zero demand
-        pop_capacity = {"BEST": 100.0}
+        ground_cost_fn = self._const_gc(50.0)
+        cell_pop_egress = self._stub_egress({(1, "BEST"): 5, (1, "WORSE"): 6})
+        demand_per_pair: dict[tuple[str, str], float] = {}
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=20.0,
         )
 
         assert result == {}
 
     def test_overflow_load_displaces_subsequent_cell(self) -> None:
-        """The overflow path's ``pop_load[nearest] += demand`` is only
-        load-bearing if a *later* cell would otherwise wrongly fit on
-        that same PoP. Without the bookkeeping, cell B would see
-        NEAR as empty and assign to it; with it, B is correctly
-        displaced.
-
-        Setup: two cells, both processed by improvement-first sort.
-        - Cell 1 has only HOT in its ranking (cap=0) → forced to
-          overflow to its nearest = NEAR. demand=8 → NEAR sees 8.
-        - Cell 2 has only NEAR in its ranking (cap=10). Without
-          load tracking, cell 2 would fit (5 ≤ 10). With it,
-          pop_load[NEAR]=8 already, so 8+5 > 10 and cell 2 is
-          forced to overflow to its nearest = OTHER.
-        """
+        """When cell A overflows to its baseline (sat S), the recorded
+        ``sat_load[S]`` must displace cell B if B's only candidate
+        also lands on sat S. Without bookkeeping, B would see S as
+        empty and incorrectly fit there."""
         grid = self._grid({"epA": 1, "epB": 2})
+        # Cell 1's only ranking: POP_HOT (forced overflow); Cell 2's
+        # only ranking: POP_SHARED whose primary egress is the SAME
+        # sat as cell 1's baseline.
         rankings = {
-            (1, "destX"): [("HOT", 10.0)],
-            (2, "destX"): [("NEAR", 10.0)],
+            (1, "destX"): [("POP_HOT", 10.0)],
+            (2, "destX"): [("POP_SHARED", 10.0)],
         }
         baseline = CellToPopTable(
-            mapping=MappingProxyType({1: "NEAR", 2: "OTHER"}),
+            mapping=MappingProxyType({1: "POP_NEAR1", 2: "POP_NEAR2"}),
             version=0, built_at=0.0,
         )
-        cell_sat_cost = {(1, "NEAR"): 50.0, (2, "OTHER"): 50.0}
+        cell_sat_cost = {(1, "POP_NEAR1"): 50.0, (2, "POP_NEAR2"): 50.0}
         ground_cost_fn = self._const_gc(50.0)
-        # Both cells have the same improvement (= 90); priority is
-        # impr × demand. Cell 1: 90 × 8 = 720. Cell 2: 90 × 5 = 450.
-        # Cell 1 processed first → overflows to NEAR → NEAR sees 8.
-        demand_per_pair = {("epA", "destX"): 8.0, ("epB", "destX"): 5.0}
-        pop_capacity = {"HOT": 0.0, "NEAR": 10.0}
+        # Cell 1: POP_HOT egress = sat 5 (will saturate). Baseline
+        # NEAR1 egress = sat 7. Cell 2: POP_SHARED egress = sat 7
+        # (SAME as cell 1's baseline egress). Baseline NEAR2 egress
+        # = sat 8.
+        cell_pop_egress = self._stub_egress({
+            (1, "POP_HOT"): 5, (1, "POP_NEAR1"): 7,
+            (2, "POP_SHARED"): 7, (2, "POP_NEAR2"): 8,
+        })
+        # Cell 1 priority = 90 × 12 = 1080. Cell 2 priority = 90 × 5
+        # = 450. Cell 1 first; demand 12 exceeds the 10-Gbps sat cap
+        # so POP_HOT (sat 5) won't fit → fallback to baseline NEAR1
+        # via sat 7. Sat 7 then carries 12 Gbps. Cell 2 then tries
+        # POP_SHARED via the SAME sat 7 → 12 + 5 > 10 → fallback to
+        # baseline NEAR2.
+        demand_per_pair = {("epA", "destX"): 12.0, ("epB", "destX"): 5.0}
 
         result = _progressive_filling(
             rankings=rankings, baseline=baseline, cell_grid=grid,
             cell_sat_cost=cell_sat_cost, ground_cost_fn=ground_cost_fn,
-            demand_per_pair=demand_per_pair, pop_capacity_gbps=pop_capacity,
+            cell_pop_egress=cell_pop_egress,
+            demand_per_pair=demand_per_pair,
+            sat_feeder_cap_gbps=10.0,
         )
 
-        assert result == {
-            (1, "destX"): "NEAR",
-            (2, "destX"): "OTHER",
-        }, (
-            f"cell 1's overflow onto NEAR (load=8) must displace cell 2 "
-            f"to OTHER; got {result}"
+        assert result[(1, "destX")] == "POP_NEAR1", (
+            f"cell 1's POP_HOT (sat 5) cannot hold 12 Gbps under cap "
+            f"10 → must overflow to NEAR1; got {result[(1, 'destX')]}"
+        )
+        assert result[(2, "destX")] == "POP_NEAR2", (
+            f"cell 1's overflow on sat 7 (12 Gbps) must displace cell "
+            f"2 (would push sat 7 to 17 > 10) → NEAR2; got "
+            f"{result[(2, 'destX')]}"
         )
 
     def test_ground_cost_propagates_keyerror_when_data_missing(self) -> None:

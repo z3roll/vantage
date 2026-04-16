@@ -127,22 +127,17 @@ def run_routing(
     if ctrl_gk is not None and ctrl_gk is context.ground_knowledge:
         feedback = GroundDelayFeedback(ctrl_gk)
 
-    # Per-PoP capacity = sum of max_capacity across all connected GSs.
-    # Each GS has 8 Ka-band antennas × 20 Gbps = 160 Gbps.
-    snap0 = context.world.snapshot_at(0, 0.0)
-    gs_map = {gs.gs_id: gs for gs in context.world.ground_stations}
-    pop_capacity: dict[str, float] = {}
-    for pop in snap0.infra.pops:
-        total_cap = 0.0
-        for gs_id, _ in snap0.infra.pop_gs_edges(pop.code):
-            gs = gs_map.get(gs_id)
-            if gs:
-                total_cap += gs.max_capacity
-        pop_capacity[pop.code] = total_cap
-
     # Cache the controller signature once instead of re-introspecting per epoch.
+    # The capacity-aware progressive controller now models per-sat-feeder
+    # (Ka antenna) capacity at 20 Gbps each rather than the per-PoP
+    # aggregate (160 Gbps), so we no longer need to compute and pass
+    # pop_capacity through the kwargs — but we DO pass the shell's
+    # feeder cap if the controller accepts it, so multi-shell deployments
+    # with non-20 Gbps Ka feeders stay in sync between controller and
+    # data plane.
     controller_sig = inspect.signature(controller.compute_routing_plane)
     controller_wants_demand = "demand_per_pair" in controller_sig.parameters
+    controller_wants_sat_cap = "sat_feeder_cap_gbps" in controller_sig.parameters
 
     for epoch in range(config.num_epochs):
         t = epoch * config.epoch_interval_s
@@ -172,7 +167,8 @@ def run_routing(
                 kwargs["demand_per_pair"] = {
                     (fk.src, fk.dst): d for fk, d in demand.flows.items()
                 }
-                kwargs["pop_capacity_gbps"] = pop_capacity
+            if controller_wants_sat_cap:
+                kwargs["sat_feeder_cap_gbps"] = shell.feeder_capacity_gbps
             plane = controller.compute_routing_plane(
                 snapshot, cell_grid, **kwargs
             )
