@@ -1,14 +1,17 @@
 """StaticPoP controller: best static PoP per destination from cache.
 
-Uses real sat_cost + ground_cost from cache only (no estimation).
+Uses sat_cost + ground_cost from GroundKnowledge cache only (no estimation).
 """
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
-from vantage.control.policy.common.sat_cost import precompute_sat_cost
-from vantage.domain import CostTables, NetworkSnapshot
+from vantage.control.policy.common.fib_builder import (
+    build_cell_to_pop_nearest,
+    build_routing_plane_with_overrides,
+    compute_cell_sat_cost,
+    compute_e2e_overrides,
+)
+from vantage.domain import CellGrid, NetworkSnapshot, RoutingPlane
 from vantage.world.ground import GroundKnowledge
 
 
@@ -21,14 +24,32 @@ class StaticPoPController:
     ) -> None:
         self._gk = ground_knowledge or GroundKnowledge()
 
-    def compute_tables(self, snapshot: NetworkSnapshot) -> CostTables:
-        sat_cost = precompute_sat_cost(snapshot)
+    def compute_routing_plane(
+        self,
+        snapshot: NetworkSnapshot,
+        cell_grid: CellGrid,
+        *,
+        version: int = 0,
+    ) -> RoutingPlane:
+        # Derive dest_names from cached entries
+        dest_names = {dest for _, dest in self._gk.all_entries()}
 
-        # Ground cost from cache only (no estimation fallback)
-        ground_cost = self._gk.all_entries()
-
-        return CostTables(
-            epoch=snapshot.epoch,
-            sat_cost=MappingProxyType(sat_cost),
-            ground_cost=MappingProxyType(ground_cost),
+        cell_sat_cost = compute_cell_sat_cost(snapshot, cell_grid)
+        baseline = build_cell_to_pop_nearest(
+            cell_grid=cell_grid,
+            pops=snapshot.infra.pops,
+            built_at=snapshot.time_s,
+            version=version,
+        )
+        overrides = compute_e2e_overrides(
+            cell_grid=cell_grid,
+            pops=snapshot.infra.pops,
+            baseline=baseline,
+            cell_sat_cost=cell_sat_cost,
+            ground_cost_fn=self._gk.get,
+            dest_names=dest_names,
+        )
+        return build_routing_plane_with_overrides(
+            snapshot, cell_grid, overrides,
+            baseline=baseline, version=version,
         )

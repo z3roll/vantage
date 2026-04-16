@@ -19,7 +19,6 @@ from vantage.domain.fib import (
 )
 from vantage.domain.ground import GroundStation, GSPoPEdge, PoP
 from vantage.domain.result import (
-    CostTables,
     EpochResult,
     FlowOutcome,
     PathAllocation,
@@ -34,7 +33,6 @@ from vantage.domain.satellite import (
     SatelliteState,
     ShellConfig,
 )
-from vantage.domain.service import SERVICE_CLASSES
 from vantage.domain.snapshot import (
     InfrastructureView,
     NetworkSnapshot,
@@ -50,7 +48,6 @@ __all__ = [
     "CellId",
     "CellToPopTable",
     "ConstellationConfig",
-    "CostTables",
     "Endpoint",
     "EpochResult",
     "FIBEntry",
@@ -68,7 +65,6 @@ __all__ = [
     "PoP",
     "ROUTING_PLANE_REFRESH_S",
     "RoutingPlane",
-    "SERVICE_CLASSES",
     "SLAViolation",
     "SatelliteFIB",
     "SatelliteState",

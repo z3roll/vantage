@@ -35,7 +35,7 @@ class TestGroundInfrastructure:
             {"gs_id": "gs2", "pop_code": "ord", "distance_km": 450.0,
              "backhaul_delay": 2.475, "capacity_gbps": 100.0},
         ]
-        manifest = {"schema_version": 2}
+        manifest = {"schema_version": 3}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         (tmp_path / "pops.json").write_text(json.dumps(pops))
         (tmp_path / "ground_stations.json").write_text(json.dumps(gs))
@@ -92,13 +92,13 @@ class TestGroundInfrastructure:
             GroundInfrastructure(tmp_path)
 
     def test_missing_data_file_raises(self, tmp_path: Path) -> None:
-        manifest = {"schema_version": 2}
+        manifest = {"schema_version": 3}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         with pytest.raises(FileNotFoundError, match="preprocess"):
             GroundInfrastructure(tmp_path)
 
     def test_corrupt_json_raises(self, tmp_path: Path) -> None:
-        manifest = {"schema_version": 2}
+        manifest = {"schema_version": 3}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
         (tmp_path / "pops.json").write_text("not json")
         with pytest.raises(ValueError, match="Corrupt JSON"):

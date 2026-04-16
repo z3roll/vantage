@@ -1,28 +1,16 @@
-"""Ground delay estimation — measurement-only.
+"""Ground delay estimation: measurement-based and geographic.
 
-Historical note: this module used to expose ``HaversineDelay`` (great
-circle × fiber speed) and ``FiberGraphDelay`` (Dijkstra over the ITU
-submarine-cable graph). Both have been **deleted** because they
-fabricated ground latencies for arbitrary ``(pop, destination)``
-pairs based on geography, and no amount of "detour factor" heuristics
-can reproduce real-world peering and BGP effects. We now require
-every ground delay lookup to be backed by an actual measurement.
+Two concrete implementations of :class:`GroundDelay`:
 
-The remaining surface is deliberately small:
+    * :class:`MeasuredGroundDelay` — backed by traceroute measurements
+      under ``data/probe_trace/traceroute/``. Strict: raises
+      :class:`KeyError` on unknown pairs.
+    * :class:`GeographicGroundDelay` — estimates RTT from the PoP to
+      the nearest service node (loaded from
+      ``config/service_prefixes.json``). Never raises — always has an
+      estimate.
 
-    * :class:`GroundDelay` — Protocol. Takes a ``(pop_code, dest_name)``
-      pair, returns a one-way ground RTT in ms. Raises :class:`KeyError`
-      on unknown pairs — there is **no fallback**, by design.
-    * :class:`MeasuredGroundDelay` — the only concrete implementation.
-      Backed by a frozen mapping loaded from traceroute summaries
-      under ``data/probe_trace/traceroute/``. Currently covers
-      ``29 PoPs × 3 services (google / facebook / wikipedia) = 87``
-      measured pairs.
-
-Any code path that previously relied on a geographic estimator now
-either receives a concrete measurement or must handle :class:`KeyError`
-explicitly — the data plane treats unknown pairs as *unrouted flows*,
-not silently-zero delays.
+All values are **one-way** RTT in milliseconds.
 """
 
 from __future__ import annotations
@@ -34,37 +22,28 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
+from vantage.common import C_FIBER_KM_S, haversine_km
+
 __all__ = [
-    "DEFAULT_MEASURED_SERVICES",
+    "GeographicGroundDelay",
     "GroundDelay",
     "MeasuredGroundDelay",
 ]
 
 
-DEFAULT_MEASURED_SERVICES: tuple[str, ...] = ("google", "facebook", "wikipedia")
-"""The three destinations we currently have ground-truth traceroute
-data for. Any attempt to route a flow to a destination outside this
-set will raise :class:`KeyError` unless a custom measurement set is
-supplied."""
-
-
 class GroundDelay(Protocol):
     """Protocol for ground segment delay lookup (PoP → destination).
 
-    Implementations must return a one-way ground RTT in ms for a
-    ``(pop_code, dest_name)`` pair they have data for, and raise
-    :class:`KeyError` otherwise. The Protocol intentionally does **not**
-    expose a fallback hook — any fallback must be implemented at a
-    higher layer (e.g. the data plane marking a flow unrouted).
+    Returns a one-way ground RTT in ms.  Raises :class:`KeyError` if
+    no estimate is available for the pair.
     """
 
-    def estimate(self, pop_code: str, dest_name: str) -> float:
-        """Return one-way ground delay in ms for ``(pop_code, dest_name)``.
+    def estimate(self, pop_code: str, dest_name: str) -> float: ...
 
-        Raises:
-            KeyError: If no measurement is available for the pair.
-        """
-        ...
+
+# ---------------------------------------------------------------------------
+# MeasuredGroundDelay (traceroute-backed)
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,12 +52,7 @@ class MeasuredGroundDelay:
 
     Construct via :meth:`from_traceroute_dir` for real experiments, or
     via the direct constructor for unit tests with hand-injected data.
-    The internal mapping is frozen into a :class:`MappingProxyType`
-    in ``__post_init__`` so the table cannot be mutated after load.
-
-    All values are one-way RTT in milliseconds. The loader divides
-    traceroute-measured ground segment RTT by 2 so the result matches
-    the ``one-way`` convention used by :class:`GroundDelay`.
+    All values are one-way RTT in ms.
     """
 
     one_way_rtt_ms: Mapping[tuple[str, str], float]
@@ -89,106 +63,51 @@ class MeasuredGroundDelay:
                 self, "one_way_rtt_ms", MappingProxyType(dict(self.one_way_rtt_ms))
             )
 
-    # --- Protocol -----------------------------------------------------------
-
     def estimate(self, pop_code: str, dest_name: str) -> float:
         """Return one-way ground delay (ms) or raise :class:`KeyError`."""
         try:
             return self.one_way_rtt_ms[(pop_code, dest_name)]
         except KeyError:
             raise KeyError(
-                f"no measured ground RTT for pair (pop={pop_code!r}, "
-                f"dest={dest_name!r}); MeasuredGroundDelay is strict — "
-                f"there is no geographic fallback"
+                f"no measured ground RTT for (pop={pop_code!r}, dest={dest_name!r})"
             ) from None
 
-    # --- Query helpers ------------------------------------------------------
-
     def has(self, pop_code: str, dest_name: str) -> bool:
-        """Whether ``(pop_code, dest_name)`` has a measurement."""
         return (pop_code, dest_name) in self.one_way_rtt_ms
 
     def pops(self) -> frozenset[str]:
-        """The set of PoPs with at least one measured destination."""
         return frozenset(pop for (pop, _) in self.one_way_rtt_ms)
 
     def destinations(self) -> frozenset[str]:
-        """The set of destinations measured from at least one PoP."""
         return frozenset(dst for (_, dst) in self.one_way_rtt_ms)
 
     def __len__(self) -> int:
         return len(self.one_way_rtt_ms)
 
-    # --- Loaders ------------------------------------------------------------
-
     @classmethod
     def empty(cls) -> MeasuredGroundDelay:
-        """Zero-entry instance. Every lookup raises.
-
-        Use this only when you *want* a ground-delay provider present
-        for type-correctness but with no data wired up yet — every
-        forward pass will report 100% unrouted.
-        """
         return cls(one_way_rtt_ms=MappingProxyType({}))
 
     @classmethod
     def from_traceroute_dir(
         cls,
         traceroute_dir: str | Path,
-        services: tuple[str, ...] = DEFAULT_MEASURED_SERVICES,
+        services: tuple[str, ...] = ("google", "facebook", "wikipedia"),
         *,
         require_all_services: bool = True,
     ) -> MeasuredGroundDelay:
-        """Build a :class:`MeasuredGroundDelay` from per-service summary files.
-
-        Reads ``{traceroute_dir}/{service}_summary.json`` for each
-        entry in ``services``. Each file is expected to contain the
-        schema produced by the preprocessing pipeline: a dict of
-        ``probe_id → {probe_*, pop, summary: {average_values:
-        {avg_ground_segment: float, ...}}}``. For every entry with a
-        non-null ``pop.code`` and a positive ``avg_ground_segment``,
-        we accumulate one-way RTT samples into a
-        ``(pop_code, service) → [rtt, ...]`` bucket and then take the
-        mean.
-
-        Traceroute samples are **round-trip** in the source file, so
-        the loader divides by 2 before storing. Callers can therefore
-        treat :meth:`estimate` as "one-way" uniformly, and the forward
-        layer can double it when it needs RTT.
-
-        Args:
-            traceroute_dir: Directory containing the summary files.
-            services: Which services to load. Defaults to
-                :data:`DEFAULT_MEASURED_SERVICES`.
-            require_all_services: When ``True`` (the default), every
-                requested service file must exist. Missing files raise
-                :class:`FileNotFoundError` so production experiments
-                can't silently degrade to a partial table. Set to
-                ``False`` for tooling or tests that intentionally load
-                a subset.
-
-        Raises:
-            FileNotFoundError: If ``traceroute_dir`` itself does not
-                exist, if ``require_all_services=True`` and any
-                requested file is missing, or if every requested
-                file is missing.
-            ValueError: If the loaded set is empty (all samples
-                invalid after filtering).
-        """
+        """Build from per-service traceroute summary JSON files."""
         traceroute_dir = Path(traceroute_dir)
         if not traceroute_dir.exists():
-            raise FileNotFoundError(
-                f"traceroute directory not found: {traceroute_dir}"
-            )
+            raise FileNotFoundError(f"traceroute directory not found: {traceroute_dir}")
 
-        # Accumulate raw round-trip samples per (pop, service).
         raw: dict[tuple[str, str], list[float]] = {}
-        missing_files: list[str] = []
+        missing: list[str] = []
 
         for service in services:
             summary_path = traceroute_dir / f"{service}_summary.json"
             if not summary_path.exists():
-                missing_files.append(service)
+                missing.append(service)
                 continue
             with summary_path.open() as f:
                 data = json.load(f)
@@ -201,41 +120,297 @@ class MeasuredGroundDelay:
                 pop_code = entry["pop"].get("code")
                 if not pop_code:
                     continue
-                round_trip_ms = avg_vals.get("avg_ground_segment")
-                if round_trip_ms is None or round_trip_ms <= 0:
+                rt_ms = avg_vals.get("avg_ground_segment")
+                if rt_ms is None or rt_ms <= 0:
                     continue
-                raw.setdefault((pop_code, service), []).append(float(round_trip_ms))
+                raw.setdefault((pop_code, service), []).append(float(rt_ms))
 
-        if missing_files == list(services):
+        if missing == list(services):
             raise FileNotFoundError(
-                f"no traceroute summary files found in {traceroute_dir}; "
+                f"no traceroute summaries in {traceroute_dir}: "
                 f"looked for {', '.join(f'{s}_summary.json' for s in services)}"
             )
-        if require_all_services and missing_files:
+        if require_all_services and missing:
             raise FileNotFoundError(
-                f"require_all_services=True but some service summary files are "
-                f"missing in {traceroute_dir}: "
-                f"{', '.join(f'{s}_summary.json' for s in missing_files)}. "
-                f"Pass require_all_services=False to accept partial coverage."
+                f"missing service files in {traceroute_dir}: "
+                f"{', '.join(f'{s}_summary.json' for s in missing)}"
             )
 
-        # Take the mean across probes for each (pop, service) and
-        # convert round-trip → one-way. Note: :mod:`profiled_delay`
-        # intentionally keeps round-trip values (it serves a
-        # different Protocol, ``ServiceGroundDelay``), so the two
-        # loaders that read ``avg_ground_segment`` from the same JSON
-        # files pin *different* conventions. This division by 2 is
-        # the contract for :class:`MeasuredGroundDelay` only.
-        one_way: dict[tuple[str, str], float] = {
+        one_way = {
             key: sum(samples) / len(samples) / 2.0
             for key, samples in raw.items()
         }
-
         if not one_way:
             raise ValueError(
-                f"traceroute directory {traceroute_dir} produced no valid "
-                "(pop, service) samples — every entry was missing a pop.code "
-                "or a positive avg_ground_segment"
+                f"traceroute directory {traceroute_dir} produced no valid samples"
             )
-
         return cls(one_way_rtt_ms=MappingProxyType(one_way))
+
+
+# ---------------------------------------------------------------------------
+# GeographicGroundDelay (service location-based)
+# ---------------------------------------------------------------------------
+
+
+class GeographicGroundDelay:
+    """Estimate ground delay from PoP to nearest service node.
+
+    For each ``(pop, dest)`` pair, finds the closest node of that
+    service and returns ``haversine_distance × detour_factor / c_fiber``.
+
+    Data loaded from ``config/service_prefixes.json`` (service →
+    locations) and PoP coordinates from :class:`GroundInfrastructure`.
+
+    Implements :class:`GroundDelay` — same ``estimate(pop, dest)``
+    interface as :class:`MeasuredGroundDelay`, but never raises
+    :class:`KeyError`. Falls back to a configurable default RTT for
+    unknown services.
+    """
+
+    def __init__(
+        self,
+        pop_coords: Mapping[str, tuple[float, float]],
+        service_locations: Mapping[str, list[dict]],
+        *,
+        detour_factor: float = 1.4,
+        base_ms: float = 5.0,
+        jitter_sigma: float = 0.3,
+        default_one_way_ms: float = 20.0,
+        seed: int = 42,
+    ) -> None:
+        self._pop_coords = pop_coords
+        self._service_locs = service_locations
+        self._detour = detour_factor
+        self._base = base_ms
+        self._sigma = jitter_sigma
+        self._default = default_one_way_ms
+        self._rng = __import__("random").Random(seed)
+        # Pre-compute (pop, dest) → (mu, sigma) for LogNormal sampling
+        self._distributions: dict[tuple[str, str], tuple[float, float]] = {}
+        self._precompute()
+
+    def _precompute(self) -> None:
+        """Build LogNormal(μ, σ) for every (pop, dest) pair.
+
+        median = base_ms + distance_delay  (base models routing/processing)
+        σ = jitter_sigma                    (models real-world variance)
+        """
+        import math
+        for pop_code, (pop_lat, pop_lon) in self._pop_coords.items():
+            for dest_name, locs in self._service_locs.items():
+                min_dist = min(
+                    haversine_km(pop_lat, pop_lon, loc["lat"], loc["lon"])
+                    for loc in locs
+                )
+                distance_ms = min_dist * self._detour / C_FIBER_KM_S * 1000.0
+                median = self._base + distance_ms
+                mu = math.log(max(0.1, median))
+                self._distributions[(pop_code, dest_name)] = (mu, self._sigma)
+
+    def estimate(self, pop_code: str, dest_name: str) -> float:
+        """Sample one-way ground delay (ms) from LogNormal distribution."""
+        import math
+        params = self._distributions.get((pop_code, dest_name))
+        if params is None:
+            return self._default
+        mu, sigma = params
+        return math.exp(self._rng.gauss(mu, sigma))
+
+    def has(self, pop_code: str, dest_name: str) -> bool:
+        return pop_code in self._pop_coords and dest_name in self._service_locs
+
+    def pops(self) -> frozenset[str]:
+        return frozenset(self._pop_coords.keys())
+
+    def destinations(self) -> frozenset[str]:
+        return frozenset(self._service_locs.keys())
+
+    def __len__(self) -> int:
+        return len(self._pop_coords) * len(self._service_locs)
+
+    @classmethod
+    def from_config(
+        cls,
+        config_dir: str | Path,
+        pop_coords: Mapping[str, tuple[float, float]],
+        *,
+        detour_factor: float = 1.4,
+        default_one_way_ms: float = 20.0,
+    ) -> GeographicGroundDelay:
+        """Load from ``config/service_prefixes.json``.
+
+        Args:
+            config_dir: Directory containing ``service_prefixes.json``.
+            pop_coords: ``{pop_code: (lat, lon)}`` mapping from
+                :class:`GroundInfrastructure`.
+        """
+        path = Path(config_dir) / "service_prefixes.json"
+        with path.open() as f:
+            raw = json.load(f)
+
+        service_locs: dict[str, list[dict]] = {}
+        for svc_name, svc_data in raw.items():
+            locs = svc_data.get("locations", [])
+            if locs:
+                service_locs[svc_name] = locs
+
+        return cls(
+            pop_coords=pop_coords,
+            service_locations=service_locs,
+            detour_factor=detour_factor,
+            default_one_way_ms=default_one_way_ms,
+        )
+
+
+# ---------------------------------------------------------------------------
+# TracerouteReplayDelay (time-based real measurements)
+# ---------------------------------------------------------------------------
+
+
+class TracerouteReplayDelay:
+    """Ground delay from real traceroute measurements, indexed by time-of-day.
+
+    Loads per-probe detailed_report from summary JSON files. Groups
+    measurements by (PoP, service, hour-of-day). At runtime, returns
+    a random measurement from the matching hour bucket.
+
+    Implements :class:`GroundDelay` — call ``set_time(epoch_s)`` each
+    epoch to set the simulation clock before calling ``estimate()``.
+    """
+
+    def __init__(
+        self,
+        hourly_data: dict[tuple[str, str, int], list[float]],
+        fallback: GroundDelay | None = None,
+        seed: int = 42,
+    ) -> None:
+        self._hourly = hourly_data  # (pop, dest, hour) → [one_way_ms, ...]
+        self._fallback = fallback
+        self._rng = __import__("random").Random(seed)
+        self._current_hour: int = 0
+
+    def set_time(self, epoch_s: float) -> None:
+        """Set simulation UTC time (seconds). Called each epoch."""
+        self._current_hour = int(epoch_s / 3600) % 24
+
+    def estimate(self, pop_code: str, dest_name: str) -> float:
+        """One-way ground delay (ms) from the matching hour bucket."""
+        bucket = self._hourly.get((pop_code, dest_name, self._current_hour))
+        if bucket:
+            return self._rng.choice(bucket)
+        # Try any hour for this (pop, dest)
+        for h in range(24):
+            bucket = self._hourly.get((pop_code, dest_name, h))
+            if bucket:
+                return self._rng.choice(bucket)
+        # Fallback to geographic estimator
+        if self._fallback is not None:
+            return self._fallback.estimate(pop_code, dest_name)
+        return 20.0
+
+    def has(self, pop_code: str, dest_name: str) -> bool:
+        return any(
+            (pop_code, dest_name, h) in self._hourly for h in range(24)
+        )
+
+    def pops(self) -> frozenset[str]:
+        return frozenset(p for p, _, _ in self._hourly)
+
+    def destinations(self) -> frozenset[str]:
+        return frozenset(d for _, d, _ in self._hourly)
+
+    @classmethod
+    def from_traceroute_dir(
+        cls,
+        traceroute_dir: str | Path,
+        services: tuple[str, ...] = ("google", "facebook", "wikipedia"),
+        fallback: GroundDelay | None = None,
+    ) -> TracerouteReplayDelay:
+        """Build from raw traceroute JSON files (with timestamps).
+
+        Reads ``{traceroute_dir}/{service}/{probe_id}_{msm_id}.json``
+        and groups ground_segment RTT by (pop_code, service, hour_of_day).
+        """
+        from datetime import datetime, timezone
+
+        traceroute_dir = Path(traceroute_dir)
+        hourly: dict[tuple[str, str, int], list[float]] = {}
+
+        for service in services:
+            # Load summary to get probe → pop mapping
+            summary_path = traceroute_dir / f"{service}_summary.json"
+            if not summary_path.exists():
+                continue
+            with summary_path.open() as f:
+                summary = json.load(f)
+
+            probe_pop: dict[str, str] = {}
+            for probe_id, entry in summary.items():
+                if not entry:
+                    continue
+                pop = (entry.get("pop") or {}).get("code")
+                if pop:
+                    probe_pop[probe_id] = pop
+
+            # Load raw measurements with timestamps
+            raw_dir = traceroute_dir / service
+            if not raw_dir.is_dir():
+                continue
+            for fname in raw_dir.iterdir():
+                if not fname.suffix == ".json":
+                    continue
+                probe_id = fname.stem.split("_")[0]
+                pop_code = probe_pop.get(probe_id)
+                if not pop_code:
+                    continue
+
+                with fname.open() as f:
+                    measurements = json.load(f)
+
+                for m in measurements:
+                    ts = m.get("timestamp")
+                    if ts is None:
+                        continue
+                    # Extract ground segment from the detailed report
+                    # Raw files have full traceroute; need to match with summary
+                    # For now use the summary's detailed_report which has ground_segment
+                    pass
+
+            # Use detailed_report from summary (already has ground_segment per measurement)
+            for probe_id, entry in summary.items():
+                if not entry:
+                    continue
+                pop_code = (entry.get("pop") or {}).get("code")
+                if not pop_code:
+                    continue
+                reports = entry.get("detailed_report", [])
+
+                # We don't have timestamps in detailed_report, but raw files do.
+                # Load raw file to get timestamps, pair with detailed_report indices.
+                raw_files = list((traceroute_dir / service).glob(f"{probe_id}_*.json"))
+                if not raw_files:
+                    # No timestamp data — spread measurements evenly across 24h
+                    n = len(reports)
+                    for i, r in enumerate(reports):
+                        gs = r.get("ground_segment", 0)
+                        if gs <= 0:
+                            continue
+                        hour = int(i / n * 24) % 24
+                        key = (pop_code, service, hour)
+                        hourly.setdefault(key, []).append(gs / 2)  # RT → one-way
+                    continue
+
+                with raw_files[0].open() as f:
+                    raw_measurements = json.load(f)
+
+                # Pair by index (both lists ordered by time)
+                for i, r in enumerate(reports):
+                    gs = r.get("ground_segment", 0)
+                    if gs <= 0 or i >= len(raw_measurements):
+                        continue
+                    ts = raw_measurements[i].get("timestamp", 0)
+                    hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+                    key = (pop_code, service, hour)
+                    hourly.setdefault(key, []).append(gs / 2)
+
+        return cls(hourly_data=hourly, fallback=fallback)

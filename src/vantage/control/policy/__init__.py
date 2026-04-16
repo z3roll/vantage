@@ -1,5 +1,5 @@
 """Policy subsystem: TE controller strategies for PoP selection.
 
-Each policy implements the TEController protocol, producing CostTables
-that terminals use for PoP selection in the data plane (forward.py).
+Each policy provides ``compute_routing_plane()`` which produces a
+:class:`RoutingPlane` consumed by the data plane (forward.py).
 """

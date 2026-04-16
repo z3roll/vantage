@@ -19,12 +19,10 @@ from vantage.common import access_delay
 class ShellConfig:
     """Configuration for one orbital shell.
 
-    ``feeder_capacity_gbps`` is the aggregate Ka-band feeder downlink
-    capacity of a single satellite in this shell (i.e., the total
-    throughput it can push across its 2 Ka gimbaled antennas to ground
-    stations). Defaults to 20 Gbps, which matches Starlink v2 mini's
-    Ku-downlink-bound upper limit (48 beams × ~417 Mbps). Override for
-    shells using v3 hardware or larger feeder buses.
+    ``feeder_capacity_gbps`` is the per-satellite Ka-band feeder
+    downlink capacity to a ground station. Defaults to 20 Gbps
+    per antenna/satellite link (CrowdLink [Liu 2026]: each GS has
+    8 Ka-band antennas × 20 Gbps).
     """
 
     shell_id: int

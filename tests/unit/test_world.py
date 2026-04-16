@@ -10,10 +10,11 @@ import pytest
 
 from vantage.domain import NetworkSnapshot
 from vantage.world.ground import (
-    DEFAULT_MEASURED_SERVICES,
     GroundInfrastructure,
     MeasuredGroundDelay,
 )
+
+_MEASURED_SERVICES = ("google", "facebook", "wikipedia")
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
 from vantage.world.satellite.topology import PlusGridTopology
@@ -95,15 +96,15 @@ class TestMeasuredGroundDelayFromTraceroute:
         self, model: MeasuredGroundDelay
     ) -> None:
         """Expected shape: 29 PoPs × 3 services = 87 measured pairs."""
-        assert len(model) == 29 * len(DEFAULT_MEASURED_SERVICES)
+        assert len(model) == 29 * len(_MEASURED_SERVICES)
         assert len(model.pops()) == 29
-        assert model.destinations() == frozenset(DEFAULT_MEASURED_SERVICES)
+        assert model.destinations() == frozenset(_MEASURED_SERVICES)
 
     def test_every_measured_pair_is_positive(
         self, model: MeasuredGroundDelay
     ) -> None:
         for pop in model.pops():
-            for svc in DEFAULT_MEASURED_SERVICES:
+            for svc in _MEASURED_SERVICES:
                 assert model.estimate(pop, svc) > 0
 
     def test_values_are_one_way_not_round_trip(
@@ -117,7 +118,7 @@ class TestMeasuredGroundDelayFromTraceroute:
         RTT), well above zero.
         """
         for pop in model.pops():
-            for svc in DEFAULT_MEASURED_SERVICES:
+            for svc in _MEASURED_SERVICES:
                 v = model.estimate(pop, svc)
                 assert 0 < v < 300
 
@@ -135,7 +136,7 @@ class TestMeasuredGroundDelayFromTraceroute:
 
     def test_empty_directory_raises(self, tmp_path: Path) -> None:
         (tmp_path / "traceroute").mkdir()
-        with pytest.raises(FileNotFoundError, match="no traceroute summary"):
+        with pytest.raises(FileNotFoundError, match="no traceroute summar"):
             MeasuredGroundDelay.from_traceroute_dir(tmp_path / "traceroute")
 
     def test_partial_directory_raises_by_default(self, tmp_path: Path) -> None:
@@ -148,7 +149,7 @@ class TestMeasuredGroundDelayFromTraceroute:
         sub.mkdir()
         # Copy only google's file, leave facebook/wikipedia missing.
         shutil.copy(TRACEROUTE_DIR / "google_summary.json", sub / "google_summary.json")
-        with pytest.raises(FileNotFoundError, match="require_all_services"):
+        with pytest.raises(FileNotFoundError, match="missing service files"):
             MeasuredGroundDelay.from_traceroute_dir(sub)
 
     def test_partial_directory_accepted_when_explicit(self, tmp_path: Path) -> None:

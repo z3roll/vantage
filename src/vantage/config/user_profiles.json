@@ -1,0 +1,41 @@
+{
+  "heavy": {
+    "fraction": 0.20,
+    "flow_rate_per_user": 0.10,
+    "pareto_alpha": 1.2,
+    "flow_size_min_bytes": 1000000,
+    "flow_size_max_bytes": 5000000,
+    "rate_fast_prob": 0.8,
+    "rate_slow_log_mean": 1.5,
+    "rate_slow_log_std": 0.4,
+    "rate_fast_log_mean": 3.5,
+    "rate_fast_log_std": 0.3,
+    "description": "Heavy users: streaming, large downloads. 80% fast (~33Mbps), 20% slow (~4.5Mbps). Flow size 1-5MB."
+  },
+  "medium": {
+    "fraction": 0.50,
+    "flow_rate_per_user": 0.05,
+    "pareto_alpha": 1.2,
+    "flow_size_min_bytes": 100000,
+    "flow_size_max_bytes": 5000000,
+    "rate_fast_prob": 0.4,
+    "rate_slow_log_mean": 1.0,
+    "rate_slow_log_std": 0.5,
+    "rate_fast_log_mean": 3.0,
+    "rate_fast_log_std": 0.4,
+    "description": "Medium users: web browsing, social media. 40% fast (~20Mbps), 60% slow (~2.7Mbps). Flow size 100KB-5MB."
+  },
+  "light": {
+    "fraction": 0.30,
+    "flow_rate_per_user": 0.01,
+    "pareto_alpha": 1.2,
+    "flow_size_min_bytes": 1000,
+    "flow_size_max_bytes": 100000,
+    "rate_fast_prob": 0.1,
+    "rate_slow_log_mean": 0.5,
+    "rate_slow_log_std": 0.4,
+    "rate_fast_log_mean": 2.5,
+    "rate_fast_log_std": 0.3,
+    "description": "Light users: email, messaging. 10% fast (~12Mbps), 90% slow (~1.6Mbps). Flow size 1-100KB."
+  }
+}

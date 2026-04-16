@@ -1,4 +1,4 @@
-"""Unit tests for ``vantage.forward_routing.realize_via_routing_plane``.
+"""Unit tests for ``vantage.forward.RoutingPlaneForward``.
 
 Covers the happy path, capacity bookkeeping correctness, graceful
 handling of missing inputs (unknown endpoint, no cell mapping,
@@ -39,7 +39,7 @@ from vantage.domain import (
     TrafficDemand,
     UsageBook,
 )
-from vantage.forward_routing import realize_via_routing_plane
+from vantage.forward import RoutingPlaneForward, realize
 
 
 # --- Minimal fixture helpers -------------------------------------------------
@@ -196,13 +196,9 @@ class TestHappyPath:
             flows=MappingProxyType({FlowKey(src="alice", dst="bob"): 0.05}),
         )
 
-        result = realize_via_routing_plane(
-            routing_plane=plane,
-            cell_grid=grid,
-            usage_book=book,
-            snapshot=snap,
-            demand=demand,
-            context=ctx,
+        result = realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
 
         assert len(result.flow_outcomes) == 1
@@ -228,9 +224,9 @@ class TestHappyPath:
             flows=MappingProxyType({FlowKey(src="alice", dst="bob"): demand_gbps}),
         )
 
-        realize_via_routing_plane(
-            routing_plane=plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
 
         # ISL(0,1) was traversed once.
@@ -252,9 +248,9 @@ class TestHappyPath:
             flows=MappingProxyType({FlowKey(src="alice", dst="bob"): 0.01}),
         )
 
-        result = realize_via_routing_plane(
-            routing_plane=plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        result = realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
         outcome = result.flow_outcomes[0]
 
@@ -289,9 +285,9 @@ class TestDroppedFlows:
             flows=MappingProxyType({FlowKey(src="ghost", dst="bob"): 0.02}),
         )
 
-        result = realize_via_routing_plane(
-            routing_plane=plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        result = realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
         assert len(result.flow_outcomes) == 0
         assert result.unrouted_demand_gbps == pytest.approx(0.02)
@@ -311,9 +307,9 @@ class TestDroppedFlows:
             flows=MappingProxyType({FlowKey(src="charlie", dst="bob"): 0.03}),
         )
 
-        result = realize_via_routing_plane(
-            routing_plane=plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        result = realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
         assert len(result.flow_outcomes) == 0
         assert result.unrouted_demand_gbps == pytest.approx(0.03)
@@ -369,9 +365,9 @@ class TestDroppedFlows:
             flows=MappingProxyType({FlowKey(src="alice", dst="bob"): 0.05}),
         )
 
-        result = realize_via_routing_plane(
-            routing_plane=cycle_plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        result = realize(
+            RoutingPlaneForward(cycle_plane, grid, book),
+            snap, demand, ctx,
         )
         # Walk bailed → flow is unrouted, no partial state charged.
         assert len(result.flow_outcomes) == 0
@@ -395,9 +391,9 @@ class TestDroppedFlows:
                 }
             ),
         )
-        result = realize_via_routing_plane(
-            routing_plane=plane, cell_grid=grid, usage_book=book,
-            snapshot=snap, demand=demand, context=ctx,
+        result = realize(
+            RoutingPlaneForward(plane, grid, book),
+            snap, demand, ctx,
         )
         assert result.total_demand_gbps == pytest.approx(0.08)
         assert result.routed_demand_gbps == pytest.approx(0.05)

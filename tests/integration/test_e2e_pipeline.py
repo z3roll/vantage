@@ -1,4 +1,4 @@
-"""End-to-end integration test: full epoch loop with cost-table controllers."""
+"""End-to-end integration test: full epoch loop with RoutingPlane controllers."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import pytest
 
 from vantage.engine.context import RunContext
 from vantage.control.controller import create_controller
-from vantage.control.policy.greedy import VantageGreedyController
-from vantage.engine import RunConfig, run
-from vantage.domain import Endpoint
+from vantage.control.policy.greedy import ProgressiveController
+from vantage.domain import CellGrid, Endpoint
+from vantage.engine import RunConfig, run_routing
 from vantage.traffic import EndpointPopulation, UniformGenerator
 from vantage.world.satellite.visibility import SphericalAccessModel
 from vantage.world.ground import (
@@ -28,6 +28,8 @@ STARPERF_XML = Path("/Users/zerol/PhD/starperf/config/XML_constellation/Starlink
 TRACEROUTE_DIR = (
     Path(__file__).resolve().parents[2] / "data" / "probe_trace" / "traceroute"
 )
+LAND_GEOJSON = Path(__file__).resolve().parents[2] / "dashboard" / "ne_countries.geojson"
+CELL_CACHE = Path(__file__).resolve().parents[2] / "data" / "processed" / "land_cells_res5.json"
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +57,15 @@ def endpoints() -> dict[str, Endpoint]:
     return ep
 
 
+@pytest.fixture(scope="module")
+def cell_grid(endpoints: dict[str, Endpoint]) -> CellGrid:
+    return CellGrid.from_polygon_coverage(
+        LAND_GEOJSON,
+        endpoints=[(e.name, e.lat_deg, e.lon_deg) for e in endpoints.values()],
+        cache_path=CELL_CACHE,
+    )
+
+
 def _make_context(world: WorldModel, endpoints: dict[str, Endpoint]) -> RunContext:
     ground_truth = MeasuredGroundDelay.from_traceroute_dir(TRACEROUTE_DIR)
     return RunContext(
@@ -67,7 +78,10 @@ def _make_context(world: WorldModel, endpoints: dict[str, Endpoint]) -> RunConte
 @pytest.mark.integration
 class TestE2EPipeline:
 
-    def test_nearest_pop_runs(self, world: WorldModel, endpoints: dict[str, Endpoint]) -> None:
+    def test_nearest_pop_runs(
+        self, world: WorldModel, endpoints: dict[str, Endpoint],
+        cell_grid: CellGrid,
+    ) -> None:
         ctx = _make_context(world, endpoints)
         traffic = UniformGenerator(
             EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
@@ -76,47 +90,63 @@ class TestE2EPipeline:
         controller = create_controller("nearest_pop")
         config = RunConfig(num_epochs=1, epoch_interval_s=300.0)
 
-        result = run(ctx, traffic, controller, config=config, controller_name="nearest_pop")
+        result = run_routing(
+            context=ctx, cell_grid=cell_grid, traffic=traffic,
+            controller=controller, config=config, controller_name="nearest_pop",
+        )
 
         assert result.num_epochs == 1
         assert len(result.epochs[0].flow_outcomes) > 0
         assert result.epochs[0].routed_demand_gbps > 0
 
-    def test_greedy_runs(self, world: WorldModel, endpoints: dict[str, Endpoint]) -> None:
+    def test_greedy_runs(
+        self, world: WorldModel, endpoints: dict[str, Endpoint],
+        cell_grid: CellGrid,
+    ) -> None:
         ctx = _make_context(world, endpoints)
         traffic = UniformGenerator(
             EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
             demand_per_flow_gbps=0.01,
         )
-        controller = VantageGreedyController(
-            endpoints=ctx.endpoints,
+        controller = ProgressiveController(
             ground_knowledge=ctx.ground_knowledge,
         )
         config = RunConfig(num_epochs=1, epoch_interval_s=300.0)
 
-        result = run(ctx, traffic, controller, config=config, controller_name="greedy")
+        result = run_routing(
+            context=ctx, cell_grid=cell_grid, traffic=traffic,
+            controller=controller, config=config, controller_name="greedy",
+        )
 
         assert result.num_epochs == 1
         assert len(result.epochs[0].flow_outcomes) > 0
 
-    def test_feedback_populates_knowledge(self, world: WorldModel, endpoints: dict[str, Endpoint]) -> None:
+    def test_feedback_populates_knowledge(
+        self, world: WorldModel, endpoints: dict[str, Endpoint],
+        cell_grid: CellGrid,
+    ) -> None:
         ctx = _make_context(world, endpoints)
         traffic = UniformGenerator(
             EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
             demand_per_flow_gbps=0.01,
         )
-        controller = VantageGreedyController(
-            endpoints=ctx.endpoints,
+        controller = ProgressiveController(
             ground_knowledge=ctx.ground_knowledge,
         )
         config = RunConfig(num_epochs=2, epoch_interval_s=300.0)
 
-        result = run(ctx, traffic, controller, config=config, controller_name="greedy")
+        result = run_routing(
+            context=ctx, cell_grid=cell_grid, traffic=traffic,
+            controller=controller, config=config, controller_name="greedy",
+        )
 
         all_ground = [f.ground_rtt for e in result.epochs for f in e.flow_outcomes]
         assert any(g > 0 for g in all_ground), "Feedback loop failed"
 
-    def test_flow_delay_decomposition(self, world: WorldModel, endpoints: dict[str, Endpoint]) -> None:
+    def test_flow_delay_decomposition(
+        self, world: WorldModel, endpoints: dict[str, Endpoint],
+        cell_grid: CellGrid,
+    ) -> None:
         ctx = _make_context(world, endpoints)
         traffic = UniformGenerator(
             EndpointPopulation.from_terminal_registry(DATA_DIR / "terminals.json"),
@@ -125,7 +155,10 @@ class TestE2EPipeline:
         controller = create_controller("nearest_pop")
         config = RunConfig(num_epochs=1, epoch_interval_s=300.0)
 
-        result = run(ctx, traffic, controller, config=config, controller_name="nearest_pop")
+        result = run_routing(
+            context=ctx, cell_grid=cell_grid, traffic=traffic,
+            controller=controller, config=config, controller_name="nearest_pop",
+        )
 
         for flow in result.epochs[0].flow_outcomes:
             expected = flow.satellite_rtt + flow.ground_rtt

@@ -17,3 +17,12 @@ data/
 refine-logs/
 future.md
 CLAUDE.md
+
+# Generated artifacts (large, rebuildable from sim runs)
+dashboard/
+figures/
+slides/
+
+# Local session journals & ad-hoc experiment scripts
+SESSION_PROGRESS.md
+run_1hour.py

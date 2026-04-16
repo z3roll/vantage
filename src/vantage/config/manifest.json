@@ -1,20 +1,10 @@
 {
-  "schema_version": 2,
-  "generated_at": "2026-03-22T14:18:39.127725+00:00",
-  "generator": "vantage.config.preprocess",
-  "source_hashes": {
-    "starlink_gs.json": "c1d301974df9c869de5361fd744050445ef1167cdedc4222b4eb49946ac6ebfc",
-    "starlink_pop.geojson": "fe32ecaf76b4938825f820f2dd58064e2ab58c4c892fbd7609e4c08c198ecd2e",
-    "starlink_probes.json": "dcddcaff7063290f6c2dc98e88cbbe944a82e93f8a51fdd6ffd2669bc91731a9",
-    "ground_fibre.json": "53fa84db8736ba7ce796a2e7d15fbd6c4973d6d7fe0c198fbe3cdcd194518166",
-    "cable-geo.json": "6e7d06929684b9cd6a66b4d8f5cd2011bd9b252fdc9afbbae17ebc6cdc1088af"
-  },
+  "schema_version": 3,
+  "generated_at": "2026-04-13",
+  "generator": "real Starlink GS data from CSV + preprocess.py for PoPs",
   "counts": {
-    "ground_stations": 165,
+    "ground_stations": 179,
     "pops": 49,
-    "gs_pop_edges": 176,
-    "terminals": 106,
-    "fiber_nodes": 25130,
-    "fiber_edges": 43127
+    "gs_pop_edges": 179
   }
 }

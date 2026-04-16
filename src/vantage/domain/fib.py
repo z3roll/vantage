@@ -29,7 +29,7 @@ owns the Dijkstra computation.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 
@@ -159,23 +159,33 @@ class SatelliteFIB:
 
 @dataclass(frozen=True, slots=True)
 class CellToPopTable:
-    """Global ``cell_id → pop_code`` assignment pushed by the controller.
+    """Cell-to-PoP assignment pushed by the controller.
 
-    In the nearest-PoP baseline this table is static (geographic argmin);
-    future policies will refresh it as part of the 15 s control-plane sync.
-    Construction freezes ``mapping`` into :class:`MappingProxyType`.
+    ``mapping``: default ``cell → pop`` (baseline / fallback).
+    ``per_dest``: optional ``(cell, dest) → pop`` overrides for
+    performance-aware routing — different destinations may route
+    to different PoPs from the same cell.
     """
 
     mapping: Mapping[CellId, str]
     version: int
-    built_at: float  # simulation time (s)
+    built_at: float
+    per_dest: Mapping[tuple[CellId, str], str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.mapping, MappingProxyType):
             object.__setattr__(self, "mapping", MappingProxyType(dict(self.mapping)))
+        if not isinstance(self.per_dest, MappingProxyType):
+            object.__setattr__(self, "per_dest", MappingProxyType(dict(self.per_dest)))
 
-    def pop_of(self, cell_id: CellId) -> str:
-        """Return the PoP code assigned to ``cell_id`` or raise ``KeyError``."""
+    def pop_of(self, cell_id: CellId, dest: str | None = None) -> str:
+        """PoP for (cell, dest). Falls back to default if no per-dest override."""
+        if dest is not None:
+            override = self.per_dest.get((cell_id, dest))
+            if override is not None:
+                return override
         return self.mapping[cell_id]
 
 

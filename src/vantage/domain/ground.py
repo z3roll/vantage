@@ -15,8 +15,8 @@ class GroundStation:
     ``max_capacity`` is the aggregate per-GS feeder throughput in
     **Gbps**: the total traffic this station can absorb across all of
     its Ka antennas from every satellite it is simultaneously serving.
-    A typical 9-antenna site handles roughly ``9 × 10 = 90 Gbps``, so
-    the preprocessor derives the value as ``num_antennas × 10.0``.
+    Each GS has 8 Ka-band antennas × 20 Gbps = 160 Gbps
+    (CrowdLink [Liu 2026]).
     This field is the authoritative per-GS feeder cap used by
     :class:`vantage.domain.capacity_view.CapacityView`.
     """
@@ -33,6 +33,8 @@ class GroundStation:
     downlink_ghz: float
     max_capacity: float  # per-GS aggregate feeder Gbps
     temporary: bool
+    ka_antennas: int = 0
+    e_antennas: int = 0
 
 
 @dataclass(frozen=True, slots=True)

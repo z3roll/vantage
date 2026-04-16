@@ -13,7 +13,6 @@ from vantage.world.ground.cache_keys import encode_class_key, is_class_key
 
 if TYPE_CHECKING:
     from vantage.world.ground.delay import GroundDelay
-    from vantage.world.ground.profiled_delay import ServiceGroundDelay
 
 
 class CacheEvictionPolicy(Protocol):
@@ -102,25 +101,41 @@ class GroundKnowledge:
         estimator: GroundDelay | None = None,
         pop_capacity: int = 0,
         eviction: CacheEvictionPolicy | None = None,
+        ewma_alpha: float = 0.3,
+        ttl_s: float = 0.0,
     ) -> None:
         # Per-PoP caches: {pop_code → {dest → delay_rtt}}
         self._per_pop: dict[str, dict[str, float]] = defaultdict(dict)
+        self._timestamps: dict[str, dict[str, float]] = defaultdict(dict)
         self._known_dests: set[str] = set()
         self._estimator = estimator
         self._pop_capacity = pop_capacity  # 0 = unlimited
         self._eviction = eviction
+        self._ewma_alpha = ewma_alpha  # 0 = keep old, 1 = replace
+        self._ttl_s = ttl_s  # 0 = no expiry
+        self._clock: float = 0.0  # set by engine each epoch
+
+    def set_clock(self, t: float) -> None:
+        """Set current simulation time (called by engine each epoch)."""
+        self._clock = t
 
     @property
     def estimator(self) -> GroundDelay | None:
         return self._estimator
 
     def put(self, pop_code: str, dest: str, delay_rtt: float) -> None:
-        """Write a ground delay RTT value."""
+        """Write a ground delay RTT value with EWMA smoothing."""
         pop_cache = self._per_pop[pop_code]
 
         if dest in pop_cache:
-            # Update existing entry
-            pop_cache[dest] = delay_rtt
+            old = pop_cache[dest]
+            # Reset EWMA on sudden change (>3x ratio = likely route change)
+            if old > 0 and (delay_rtt / old > 3.0 or old / delay_rtt > 3.0):
+                pop_cache[dest] = delay_rtt
+            else:
+                a = self._ewma_alpha
+                pop_cache[dest] = a * delay_rtt + (1 - a) * old
+            self._timestamps[pop_code][dest] = self._clock
             if self._eviction is not None:
                 self._eviction.record_access(pop_code, dest)
             return
@@ -139,17 +154,25 @@ class GroundKnowledge:
                     del pop_cache[victim]
 
         pop_cache[dest] = delay_rtt
+        self._timestamps[pop_code][dest] = self._clock
         self._known_dests.add(dest)
         if self._eviction is not None:
             self._eviction.record_access(pop_code, dest)
 
     def get(self, pop_code: str, dest: str) -> float | None:
-        """Read cached ground delay RTT. Returns None if not known."""
+        """Read cached ground delay RTT. Returns None if expired or unknown."""
         pop_cache = self._per_pop.get(pop_code)
         if pop_cache is None:
             return None
         val = pop_cache.get(dest)
-        if val is not None and self._eviction is not None:
+        if val is None:
+            return None
+        # TTL check
+        if self._ttl_s > 0:
+            ts = self._timestamps.get(pop_code, {}).get(dest, 0.0)
+            if self._clock - ts > self._ttl_s:
+                return None
+        if self._eviction is not None:
             self._eviction.record_access(pop_code, dest)
         return val
 
@@ -251,33 +274,18 @@ class GroundKnowledge:
         key = encode_class_key(service_class)
         return self.get(pop_code, key)
 
-    def get_class_or_estimate(
+    def get_class_or_raise(
         self,
         pop_code: str,
         service_class: str,
-        service_estimator: ServiceGroundDelay | None = None,
-        local_hour: int = 12,
         day_type: str = "weekday",
+        local_hour: int = 12,
     ) -> float:
-        """Read class-level cache, falling back to ServiceGroundDelay estimation.
-
-        If an estimate is computed, it is cached for future lookups.
-
-        Raises:
-            KeyError: If the pair has no cached class-level entry and
-                no ``service_estimator`` is provided. The strict
-                measurement contract in this codebase forbids a silent
-                zero fallback; callers that want a graceful miss should
-                call :meth:`get_class` and handle ``None`` themselves.
-        """
+        """Read class-level cache or raise :class:`KeyError`."""
         cached = self.get_class(pop_code, service_class, day_type, local_hour)
         if cached is not None:
             return cached
-        if service_estimator is None:
-            raise KeyError(
-                f"no cached class-level RTT and no service_estimator for "
-                f"(pop={pop_code!r}, service={service_class!r})"
-            )
-        rtt = service_estimator.estimate_service(pop_code, service_class, local_hour, day_type)
-        self.put_class_time(pop_code, service_class, day_type, local_hour, rtt)
-        return rtt
+        raise KeyError(
+            f"no cached class-level RTT for "
+            f"(pop={pop_code!r}, service={service_class!r})"
+        )

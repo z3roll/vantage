@@ -1,11 +1,10 @@
-"""Forwarding result and cost table domain types.
+"""Forwarding result domain types.
 
 All delay/RTT values in ms. Bandwidth values in Gbps.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from vantage.domain.traffic import FlowKey
@@ -22,25 +21,10 @@ class PathAllocation:
 
 
 @dataclass(frozen=True, slots=True)
-class CostTables:
-    """Controller output: precomputed cost tables for terminal-side PoP selection.
-
-    sat_cost: (ingress_sat, pop_code) → min satellite segment RTT (ISL + downlink + backhaul).
-    ground_cost: (pop_code, dest) → ground segment RTT.
-
-    Terminals select best PoP via: argmin over pop: sat_cost[ingress, pop] + ground_cost[pop, dest]
-    """
-
-    epoch: int
-    sat_cost: Mapping[tuple[int, str], float]  # (ingress_sat, pop_code) → RTT ms
-    ground_cost: Mapping[tuple[str, str], float]  # (pop_code, dest) → RTT ms
-
-
-@dataclass(frozen=True, slots=True)
 class FlowOutcome:
     """Realized outcome for a single flow. All RTT values in ms.
 
-    satellite_rtt: Terminal→PoP (uplink + ISL + downlink + backhaul), calibrated.
+    satellite_rtt: Terminal→PoP total (propagation + queuing + transmission).
     ground_rtt: PoP→Destination.
     """
 
@@ -49,10 +33,17 @@ class FlowOutcome:
     gs_id: str
     user_sat: int
     egress_sat: int
-    satellite_rtt: float   # terminal→PoP, calibrated (ms)
+    satellite_rtt: float   # terminal→PoP, total including queuing (ms)
     ground_rtt: float      # PoP→destination (ms)
     total_rtt: float       # satellite + ground (ms)
     demand_gbps: float
+    # --- link performance fields (defaults preserve backward compat) ---
+    propagation_rtt: float = 0.0     # pure propagation portion of satellite_rtt (ms)
+    queuing_rtt: float = 0.0         # total queuing delay along sat path, RTT (ms)
+    transmission_rtt: float = 0.0    # total serialization delay along sat path, RTT (ms)
+    loss_probability: float = 0.0    # end-to-end packet loss probability [0,1]
+    bottleneck_gbps: float = 0.0     # min link capacity along the sat path (Gbps)
+    effective_throughput_gbps: float = 0.0  # demand × (1−loss), capped by bottleneck
 
 
 @dataclass(frozen=True, slots=True)

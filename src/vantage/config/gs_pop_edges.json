@@ -1,1234 +1,1255 @@
 [
   {
-    "gs_id": "632430d9e10d6",
-    "pop_code": "msp",
-    "distance_km": 645.4,
-    "backhaul_delay": 3.55,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10db",
-    "pop_code": "den",
-    "distance_km": 153.8,
-    "backhaul_delay": 0.846,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10dc",
-    "pop_code": "mci",
-    "distance_km": 278.8,
-    "backhaul_delay": 1.533,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10dd",
-    "pop_code": "sea",
-    "distance_km": 189.0,
-    "backhaul_delay": 1.039,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10de",
-    "pop_code": "iad",
-    "distance_km": 42.5,
-    "backhaul_delay": 0.234,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10df",
-    "pop_code": "den",
-    "distance_km": 65.7,
-    "backhaul_delay": 0.361,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e0",
-    "pop_code": "sea",
-    "distance_km": 2430.7,
-    "backhaul_delay": 13.369,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e1",
-    "pop_code": "chc",
-    "distance_km": 472.0,
-    "backhaul_delay": 2.596,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e2",
-    "pop_code": "chc",
-    "distance_km": 321.4,
-    "backhaul_delay": 1.768,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e3",
-    "pop_code": "chc",
-    "distance_km": 74.0,
-    "backhaul_delay": 0.407,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e4",
-    "pop_code": "akl",
-    "distance_km": 30.1,
-    "backhaul_delay": 0.165,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e5",
-    "pop_code": "akl",
-    "distance_km": 71.8,
-    "backhaul_delay": 0.395,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e6",
-    "pop_code": "akl",
-    "distance_km": 124.6,
-    "backhaul_delay": 0.686,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e7",
-    "pop_code": "yyc",
-    "distance_km": 340.8,
-    "backhaul_delay": 1.874,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e8",
-    "pop_code": "sea",
-    "distance_km": 24.6,
-    "backhaul_delay": 0.135,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10e9",
-    "pop_code": "iad",
-    "distance_km": 363.0,
-    "backhaul_delay": 1.996,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ea",
-    "pop_code": "msp",
-    "distance_km": 202.9,
-    "backhaul_delay": 1.116,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10eb",
-    "pop_code": "sea",
-    "distance_km": 178.8,
-    "backhaul_delay": 0.983,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ec",
-    "pop_code": "lax",
-    "distance_km": 16.0,
-    "backhaul_delay": 0.088,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ed",
-    "pop_code": "sjc",
-    "distance_km": 203.3,
-    "backhaul_delay": 1.118,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ee",
-    "pop_code": "mtr",
-    "distance_km": 79.0,
-    "backhaul_delay": 0.434,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ef",
-    "pop_code": "sea",
-    "distance_km": 510.9,
-    "backhaul_delay": 2.81,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f0",
-    "pop_code": "slc",
-    "distance_km": 401.2,
-    "backhaul_delay": 2.207,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f1",
-    "pop_code": "qro",
-    "distance_km": 679.8,
-    "backhaul_delay": 3.739,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f2",
-    "pop_code": "dfw",
-    "distance_km": 165.8,
-    "backhaul_delay": 0.912,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f3",
-    "pop_code": "lga",
-    "distance_km": 106.7,
-    "backhaul_delay": 0.587,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f4",
-    "pop_code": "mci",
-    "distance_km": 304.4,
-    "backhaul_delay": 1.674,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f5",
-    "pop_code": "mci",
-    "distance_km": 173.0,
-    "backhaul_delay": 0.952,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f6",
-    "pop_code": "ord",
-    "distance_km": 457.7,
-    "backhaul_delay": 2.517,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f7",
-    "pop_code": "den",
-    "distance_km": 756.4,
-    "backhaul_delay": 4.16,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f8",
-    "pop_code": "lax",
-    "distance_km": 96.1,
-    "backhaul_delay": 0.529,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10f9",
-    "pop_code": "msp",
-    "distance_km": 401.8,
-    "backhaul_delay": 2.21,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10fa",
-    "pop_code": "dfw",
-    "distance_km": 644.3,
-    "backhaul_delay": 3.543,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10fb",
-    "pop_code": "dfw",
-    "distance_km": 167.2,
-    "backhaul_delay": 0.92,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10fc",
-    "pop_code": "msp",
-    "distance_km": 322.0,
-    "backhaul_delay": 1.771,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10fd",
-    "pop_code": "sjc",
-    "distance_km": 491.1,
-    "backhaul_delay": 2.701,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10fe",
-    "pop_code": "yyc",
-    "distance_km": 571.8,
-    "backhaul_delay": 3.145,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e10ff",
-    "pop_code": "yyc",
-    "distance_km": 342.8,
-    "backhaul_delay": 1.886,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1100",
-    "pop_code": "atl",
-    "distance_km": 304.3,
-    "backhaul_delay": 1.674,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1101",
-    "pop_code": "atl",
-    "distance_km": 469.0,
-    "backhaul_delay": 2.579,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1102",
-    "pop_code": "phx",
-    "distance_km": 182.1,
-    "backhaul_delay": 1.001,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1103",
-    "pop_code": "sea",
-    "distance_km": 260.9,
-    "backhaul_delay": 1.435,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1104",
-    "pop_code": "slc",
-    "distance_km": 78.2,
-    "backhaul_delay": 0.43,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1105",
-    "pop_code": "mci",
-    "distance_km": 305.8,
-    "backhaul_delay": 1.682,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1106",
-    "pop_code": "slc",
-    "distance_km": 104.5,
-    "backhaul_delay": 0.575,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1107",
-    "pop_code": "ord",
-    "distance_km": 456.0,
-    "backhaul_delay": 2.508,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1108",
-    "pop_code": "mia",
-    "distance_km": 208.2,
-    "backhaul_delay": 1.145,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1109",
-    "pop_code": "atl",
-    "distance_km": 198.3,
-    "backhaul_delay": 1.091,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110a",
-    "pop_code": "yyc",
-    "distance_km": 2795.8,
-    "backhaul_delay": 15.377,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110b",
-    "pop_code": "atl",
-    "distance_km": 279.2,
-    "backhaul_delay": 1.536,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110c",
-    "pop_code": "sjc",
-    "distance_km": 181.7,
-    "backhaul_delay": 1.0,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110d",
-    "pop_code": "iad",
-    "distance_km": 289.8,
-    "backhaul_delay": 1.594,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110e",
-    "pop_code": "iad",
-    "distance_km": 380.3,
-    "backhaul_delay": 2.092,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e110f",
-    "pop_code": "den",
-    "distance_km": 509.4,
-    "backhaul_delay": 2.802,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1110",
-    "pop_code": "dfw",
-    "distance_km": 404.5,
-    "backhaul_delay": 2.225,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1111",
-    "pop_code": "msp",
-    "distance_km": 293.5,
-    "backhaul_delay": 1.614,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1112",
-    "pop_code": "sjc",
-    "distance_km": 3835.2,
-    "backhaul_delay": 21.093,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1113",
-    "pop_code": "sjc",
-    "distance_km": 3889.7,
-    "backhaul_delay": 21.393,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1114",
-    "pop_code": "iad",
-    "distance_km": 474.1,
-    "backhaul_delay": 2.608,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1115",
-    "pop_code": "ord",
-    "distance_km": 465.8,
-    "backhaul_delay": 2.562,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1116",
-    "pop_code": "mci",
-    "distance_km": 50.0,
-    "backhaul_delay": 0.275,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1117",
-    "pop_code": "atl",
-    "distance_km": 28.0,
-    "backhaul_delay": 0.154,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1118",
-    "pop_code": "mia",
-    "distance_km": 45.4,
-    "backhaul_delay": 0.25,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1119",
-    "pop_code": "ord",
-    "distance_km": 19.0,
-    "backhaul_delay": 0.104,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e111a",
-    "pop_code": "mia",
-    "distance_km": 387.8,
-    "backhaul_delay": 2.133,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1122",
-    "pop_code": "mtr",
-    "distance_km": 1602.4,
-    "backhaul_delay": 8.813,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1123",
-    "pop_code": "mel",
-    "distance_km": 720.9,
-    "backhaul_delay": 3.965,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1124",
-    "pop_code": "bne",
-    "distance_km": 1082.6,
-    "backhaul_delay": 5.955,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1125",
-    "pop_code": "bne",
-    "distance_km": 696.3,
-    "backhaul_delay": 3.83,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1126",
-    "pop_code": "mel",
-    "distance_km": 1041.5,
-    "backhaul_delay": 5.728,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1127",
-    "pop_code": "syd",
-    "distance_km": 235.6,
-    "backhaul_delay": 1.296,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1128",
-    "pop_code": "per",
-    "distance_km": 210.2,
-    "backhaul_delay": 1.156,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1129",
-    "pop_code": "mad",
-    "distance_km": 545.3,
-    "backhaul_delay": 2.999,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112a",
-    "pop_code": "lon",
-    "distance_km": 398.7,
-    "backhaul_delay": 2.193,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112b",
-    "pop_code": "lon",
-    "distance_km": 41.4,
-    "backhaul_delay": 0.227,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112c",
-    "pop_code": "lon",
-    "distance_km": 420.1,
-    "backhaul_delay": 2.311,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112d",
-    "pop_code": "fra",
-    "distance_km": 30.0,
-    "backhaul_delay": 0.165,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112e",
-    "pop_code": "sea",
-    "distance_km": 1067.4,
-    "backhaul_delay": 5.871,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e112f",
-    "pop_code": "scl",
-    "distance_km": 2177.2,
-    "backhaul_delay": 11.975,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1130",
-    "pop_code": "scl",
-    "distance_km": 19.6,
-    "backhaul_delay": 0.108,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1131",
-    "pop_code": "lim",
-    "distance_km": 1781.3,
-    "backhaul_delay": 9.797,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1131",
-    "pop_code": "scl",
-    "distance_km": 704.9,
-    "backhaul_delay": 3.877,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1132",
-    "pop_code": "scl",
-    "distance_km": 377.5,
-    "backhaul_delay": 2.076,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1133",
-    "pop_code": "scl",
-    "distance_km": 252.2,
-    "backhaul_delay": 1.387,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1134",
-    "pop_code": "scl",
-    "distance_km": 654.1,
-    "backhaul_delay": 3.597,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1135",
-    "pop_code": "scl",
-    "distance_km": 927.2,
-    "backhaul_delay": 5.099,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1136",
-    "pop_code": "mtr",
-    "distance_km": 433.7,
-    "backhaul_delay": 2.385,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1137",
-    "pop_code": "fra",
-    "distance_km": 219.7,
-    "backhaul_delay": 1.208,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1138",
-    "pop_code": "per",
-    "distance_km": 229.1,
-    "backhaul_delay": 1.26,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1139",
-    "pop_code": "cgk",
-    "distance_km": 2886.3,
-    "backhaul_delay": 15.875,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1139",
-    "pop_code": "per",
-    "distance_km": 116.0,
-    "backhaul_delay": 0.638,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1139",
-    "pop_code": "sin",
-    "distance_km": 3786.9,
-    "backhaul_delay": 20.828,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1139",
-    "pop_code": "sub",
-    "distance_km": 2638.5,
-    "backhaul_delay": 14.512,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113a",
-    "pop_code": "mel",
-    "distance_km": 518.8,
-    "backhaul_delay": 2.854,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113b",
-    "pop_code": "mel",
-    "distance_km": 203.3,
-    "backhaul_delay": 1.118,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113c",
-    "pop_code": "syd",
-    "distance_km": 310.7,
-    "backhaul_delay": 1.709,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113d",
-    "pop_code": "bne",
-    "distance_km": 714.7,
-    "backhaul_delay": 3.931,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113e",
-    "pop_code": "bne",
-    "distance_km": 343.1,
-    "backhaul_delay": 1.887,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e113f",
-    "pop_code": "syd",
-    "distance_km": 396.2,
-    "backhaul_delay": 2.179,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1140",
-    "pop_code": "per",
-    "distance_km": 476.2,
-    "backhaul_delay": 2.619,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1141",
-    "pop_code": "lon",
-    "distance_km": 564.7,
-    "backhaul_delay": 3.106,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1148",
-    "pop_code": "lon",
-    "distance_km": 593.2,
-    "backhaul_delay": 3.263,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1149",
-    "pop_code": "dfw",
-    "distance_km": 355.3,
-    "backhaul_delay": 1.954,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114a",
-    "pop_code": "sea",
-    "distance_km": 3171.9,
-    "backhaul_delay": 17.445,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114b",
-    "pop_code": "mtr",
-    "distance_km": 188.4,
-    "backhaul_delay": 1.036,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114c",
-    "pop_code": "mtr",
-    "distance_km": 462.4,
-    "backhaul_delay": 2.543,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114d",
-    "pop_code": "mel",
-    "distance_km": 53.5,
-    "backhaul_delay": 0.294,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114e",
-    "pop_code": "mel",
-    "distance_km": 119.0,
-    "backhaul_delay": 0.655,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e114f",
-    "pop_code": "bne",
-    "distance_km": 220.3,
-    "backhaul_delay": 1.212,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1150",
-    "pop_code": "mtr",
-    "distance_km": 372.7,
-    "backhaul_delay": 2.05,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1151",
-    "pop_code": "msp",
-    "distance_km": 668.9,
-    "backhaul_delay": 3.679,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1152",
-    "pop_code": "mtr",
-    "distance_km": 791.0,
-    "backhaul_delay": 4.351,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1153",
-    "pop_code": "bom",
-    "distance_km": 4759.1,
-    "backhaul_delay": 26.175,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1153",
-    "pop_code": "doh",
-    "distance_km": 2639.3,
-    "backhaul_delay": 14.516,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1153",
-    "pop_code": "mct",
-    "distance_km": 3242.8,
-    "backhaul_delay": 17.836,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1153",
-    "pop_code": "sof",
-    "distance_km": 556.7,
-    "backhaul_delay": 3.062,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1154",
-    "pop_code": "waw",
-    "distance_km": 40.8,
-    "backhaul_delay": 0.224,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1155",
-    "pop_code": "syd",
-    "distance_km": 124.5,
-    "backhaul_delay": 0.685,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1156",
-    "pop_code": "syd",
-    "distance_km": 160.5,
-    "backhaul_delay": 0.883,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1157",
-    "pop_code": "mad",
-    "distance_km": 514.6,
-    "backhaul_delay": 2.83,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1158",
-    "pop_code": "mad",
-    "distance_km": 41.2,
-    "backhaul_delay": 0.227,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1159",
-    "pop_code": "mad",
-    "distance_km": 329.3,
-    "backhaul_delay": 1.811,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115a",
-    "pop_code": "mad",
-    "distance_km": 470.6,
-    "backhaul_delay": 2.588,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115b",
-    "pop_code": "waw",
-    "distance_km": 349.4,
-    "backhaul_delay": 1.922,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115c",
-    "pop_code": "akl",
-    "distance_km": 2112.9,
-    "backhaul_delay": 11.621,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115d",
-    "pop_code": "mia",
-    "distance_km": 1656.2,
-    "backhaul_delay": 9.109,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115e",
-    "pop_code": "mia",
-    "distance_km": 1647.0,
-    "backhaul_delay": 9.058,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e115f",
-    "pop_code": "tyo",
-    "distance_km": 2525.7,
-    "backhaul_delay": 13.891,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1160",
-    "pop_code": "qro",
-    "distance_km": 578.6,
-    "backhaul_delay": 3.182,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1161",
-    "pop_code": "qro",
-    "distance_km": 246.2,
-    "backhaul_delay": 1.354,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1162",
-    "pop_code": "qro",
-    "distance_km": 304.9,
-    "backhaul_delay": 1.677,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1163",
-    "pop_code": "qro",
-    "distance_km": 23.1,
-    "backhaul_delay": 0.127,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1164",
-    "pop_code": "gua",
-    "distance_km": 454.6,
-    "backhaul_delay": 2.5,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1165",
-    "pop_code": "gua",
-    "distance_km": 712.7,
-    "backhaul_delay": 3.92,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1166",
-    "pop_code": "gua",
-    "distance_km": 196.6,
-    "backhaul_delay": 1.081,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1167",
-    "pop_code": "qro",
-    "distance_km": 1031.9,
-    "backhaul_delay": 5.676,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e116e",
-    "pop_code": "gua",
-    "distance_km": 520.7,
-    "backhaul_delay": 2.864,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e116f",
-    "pop_code": "qro",
-    "distance_km": 161.7,
-    "backhaul_delay": 0.889,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1170",
-    "pop_code": "for",
-    "distance_km": 1002.4,
-    "backhaul_delay": 5.513,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1171",
-    "pop_code": "gru",
-    "distance_km": 736.0,
-    "backhaul_delay": 4.048,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1172",
-    "pop_code": "gru",
-    "distance_km": 412.3,
-    "backhaul_delay": 2.268,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1173",
-    "pop_code": "for",
-    "distance_km": 355.3,
-    "backhaul_delay": 1.954,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1174",
-    "pop_code": "gru",
-    "distance_km": 426.6,
-    "backhaul_delay": 2.346,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1175",
-    "pop_code": "bsb",
-    "distance_km": 446.6,
-    "backhaul_delay": 2.456,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1176",
-    "pop_code": "for",
-    "distance_km": 200.0,
-    "backhaul_delay": 1.1,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1177",
-    "pop_code": "gru",
-    "distance_km": 229.4,
-    "backhaul_delay": 1.262,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1178",
-    "pop_code": "gru",
-    "distance_km": 838.9,
-    "backhaul_delay": 4.614,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1179",
-    "pop_code": "gru",
-    "distance_km": 501.0,
-    "backhaul_delay": 2.755,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117a",
-    "pop_code": "gru",
-    "distance_km": 417.1,
-    "backhaul_delay": 2.294,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117b",
-    "pop_code": "gru",
-    "distance_km": 14.2,
-    "backhaul_delay": 0.078,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117c",
-    "pop_code": "for",
-    "distance_km": 71.9,
-    "backhaul_delay": 0.395,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117d",
-    "pop_code": "for",
-    "distance_km": 545.4,
-    "backhaul_delay": 3.0,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117e",
-    "pop_code": "eze",
-    "distance_km": 566.6,
-    "backhaul_delay": 3.116,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e117f",
-    "pop_code": "scl",
-    "distance_km": 617.8,
-    "backhaul_delay": 3.398,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1180",
-    "pop_code": "mxp",
-    "distance_km": 18.1,
-    "backhaul_delay": 0.1,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1181",
-    "pop_code": "sof",
-    "distance_km": 650.3,
-    "backhaul_delay": 3.577,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1182",
-    "pop_code": "mxp",
-    "distance_km": 899.2,
-    "backhaul_delay": 4.946,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1184",
-    "pop_code": "dac",
-    "distance_km": 4138.2,
-    "backhaul_delay": 22.76,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1184",
-    "pop_code": "mnl",
-    "distance_km": 2427.9,
-    "backhaul_delay": 13.354,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1184",
-    "pop_code": "tyo",
-    "distance_km": 765.5,
-    "backhaul_delay": 4.21,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1185",
-    "pop_code": "jnb",
-    "distance_km": 4492.2,
-    "backhaul_delay": 24.707,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1185",
+    "gs_id": "accra_ghana",
     "pop_code": "los",
-    "distance_km": 0.1,
-    "backhaul_delay": 0.0,
+    "distance_km": 413.1,
+    "backhaul_delay": 2.8915,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1185",
-    "pop_code": "nbo",
-    "distance_km": 3781.5,
-    "backhaul_delay": 20.798,
+    "gs_id": "adelanto_california",
+    "pop_code": "lax",
+    "distance_km": 96.0,
+    "backhaul_delay": 0.6717,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1186",
-    "pop_code": "lon",
-    "distance_km": 160.8,
-    "backhaul_delay": 0.885,
+    "gs_id": "aerzen_delaware",
+    "pop_code": "fra",
+    "distance_km": 219.8,
+    "backhaul_delay": 1.5387,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1187",
-    "pop_code": "lon",
-    "distance_km": 101.1,
-    "backhaul_delay": 0.556,
+    "gs_id": "aflenz_os",
+    "pop_code": "mxp",
+    "distance_km": 526.7,
+    "backhaul_delay": 3.6868,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1188",
-    "pop_code": "lon",
-    "distance_km": 120.6,
-    "backhaul_delay": 0.663,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1189",
-    "pop_code": "lon",
-    "distance_km": 41.1,
-    "backhaul_delay": 0.226,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e118a",
-    "pop_code": "lon",
-    "distance_km": 100.5,
-    "backhaul_delay": 0.553,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e118b",
-    "pop_code": "lon",
-    "distance_km": 96.9,
-    "backhaul_delay": 0.533,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e118c",
-    "pop_code": "mia",
-    "distance_km": 1355.8,
-    "backhaul_delay": 7.457,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e118d",
-    "pop_code": "mia",
-    "distance_km": 1197.1,
-    "backhaul_delay": 6.584,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "632430d9e1194",
+    "gs_id": "akita_japan",
     "pop_code": "tyo",
     "distance_km": 440.1,
-    "backhaul_delay": 2.42,
+    "backhaul_delay": 3.0806,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1195",
-    "pop_code": "tyo",
-    "distance_km": 109.0,
-    "backhaul_delay": 0.599,
+    "gs_id": "anakie_victoria_australia",
+    "pop_code": "mel",
+    "distance_km": 53.5,
+    "backhaul_delay": 0.3748,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632430d9e1196",
-    "pop_code": "tyo",
-    "distance_km": 842.1,
-    "backhaul_delay": 4.632,
-    "capacity_gbps": 100.0
-  },
-  {
-    "gs_id": "6324331346aed",
+    "gs_id": "anchorage_alaska",
     "pop_code": "sea",
     "distance_km": 2304.9,
-    "backhaul_delay": 12.677,
+    "backhaul_delay": 16.1345,
     "capacity_gbps": 100.0
   },
   {
-    "gs_id": "632cbe4299aeb",
+    "gs_id": "angeles_pampanga_philippines",
+    "pop_code": "mnl",
+    "distance_km": 87.3,
+    "backhaul_delay": 0.611,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "aquierpa_peru",
+    "pop_code": "lim",
+    "distance_km": 763.7,
+    "backhaul_delay": 5.346,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "aracaju_brazil",
+    "pop_code": "for",
+    "distance_km": 829.5,
+    "backhaul_delay": 5.8067,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "arlington_oregon",
+    "pop_code": "sea",
+    "distance_km": 276.1,
+    "backhaul_delay": 1.9324,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ashburn_virginia",
+    "pop_code": "iad",
+    "distance_km": 0.4,
+    "backhaul_delay": 0.0028,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "atlanta_georgia",
+    "pop_code": "atl",
+    "distance_km": 4.4,
+    "backhaul_delay": 0.0307,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "awarua_new_zealand",
+    "pop_code": "chc",
+    "distance_km": 472.0,
+    "backhaul_delay": 3.3037,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "bathurst_new_south_wales_austr",
+    "pop_code": "syd",
+    "distance_km": 154.0,
+    "backhaul_delay": 1.0778,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "baxley_georgia",
+    "pop_code": "atl",
+    "distance_km": 304.3,
+    "backhaul_delay": 2.13,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "bellingham_washington",
+    "pop_code": "sea",
+    "distance_km": 129.2,
+    "backhaul_delay": 0.9044,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "benkelman_nebraska",
+    "pop_code": "den",
+    "distance_km": 299.9,
+    "backhaul_delay": 2.0992,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "blountsville_alabama",
+    "pop_code": "atl",
+    "distance_km": 205.6,
+    "backhaul_delay": 1.4392,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "boca_chica_texas",
+    "pop_code": "qro",
+    "distance_km": 678.8,
+    "backhaul_delay": 4.7515,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cundinamarca_(bogota)_colorado",
+    "pop_code": "bog",
+    "distance_km": 8.1,
+    "backhaul_delay": 0.057,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "boorowa_new_south_wales_austra",
+    "pop_code": "syd",
+    "distance_km": 235.6,
+    "backhaul_delay": 1.6491,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "broadview_illinois",
+    "pop_code": "ord",
+    "distance_km": 19.0,
+    "backhaul_delay": 0.1327,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "broken_hill_new_south_wales_au",
+    "pop_code": "mel",
+    "distance_km": 720.9,
+    "backhaul_delay": 5.0464,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "brunswick_maine",
+    "pop_code": "mtr",
+    "distance_km": 338.8,
+    "backhaul_delay": 2.3714,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "buenos_aires_arkansas",
+    "pop_code": "eze",
+    "distance_km": 4.9,
+    "backhaul_delay": 0.0342,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "bulla_bulling_western_australi",
+    "pop_code": "per",
+    "distance_km": 476.2,
+    "backhaul_delay": 3.3334,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "caldera_chile",
+    "pop_code": "scl",
+    "distance_km": 704.9,
+    "backhaul_delay": 4.934,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "la_caleta_dominican_republic",
+    "pop_code": "mia",
+    "distance_km": 1355.8,
+    "backhaul_delay": 9.4903,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "calgary_ab_california",
+    "pop_code": "yyc",
+    "distance_km": 4.2,
+    "backhaul_delay": 0.0297,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "calverton_new_york",
+    "pop_code": "lga",
+    "distance_km": 103.7,
+    "backhaul_delay": 0.726,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cataby_western_australia_austr",
+    "pop_code": "per",
+    "distance_km": 116.0,
+    "backhaul_delay": 0.8119,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "caucaia_brazil",
+    "pop_code": "for",
+    "distance_km": 53.3,
+    "backhaul_delay": 0.3731,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "centennial_colorado",
+    "pop_code": "den",
+    "distance_km": 21.3,
+    "backhaul_delay": 0.1492,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "chalfont_grove_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 41.4,
+    "backhaul_delay": 0.2895,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "charcas_mexico",
+    "pop_code": "qro",
+    "distance_km": 304.9,
+    "backhaul_delay": 2.1345,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cikarang_barat_java_idaho",
+    "pop_code": "cgk",
+    "distance_km": 31.2,
+    "backhaul_delay": 0.2182,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cleavdon_new_zealand",
+    "pop_code": "akl",
+    "distance_km": 30.1,
+    "backhaul_delay": 0.2107,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cleavedon_new_zealand",
+    "pop_code": "akl",
+    "distance_km": 30.2,
+    "backhaul_delay": 0.2114,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "clinton_illinois",
+    "pop_code": "ord",
+    "distance_km": 215.8,
+    "backhaul_delay": 1.5106,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "colburn_idaho",
+    "pop_code": "yyc",
+    "distance_km": 342.8,
+    "backhaul_delay": 2.3998,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "columbus_ohio",
+    "pop_code": "ord",
+    "distance_km": 455.1,
+    "backhaul_delay": 3.1857,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "corpus_christi_texas",
+    "pop_code": "dfw",
+    "distance_km": 560.1,
+    "backhaul_delay": 3.921,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "covilha_portugal",
+    "pop_code": "mad",
+    "distance_km": 327.1,
+    "backhaul_delay": 2.2899,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "cromwell_new_zealand",
+    "pop_code": "chc",
+    "distance_km": 322.4,
+    "backhaul_delay": 2.257,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "dallas_texas",
+    "pop_code": "dfw",
+    "distance_km": 10.5,
+    "backhaul_delay": 0.0738,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "des_moines_new_mexico",
+    "pop_code": "den",
+    "distance_km": 354.9,
+    "backhaul_delay": 2.4841,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "douglas_wyoming",
+    "pop_code": "den",
+    "distance_km": 334.3,
+    "backhaul_delay": 2.34,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "dubuque_iowa",
+    "pop_code": "ord",
+    "distance_km": 259.0,
+    "backhaul_delay": 1.8127,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "elkton_maryland",
+    "pop_code": "iad",
+    "distance_km": 149.9,
+    "backhaul_delay": 1.0494,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "evanston_wyoming",
+    "pop_code": "slc",
+    "distance_km": 104.5,
+    "backhaul_delay": 0.7314,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "falda_del_carmen_arkansas",
+    "pop_code": "scl",
+    "distance_km": 617.8,
+    "backhaul_delay": 4.3245,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "fawley_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 120.6,
+    "backhaul_delay": 0.844,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "foggia_italy",
+    "pop_code": "sof",
+    "distance_km": 646.6,
+    "backhaul_delay": 4.5264,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "foggia_italy",
+    "pop_code": "sof",
+    "distance_km": 646.7,
+    "backhaul_delay": 4.5272,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "fortaleza_brazil",
+    "pop_code": "for",
+    "distance_km": 0.4,
+    "backhaul_delay": 0.0029,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "frankfurt_delaware",
+    "pop_code": "fra",
+    "distance_km": 30.0,
+    "backhaul_delay": 0.2098,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "fremont_california",
+    "pop_code": "sjc",
+    "distance_km": 31.0,
+    "backhaul_delay": 0.2169,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "garrettstown_(ballinspittle)_i",
+    "pop_code": "lon",
+    "distance_km": 593.2,
+    "backhaul_delay": 4.1524,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "kaliakair_gazipur_bangladesh",
+    "pop_code": "dac",
+    "distance_km": 0.3,
+    "backhaul_delay": 0.0021,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "goodyear_arizona",
+    "pop_code": "phx",
+    "distance_km": 41.2,
+    "backhaul_delay": 0.2881,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "goonhilly_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 398.7,
+    "backhaul_delay": 2.791,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "hillsboro_texas",
+    "pop_code": "dfw",
+    "distance_km": 91.5,
+    "backhaul_delay": 0.6403,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "hinds_new_zealand",
+    "pop_code": "chc",
+    "distance_km": 100.5,
+    "backhaul_delay": 0.7032,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "hitachinaka_ibaraki_japan",
+    "pop_code": "tyo",
+    "distance_km": 109.0,
+    "backhaul_delay": 0.7628,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "hoofddorp_netherlands",
+    "pop_code": "lon",
+    "distance_km": 333.0,
+    "backhaul_delay": 2.3312,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ibi_spain",
+    "pop_code": "mad",
+    "distance_km": 329.3,
+    "backhaul_delay": 2.3052,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ikire_nigeria",
+    "pop_code": "los",
+    "distance_km": 125.0,
+    "backhaul_delay": 0.8749,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "itabora\u00ed_brazil",
+    "pop_code": "gru",
+    "distance_km": 412.3,
+    "backhaul_delay": 2.8859,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "jo\u00e3o_c\u00e2mara_brazil",
+    "pop_code": "for",
+    "distance_km": 355.3,
+    "backhaul_delay": 2.487,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "juazeiro_do_norte_brazil",
+    "pop_code": "for",
+    "distance_km": 399.0,
+    "backhaul_delay": 2.793,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "kaunas_lithuania",
+    "pop_code": "waw",
+    "distance_km": 354.6,
+    "backhaul_delay": 2.4823,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "grant_of_authority_9+5_of_40_d",
+    "pop_code": "mia",
+    "distance_km": 247.2,
+    "backhaul_delay": 1.7302,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "kendari_sulawesi_idaho",
+    "pop_code": "sub",
+    "distance_km": 1141.2,
+    "backhaul_delay": 7.9885,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ki_ki_south_australia_australi",
+    "pop_code": "mel",
+    "distance_km": 518.9,
+    "backhaul_delay": 3.632,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "koonwarra_victoria_australia",
+    "pop_code": "mel",
+    "distance_km": 119.0,
+    "backhaul_delay": 0.8329,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "lekki_nigeria",
+    "pop_code": "los",
+    "distance_km": 0.1,
+    "backhaul_delay": 0.0005,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "lepe_spain",
+    "pop_code": "mad",
+    "distance_km": 471.9,
+    "backhaul_delay": 3.3033,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "santiago_de_surco_lima_peru",
+    "pop_code": "lim",
+    "distance_km": 0.3,
+    "backhaul_delay": 0.0022,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "lindon_utah",
+    "pop_code": "slc",
+    "distance_km": 48.2,
+    "backhaul_delay": 0.3374,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "lisle_illinois",
+    "pop_code": "ord",
+    "distance_km": 39.4,
+    "backhaul_delay": 0.2757,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "litchfield_connecticut",
+    "pop_code": "lga",
+    "distance_km": 106.7,
+    "backhaul_delay": 0.7469,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "llano_grande_mexico",
+    "pop_code": "qro",
+    "distance_km": 161.7,
+    "backhaul_delay": 1.1318,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "lobatse_botswana",
+    "pop_code": "jnb",
+    "distance_km": 268.1,
+    "backhaul_delay": 1.8766,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "loeches_spain",
+    "pop_code": "mad",
+    "distance_km": 18.8,
+    "backhaul_delay": 0.1318,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "los_angeles_california",
+    "pop_code": "lax",
+    "distance_km": 14.9,
+    "backhaul_delay": 0.1043,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "luz_brazil",
+    "pop_code": "gru",
+    "distance_km": 426.6,
+    "backhaul_delay": 2.9861,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "macquarie_park_new_south_wales",
+    "pop_code": "syd",
+    "distance_km": 0.1,
+    "backhaul_delay": 0.0006,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "makassar_idaho",
+    "pop_code": "sub",
+    "distance_km": 775.5,
+    "backhaul_delay": 5.4283,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "malaga_western_australia_austr",
+    "pop_code": "per",
+    "distance_km": 0.0,
+    "backhaul_delay": 0.0002,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "manaus_brazil",
     "pop_code": "bog",
     "distance_km": 1786.1,
-    "backhaul_delay": 9.823,
+    "backhaul_delay": 12.5025,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mandale_north_carolina",
+    "pop_code": "iad",
+    "distance_km": 380.3,
+    "backhaul_delay": 2.6621,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "marathon_on_california",
+    "pop_code": "msp",
+    "distance_km": 668.9,
+    "backhaul_delay": 4.6823,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "marsala_italy",
+    "pop_code": "mxp",
+    "distance_km": 899.1,
+    "backhaul_delay": 6.294,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "marshall_texas",
+    "pop_code": "dfw",
+    "distance_km": 225.6,
+    "backhaul_delay": 1.5794,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "matola_mozambique",
+    "pop_code": "jnb",
+    "distance_km": 422.1,
+    "backhaul_delay": 2.9545,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mazahua_mexico",
+    "pop_code": "gua",
+    "distance_km": 520.7,
+    "backhaul_delay": 3.6452,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mendoza_arkansas",
+    "pop_code": "scl",
+    "distance_km": 180.0,
+    "backhaul_delay": 1.2602,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "merida_mexico",
+    "pop_code": "gua",
+    "distance_km": 712.7,
+    "backhaul_delay": 4.9891,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "merredin_western_australia_aus",
+    "pop_code": "per",
+    "distance_km": 229.1,
+    "backhaul_delay": 1.6038,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mesa_arizona",
+    "pop_code": "phx",
+    "distance_km": 10.7,
+    "backhaul_delay": 0.0749,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "molokai_hawaii",
+    "pop_code": "sjc",
+    "distance_km": 3834.9,
+    "backhaul_delay": 26.8442,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "montes_carlos_brazil",
+    "pop_code": "bsb",
+    "distance_km": 446.6,
+    "backhaul_delay": 3.1261,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "morn_hill_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 101.1,
+    "backhaul_delay": 0.7079,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mossor\u00f3_brazil",
+    "pop_code": "for",
+    "distance_km": 200.0,
+    "backhaul_delay": 1.3997,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "mt_ayr_indiana",
+    "pop_code": "ord",
+    "distance_km": 109.3,
+    "backhaul_delay": 0.7648,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "muallim_t\u00fcrkiye",
+    "pop_code": "sof",
+    "distance_km": 556.7,
+    "backhaul_delay": 3.8971,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "nairobi_kenya",
+    "pop_code": "nbo",
+    "distance_km": 15.5,
+    "backhaul_delay": 0.1082,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "nairobi_kenya_-_karen",
+    "pop_code": "nbo",
+    "distance_km": 0.2,
+    "backhaul_delay": 0.0011,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "niland_california",
+    "pop_code": "lax",
+    "distance_km": 274.1,
+    "backhaul_delay": 1.9185,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ningi_queensland_australia",
+    "pop_code": "bne",
+    "distance_km": 42.9,
+    "backhaul_delay": 0.3004,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "north_miami_florida",
+    "pop_code": "mia",
+    "distance_km": 18.6,
+    "backhaul_delay": 0.1301,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "nova_santa_rita_brazil",
+    "pop_code": "gru",
+    "distance_km": 834.2,
+    "backhaul_delay": 5.8391,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "noviciado_chile",
+    "pop_code": "scl",
+    "distance_km": 19.6,
+    "backhaul_delay": 0.1374,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "oistins_barbados",
+    "pop_code": "bog",
+    "distance_km": 1856.6,
+    "backhaul_delay": 12.996,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "okun_ajah_nigeria",
+    "pop_code": "los",
+    "distance_km": 6.8,
+    "backhaul_delay": 0.0479,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "otaru_hokkaido_japan",
+    "pop_code": "tyo",
+    "distance_km": 842.1,
+    "backhaul_delay": 5.8949,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "palangka_raya_kalimantan_idaho",
+    "pop_code": "sub",
+    "distance_km": 577.1,
+    "backhaul_delay": 4.0395,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "passa_quatro_brazil",
+    "pop_code": "gru",
+    "distance_km": 229.4,
+    "backhaul_delay": 1.6059,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "pe\u00f1uelas_mexico",
+    "pop_code": "qro",
+    "distance_km": 246.1,
+    "backhaul_delay": 1.7229,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "petra_jaya_malaysia",
+    "pop_code": "sin",
+    "distance_km": 728.9,
+    "backhaul_delay": 5.1025,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "pimba_south_australia_australi",
+    "pop_code": "mel",
+    "distance_km": 1041.6,
+    "backhaul_delay": 7.291,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "piura_peru",
+    "pop_code": "lim",
+    "distance_km": 871.9,
+    "backhaul_delay": 6.1032,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "plana_bulgaria",
+    "pop_code": "sof",
+    "distance_km": 27.0,
+    "backhaul_delay": 0.1887,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "ponce_puerto_rico",
+    "pop_code": "mia",
+    "distance_km": 1647.0,
+    "backhaul_delay": 11.5287,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "port_matilda_pennsylvania",
+    "pop_code": "iad",
+    "distance_km": 204.3,
+    "backhaul_delay": 1.43,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "porto_alegre_brazil",
+    "pop_code": "gru",
+    "distance_km": 838.9,
+    "backhaul_delay": 5.8726,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "presidente_prudente_brazil",
+    "pop_code": "gru",
+    "distance_km": 501.0,
+    "backhaul_delay": 3.5069,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "prosser_washington",
+    "pop_code": "sea",
+    "distance_km": 260.9,
+    "backhaul_delay": 1.8263,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "puerto_montt_chile",
+    "pop_code": "scl",
+    "distance_km": 927.2,
+    "backhaul_delay": 6.4904,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "puerto_saavedra_chile",
+    "pop_code": "scl",
+    "distance_km": 654.1,
+    "backhaul_delay": 4.5786,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "punta_arenas_chile",
+    "pop_code": "scl",
+    "distance_km": 2177.4,
+    "backhaul_delay": 15.2419,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "punta_gorda_florida",
+    "pop_code": "mia",
+    "distance_km": 208.2,
+    "backhaul_delay": 1.4573,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "puwera_new_zealand",
+    "pop_code": "akl",
+    "distance_km": 124.6,
+    "backhaul_delay": 0.8719,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "--",
+    "pop_code": "qro",
+    "distance_km": 2.0,
+    "backhaul_delay": 0.0137,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "redmond_washington",
+    "pop_code": "sea",
+    "distance_km": 24.5,
+    "backhaul_delay": 0.1715,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "rio_negro_brazil",
+    "pop_code": "gru",
+    "distance_km": 417.1,
+    "backhaul_delay": 2.9194,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "roberts_wisconsin",
+    "pop_code": "msp",
+    "distance_km": 58.2,
+    "backhaul_delay": 0.4077,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "romulus_new_york",
+    "pop_code": "lga",
+    "distance_km": 330.3,
+    "backhaul_delay": 2.3122,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "saguenay_qc_california",
+    "pop_code": "mtr",
+    "distance_km": 372.7,
+    "backhaul_delay": 2.6091,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "sambro_creek_ns_california",
+    "pop_code": "mtr",
+    "distance_km": 791.0,
+    "backhaul_delay": 5.5371,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "san_clemente_chile",
+    "pop_code": "scl",
+    "distance_km": 252.2,
+    "backhaul_delay": 1.7656,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "santa_elena_chile",
+    "pop_code": "scl",
+    "distance_km": 377.5,
+    "backhaul_delay": 2.6424,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "santana_de_parna\u00edba_brazil",
+    "pop_code": "gru",
+    "distance_km": 14.2,
+    "backhaul_delay": 0.0991,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "santiago_de_los_caballeros_dom",
+    "pop_code": "mia",
+    "distance_km": 1197.1,
+    "backhaul_delay": 8.38,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "savanna_oklahoma",
+    "pop_code": "dfw",
+    "distance_km": 237.6,
+    "backhaul_delay": 1.6635,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "savannah_tennessee",
+    "pop_code": "atl",
+    "distance_km": 371.0,
+    "backhaul_delay": 2.5972,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "sellheim_queensland_australia",
+    "pop_code": "bne",
+    "distance_km": 1067.2,
+    "backhaul_delay": 7.4702,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "sheffield_illinois",
+    "pop_code": "ord",
+    "distance_km": 184.6,
+    "backhaul_delay": 1.2924,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "singapore_singapore",
+    "pop_code": "sin",
+    "distance_km": 12.4,
+    "backhaul_delay": 0.0871,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "springbrook_creek_new_south_wa",
+    "pop_code": "syd",
+    "distance_km": 396.1,
+    "backhaul_delay": 2.773,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "st_johns_netherlands_californi",
+    "pop_code": "mtr",
+    "distance_km": 1602.3,
+    "backhaul_delay": 11.2164,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "sterling_virginia",
+    "pop_code": "iad",
+    "distance_km": 4.6,
+    "backhaul_delay": 0.0324,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "surubim_brazil",
+    "pop_code": "for",
+    "distance_km": 545.4,
+    "backhaul_delay": 3.818,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "suva_fiji",
+    "pop_code": "akl",
+    "distance_km": 2112.9,
+    "backhaul_delay": 14.7901,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "tapachula_mexico",
+    "pop_code": "gua",
+    "distance_km": 196.6,
+    "backhaul_delay": 1.3759,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "te_hana_new_zealand",
+    "pop_code": "akl",
+    "distance_km": 71.8,
+    "backhaul_delay": 0.5025,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "thika_kenya",
+    "pop_code": "nbo",
+    "distance_km": 52.2,
+    "backhaul_delay": 0.3652,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "thomaston_georgia",
+    "pop_code": "atl",
+    "distance_km": 91.0,
+    "backhaul_delay": 0.6369,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "toa_baja_puerto_rico",
+    "pop_code": "mia",
+    "distance_km": 1656.2,
+    "backhaul_delay": 11.5933,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "torrumbarry_victoria_australia",
+    "pop_code": "mel",
+    "distance_km": 203.3,
+    "backhaul_delay": 1.4234,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "tukwila_washington",
+    "pop_code": "sea",
+    "distance_km": 12.1,
+    "backhaul_delay": 0.0848,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "tumon_guam",
+    "pop_code": "tyo",
+    "distance_km": 2517.9,
+    "backhaul_delay": 17.6252,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "uruguaiana_brazil",
+    "pop_code": "eze",
+    "distance_km": 566.6,
+    "backhaul_delay": 3.9664,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "villamaggiore_italy",
+    "pop_code": "mxp",
+    "distance_km": 18.6,
+    "backhaul_delay": 0.1305,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "villamaggiore_italy",
+    "pop_code": "mxp",
+    "distance_km": 19.1,
+    "backhaul_delay": 0.1335,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "virginia_beach_virginia",
+    "pop_code": "iad",
+    "distance_km": 278.9,
+    "backhaul_delay": 1.9523,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "warra_queensland_australia",
+    "pop_code": "bne",
+    "distance_km": 220.3,
+    "backhaul_delay": 1.5422,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "watkins_colorado",
+    "pop_code": "den",
+    "distance_km": 32.4,
+    "backhaul_delay": 0.2268,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "west_jordan_utah",
+    "pop_code": "slc",
+    "distance_km": 11.2,
+    "backhaul_delay": 0.0787,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "westbury_new_york",
+    "pop_code": "lga",
+    "distance_km": 37.8,
+    "backhaul_delay": 0.2648,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "wherstead_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 96.9,
+    "backhaul_delay": 0.6784,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "willemstad_cura\u00e7ao",
+    "pop_code": "bog",
+    "distance_km": 1007.7,
+    "backhaul_delay": 7.0538,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "willemstad_cura\u00e7ao",
+    "pop_code": "bog",
+    "distance_km": 1007.7,
+    "backhaul_delay": 7.0538,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "willows._queensland_australia",
+    "pop_code": "bne",
+    "distance_km": 696.3,
+    "backhaul_delay": 4.8742,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "wola_krobowska_poland",
+    "pop_code": "waw",
+    "distance_km": 40.8,
+    "backhaul_delay": 0.2854,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "woodwalton_united_kingdom",
+    "pop_code": "lon",
+    "distance_km": 100.5,
+    "backhaul_delay": 0.7033,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "yamaguchi_japan",
+    "pop_code": "tyo",
+    "distance_km": 765.5,
+    "backhaul_delay": 5.3586,
+    "capacity_gbps": 100.0
+  },
+  {
+    "gs_id": "york_pennsylvania",
+    "pop_code": "iad",
+    "distance_km": 123.5,
+    "backhaul_delay": 0.8643,
     "capacity_gbps": 100.0
   }
 ]

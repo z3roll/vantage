@@ -132,39 +132,61 @@ class SphericalAccessModel:
         sat_positions: NDArray[np.float64],
         min_elevation_deg: float,
     ) -> tuple[AccessLink, ...]:
-        """Compute access links to all visible satellites."""
+        """Compute access links to all visible satellites (vectorized)."""
         if sat_positions.ndim != 2 or sat_positions.shape[1] != 3:
             raise ValueError(
                 f"sat_positions must have shape (n_sats, 3), got {sat_positions.shape}"
             )
 
-        gx, gy, gz = _to_ecef(ground_lat_deg, ground_lon_deg, ground_alt_km)
-        links: list[AccessLink] = []
+        # Ground point ECEF
+        g_lat = np.radians(ground_lat_deg)
+        g_lon = np.radians(ground_lon_deg)
+        g_r = EARTH_RADIUS_KM + ground_alt_km
+        gx = g_r * np.cos(g_lat) * np.cos(g_lon)
+        gy = g_r * np.cos(g_lat) * np.sin(g_lon)
+        gz = g_r * np.sin(g_lat)
 
-        for sat_id in range(sat_positions.shape[0]):
-            sat_lat = float(sat_positions[sat_id, 0])
-            sat_lon = float(sat_positions[sat_id, 1])
-            sat_alt = float(sat_positions[sat_id, 2])
+        # All satellites ECEF (vectorized)
+        s_lat = np.radians(sat_positions[:, 0])
+        s_lon = np.radians(sat_positions[:, 1])
+        s_r = EARTH_RADIUS_KM + sat_positions[:, 2]
+        sx = s_r * np.cos(s_lat) * np.cos(s_lon)
+        sy = s_r * np.cos(s_lat) * np.sin(s_lon)
+        sz = s_r * np.sin(s_lat)
 
-            sx, sy, sz = _to_ecef(sat_lat, sat_lon, sat_alt)
-            elev, slant = _elevation_and_range(
-                ground_lat_deg, ground_lon_deg, gx, gy, gz, sx, sy, sz
+        # Slant range
+        dx, dy, dz = sx - gx, sy - gy, sz - gz
+        dist = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+        # Elevation angle
+        ux = np.cos(g_lat) * np.cos(g_lon)
+        uy = np.cos(g_lat) * np.sin(g_lon)
+        uz = np.sin(g_lat)
+        sin_elev = np.clip((dx * ux + dy * uy + dz * uz) / np.maximum(dist, 1e-10), -1.0, 1.0)
+        elev = np.degrees(np.arcsin(sin_elev))
+
+        # Filter visible satellites
+        mask = elev >= min_elevation_deg
+        visible_ids = np.where(mask)[0]
+        visible_elev = elev[mask]
+        visible_slant = dist[mask]
+
+        # Sort by elevation descending
+        order = np.argsort(-visible_elev)
+        visible_ids = visible_ids[order]
+        visible_elev = visible_elev[order]
+        visible_slant = visible_slant[order]
+        visible_delay = visible_slant / C_VACUUM_KM_S * 1000  # ms
+
+        return tuple(
+            AccessLink(
+                sat_id=int(visible_ids[i]),
+                elevation_deg=float(visible_elev[i]),
+                slant_range_km=float(visible_slant[i]),
+                delay=float(visible_delay[i]),
             )
-
-            if elev >= min_elevation_deg:
-                delay = slant / C_VACUUM_KM_S * 1000  # ms
-                links.append(
-                    AccessLink(
-                        sat_id=sat_id,
-                        elevation_deg=elev,
-                        slant_range_km=slant,
-                        delay=delay,
-                    )
-                )
-
-        # Sort by elevation angle descending (highest first)
-        links.sort(key=lambda link: link.elevation_deg, reverse=True)
-        return tuple(links)
+            for i in range(len(visible_ids))
+        )
 
     def nearest_satellite(
         self,

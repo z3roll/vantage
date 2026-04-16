@@ -1,64 +1,182 @@
-"""Data plane: terminal-side PoP selection + delay computation.
+"""Data plane: flow-level PoP selection + delay computation.
 
-Two separate logics:
-1. DECISION: terminal selects PoP from cost tables.
-   - ground_cost present → use it for joint optimization
-   - ground_cost missing → fallback to nearest PoP (sat_cost only, like BGP)
-2. MEASUREMENT: compute actual E2E delay along resolved path.
-   - ground_rtt always computed from ground_truth measurement table
-     (physical reality); unknown pairs drop the flow.
+**RoutingPlaneForward**: controller pre-commits PoP assignments
+via cell→PoP mapping and per-satellite FIBs, with capacity
+tracking via :class:`UsageBook`.
 
-All delays in ms.
+Produces :class:`EpochResult` output. All delays in ms.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
-from vantage.common.geo import access_delay
-from vantage.common.time import resolve_local_time
+from vantage.common.link_model import (
+    bottleneck_capacity,
+    link_performance,
+    path_loss,
+    pftk_throughput,
+)
 from vantage.control.policy.common.utils import find_ingress_satellite
-from vantage.world.satellite.visibility import SphericalAccessModel
 from vantage.domain import (
-    CostTables,
+    AccessLink,
+    CellGrid,
+    Endpoint,
     EpochResult,
+    FlowKey,
     FlowOutcome,
     NetworkSnapshot,
+    RoutingPlane,
     TrafficDemand,
+    UsageBook,
 )
+from vantage.world.satellite.visibility import SphericalAccessModel
 
 if TYPE_CHECKING:
     from vantage.engine.context import RunContext
 
+__all__ = [
+    "ForwardStrategy",
+    "PrecomputedPath",
+    "ResolvedFlow",
+    "RoutingPlaneForward",
+    "precompute_path_table",
+    "realize",
+]
+
+
+# ---------------------------------------------------------------------------
+# Pre-computed path table
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PrecomputedPath:
+    """Cached result of a FIB walk from one satellite to one PoP."""
+
+    egress_sat: int
+    egress_gs: str
+    isl_links: tuple[tuple[int, int], ...]
+    cost_ms: float  # ingress FIB entry cost_ms
+
+
+def precompute_path_table(
+    plane: RoutingPlane,
+    num_sats: int,
+) -> dict[tuple[int, str], PrecomputedPath]:
+    """Walk every (satellite, PoP) FIB entry once, cache the result.
+
+    Called when the RoutingPlane is rebuilt (~every 15s). The returned
+    table replaces per-flow FIB walks in ``RoutingPlaneForward``.
+    """
+    table: dict[tuple[int, str], PrecomputedPath] = {}
+
+    for sat_id in plane.sat_fibs:
+        sat_fib = plane.sat_fibs[sat_id]
+        for pop_code, entry in sat_fib.fib.items():
+            path_sats: list[int] = [sat_id]
+            visited: set[int] = {sat_id}
+            egress_sat: int | None = None
+            egress_gs: str | None = None
+            current = sat_id
+
+            for _ in range(num_sats):
+                try:
+                    e = plane.fib_of(current).route(pop_code)
+                except KeyError:
+                    break
+                if e.is_egress:
+                    egress_sat = current
+                    egress_gs = e.egress_gs
+                    break
+                nxt = e.next_hop_sat
+                if nxt in visited:
+                    break
+                visited.add(nxt)
+                path_sats.append(nxt)
+                current = nxt
+
+            if egress_sat is not None and egress_gs is not None:
+                isl_links = tuple(
+                    (path_sats[i], path_sats[i + 1])
+                    for i in range(len(path_sats) - 1)
+                )
+                table[(sat_id, pop_code)] = PrecomputedPath(
+                    egress_sat=egress_sat,
+                    egress_gs=egress_gs,
+                    isl_links=isl_links,
+                    cost_ms=entry.cost_ms,
+                )
+
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Strategy protocol + shared result type
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedFlow:
+    """Outcome of resolving a single flow through a forward strategy."""
+
+    pop_code: str
+    gs_id: str
+    user_sat: int
+    egress_sat: int
+    satellite_rtt: float
+    ground_rtt: float
+    propagation_rtt: float = 0.0
+    queuing_rtt: float = 0.0
+    transmission_rtt: float = 0.0
+    loss_probability: float = 0.0
+    bottleneck_gbps: float = 0.0
+
+
+class ForwardStrategy(Protocol):
+    """Protocol for per-flow PoP selection, path resolution, and RTT computation."""
+
+    def resolve_flow(
+        self,
+        flow_key: FlowKey,
+        flow_demand: float,
+        src_ep: Endpoint,
+        ingress: int,
+        uplink: AccessLink,
+        snapshot: NetworkSnapshot,
+        context: RunContext,
+        epoch: int,
+    ) -> ResolvedFlow | None:
+        """Resolve a single flow.  Return *None* to drop (unrouted)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Unified epoch loop
+# ---------------------------------------------------------------------------
+
 
 def realize(
-    tables: CostTables,
+    strategy: ForwardStrategy,
     snapshot: NetworkSnapshot,
     demand: TrafficDemand,
     context: RunContext,
-    *,
-    epoch_interval_s: float = 3600.0,
-    simulation_start_utc: datetime | None = None,
 ) -> EpochResult:
-    """Terminal-side PoP selection + actual E2E delay computation.
+    """Execute one epoch's demand through *strategy*.
 
-    Decision: argmin(sat_cost + ground_cost) where ground_cost is available.
-              For PoPs without ground_cost data, they don't participate in
-              joint optimization — terminal falls back to lowest sat_cost.
-
-    Measurement: actual ground_rtt pulled from the ``MeasuredGroundDelay``
-                 table behind ``ground_knowledge.estimator``. Unknown
-                 pairs raise KeyError and drop the flow — no fallback.
+    For each flow the strategy selects a PoP, resolves the satellite
+    path, and computes satellite + ground RTTs.  Flows for which the
+    strategy returns ``None`` are counted as unrouted.
     """
     sat = snapshot.satellite
-    calibration = context.world.calibration
-    # Ground truth model for actual delay computation (NOT for decisions)
-    ground_truth = context.ground_knowledge.estimator
     outcomes: list[FlowOutcome] = []
     total_demand = 0.0
     routed_demand = 0.0
+
+    _access = SphericalAccessModel()
+    _visible_cache: dict[str, list[AccessLink]] = {}
 
     for flow_key, flow_demand in demand.flows.items():
         total_demand += flow_demand
@@ -67,161 +185,223 @@ def realize(
         if src_ep is None:
             continue
 
-        uplink = find_ingress_satellite(src_ep, sat.positions)
+        src_name = flow_key.src
+        if src_name not in _visible_cache:
+            _visible_cache[src_name] = _access.compute_access(
+                src_ep.lat_deg, src_ep.lon_deg, 0.0, sat.positions,
+                DEFAULT_MIN_ELEVATION_DEG,
+            )
+        visible = _visible_cache[src_name]
+        if not visible:
+            continue
+        uplink = find_ingress_satellite(src_ep, sat.positions, _visible=visible)
         if uplink is None:
             continue
 
-        ingress = uplink.sat_id
-
-        # ── DECISION: select best PoP ──────────────────────
-        # Two-tier selection:
-        #   1st: try joint optimization (PoPs with ground_cost data)
-        #   2nd: fallback to sat_cost only (nearest PoP, like BGP default)
-        best_pop: str | None = None
-        best_cost = float("inf")
-        fallback_pop: str | None = None
-        fallback_cost = float("inf")
-
-        for pop in snapshot.infra.pops:
-            sc = tables.sat_cost.get((ingress, pop.code))
-            if sc is None:
-                continue
-
-            # Track best fallback (sat_cost only, for BGP default)
-            if sc < fallback_cost:
-                fallback_cost = sc
-                fallback_pop = pop.code
-
-            # Joint optimization: only if ground_cost data exists
-            gc = tables.ground_cost.get((pop.code, flow_key.dst))
-            if gc is not None and gc >= 0:
-                total = sc + gc
-                if total < best_cost:
-                    best_cost = total
-                    best_pop = pop.code
-
-        # If no PoP had ground data → fallback to nearest (BGP)
-        if best_pop is None:
-            best_pop = fallback_pop
-
-        if best_pop is None:
+        resolved = strategy.resolve_flow(
+            flow_key, flow_demand, src_ep, uplink.sat_id, uplink,
+            snapshot, context, demand.epoch,
+        )
+        if resolved is None:
             continue
 
-        # ── RESOLVE: best satellite path for chosen PoP ──
-        # Priority 1: bent-pipe — find a satellite visible from BOTH
-        #   the terminal and a GS of this PoP (ISL = 0).
-        # Priority 2: ISL relay — fixed ingress + different egress via ISL.
-        best_gs: str | None = None
-        best_egress: int = -1
-        best_ingress: int = ingress
-        best_sat_rtt = float("inf")
-
-        _access = SphericalAccessModel()
-
-        for gs_id, backhaul in snapshot.infra.pop_gs_edges(best_pop):
-            gs = snapshot.infra.gs_by_id(gs_id)
-            if gs is None:
-                continue
-            gs_links = sat.gateway_attachments.attachments.get(gs_id)
-            if not gs_links:
-                continue
-            backhaul_rtt = backhaul * 2
-
-            for link in gs_links:
-                egress_id = link.sat_id
-
-                # Check bent-pipe: is this GS satellite also visible from terminal?
-                elev = _access.compute_access_pair(
-                    src_ep.lat_deg, src_ep.lon_deg, 0.0,
-                    float(sat.positions[egress_id, 0]),
-                    float(sat.positions[egress_id, 1]),
-                    float(sat.positions[egress_id, 2]),
-                ).elevation_deg
-
-                if elev >= DEFAULT_MIN_ELEVATION_DEG:
-                    # Bent-pipe: terminal and GS share this satellite
-                    up = access_delay(
-                        src_ep.lat_deg, src_ep.lon_deg,
-                        float(sat.positions[egress_id, 0]),
-                        float(sat.positions[egress_id, 1]),
-                        float(sat.positions[egress_id, 2]),
-                    )
-                    down = access_delay(
-                        gs.lat_deg, gs.lon_deg,
-                        float(sat.positions[egress_id, 0]),
-                        float(sat.positions[egress_id, 1]),
-                        float(sat.positions[egress_id, 2]),
-                    )
-                    raw_prop = (up + down) * 2  # RTT, no ISL
-                else:
-                    # ISL relay: use fixed ingress → ISL → egress
-                    raw_prop = sat.compute_satellite_rtt(
-                        ingress, egress_id,
-                        src_ep.lat_deg, src_ep.lon_deg,
-                        gs.lat_deg, gs.lon_deg,
-                    )
-
-                if calibration is not None:
-                    prop = calibration.calibrate(flow_key.src, raw_prop)
-                else:
-                    prop = raw_prop
-                total_sat = prop + backhaul_rtt
-                if total_sat < best_sat_rtt:
-                    best_sat_rtt = total_sat
-                    best_gs = gs_id
-                    best_egress = egress_id
-                    best_ingress = egress_id if elev >= DEFAULT_MIN_ELEVATION_DEG else ingress
-
-        if best_gs is None:
-            continue
-
-        satellite_rtt = best_sat_rtt
-
-        # ── MEASUREMENT: actual ground RTT (physical truth) ──
-        # Measured from ``ground_knowledge.estimator`` (a strict
-        # ``MeasuredGroundDelay`` table). Unknown (pop, dest) pairs
-        # raise KeyError and drop the flow here — there is no
-        # geographic fallback in this codebase anymore.
-        pop_obj = snapshot.infra.pop_by_code(best_pop)
-
-        if ground_truth is not None and pop_obj is not None:
-            try:
-                ground_rtt = ground_truth.estimate(best_pop, flow_key.dst) * 2
-            except KeyError:
-                # No measured (pop, dest) pair — flow is unrouted.
-                continue
-        elif context.service_ground_delay is not None and pop_obj is not None:
-            # Service-class destination: use profiled model
-            local_hour, day_type = resolve_local_time(
-                demand.epoch, epoch_interval_s, simulation_start_utc,
-                getattr(context.service_ground_delay, "pop_timezones", {}),
-                best_pop,
-            )
-            ground_rtt = context.service_ground_delay.estimate_service(
-                best_pop, flow_key.dst, local_hour, day_type,
-            )
+        total_rtt = resolved.satellite_rtt + resolved.ground_rtt
+        if resolved.loss_probability > 0 and total_rtt > 0:
+            tcp_gbps = pftk_throughput(total_rtt, resolved.loss_probability)
+            eff_tput = min(flow_demand, tcp_gbps)
         else:
-            continue
-
-        total_rtt = satellite_rtt + ground_rtt
+            eff_tput = (
+                min(flow_demand, resolved.bottleneck_gbps)
+                if resolved.bottleneck_gbps > 0
+                else flow_demand
+            )
 
         outcomes.append(FlowOutcome(
             flow_key=flow_key,
-            pop_code=best_pop,
-            gs_id=best_gs,
-            user_sat=best_ingress,
-            egress_sat=best_egress,
-            satellite_rtt=satellite_rtt,
-            ground_rtt=ground_rtt,
+            pop_code=resolved.pop_code,
+            gs_id=resolved.gs_id,
+            user_sat=resolved.user_sat,
+            egress_sat=resolved.egress_sat,
+            satellite_rtt=resolved.satellite_rtt,
+            ground_rtt=resolved.ground_rtt,
             total_rtt=total_rtt,
             demand_gbps=flow_demand,
+            propagation_rtt=resolved.propagation_rtt,
+            queuing_rtt=resolved.queuing_rtt,
+            transmission_rtt=resolved.transmission_rtt,
+            loss_probability=resolved.loss_probability,
+            bottleneck_gbps=resolved.bottleneck_gbps,
+            effective_throughput_gbps=eff_tput,
         ))
         routed_demand += flow_demand
 
     return EpochResult(
-        epoch=tables.epoch,
+        epoch=demand.epoch,
         flow_outcomes=tuple(outcomes),
         total_demand_gbps=total_demand,
         routed_demand_gbps=routed_demand,
         unrouted_demand_gbps=total_demand - routed_demand,
     )
+
+
+# ---------------------------------------------------------------------------
+# RoutingPlane + FIB walk
+# ---------------------------------------------------------------------------
+
+
+class RoutingPlaneForward:
+    """Controller-committed PoP selection with pre-computed path table.
+
+    Uses :class:`PrecomputedPath` table (built once per RoutingPlane)
+    instead of per-flow FIB walks.  Capacity charging and queuing
+    delay are still computed per-flow at realize time.
+    """
+
+    __slots__ = ("_grid", "_plane", "_book", "_paths")
+
+    def __init__(
+        self,
+        routing_plane: RoutingPlane,
+        cell_grid: CellGrid,
+        usage_book: UsageBook,
+        path_table: dict[tuple[int, str], PrecomputedPath] | None = None,
+    ) -> None:
+        self._plane = routing_plane
+        self._grid = cell_grid
+        self._book = usage_book
+        self._paths = path_table or {}
+
+    def _fib_walk(self, ingress: int, pop_code: str, max_hops: int) -> PrecomputedPath | None:
+        """Live FIB walk fallback when path_table misses."""
+        try:
+            entry = self._plane.fib_of(ingress).route(pop_code)
+        except KeyError:
+            return None
+        path_sats = [ingress]
+        visited = {ingress}
+        current = ingress
+        for _ in range(max_hops):
+            try:
+                e = self._plane.fib_of(current).route(pop_code)
+            except KeyError:
+                return None
+            if e.is_egress:
+                return PrecomputedPath(
+                    egress_sat=current,
+                    egress_gs=e.egress_gs or "",
+                    isl_links=tuple(
+                        (path_sats[i], path_sats[i + 1])
+                        for i in range(len(path_sats) - 1)
+                    ),
+                    cost_ms=entry.cost_ms,
+                )
+            nxt = e.next_hop_sat
+            if nxt in visited:
+                return None
+            visited.add(nxt)
+            path_sats.append(nxt)
+            current = nxt
+        return None
+
+    def resolve_flow(
+        self,
+        flow_key: FlowKey,
+        flow_demand: float,
+        src_ep: Endpoint,
+        ingress: int,
+        uplink: AccessLink,
+        snapshot: NetworkSnapshot,
+        context: RunContext,
+        epoch: int,
+    ) -> ResolvedFlow | None:
+        sat = snapshot.satellite
+        ground_truth = context.ground_knowledge.estimator
+
+        # ── DECISION: cell → PoP ─────────────────────────────────────
+        try:
+            cell_id = self._grid.cell_of(flow_key.src)
+        except KeyError:
+            return None
+        try:
+            pop_code = self._plane.cell_to_pop.pop_of(cell_id, dest=flow_key.dst)
+        except KeyError:
+            return None
+
+        # ── PATH: table lookup, fallback to FIB walk ────────────────
+        ppath = self._paths.get((ingress, pop_code))
+        if ppath is None:
+            ppath = self._fib_walk(ingress, pop_code, sat.num_sats)
+        if ppath is None:
+            return None
+
+        egress_sat = ppath.egress_sat
+        egress_gs = ppath.egress_gs
+
+        # ── CHARGE CAPACITY ──────────────────────────────────────────
+        for a, b in ppath.isl_links:
+            self._book.charge_isl(a, b, flow_demand)
+        self._book.charge_sat_feeder(egress_sat, flow_demand)
+        self._book.charge_gs_feeder(egress_gs, flow_demand)
+
+        # ── MEASUREMENT: propagation baseline ────────────────────────
+        uplink_rtt = uplink.delay * 2
+        propagation_rtt = uplink_rtt + ppath.cost_ms
+
+        # ── QUEUING + LOSS: per-hop ──────────────────────────────────
+        hop_losses: list[float] = []
+        hop_capacities: list[float] = []
+        total_queuing_oneway = 0.0
+        total_tx_oneway = 0.0
+
+        for a, b in ppath.isl_links:
+            isl_prop = float(sat.delay_matrix[a, b])
+            isl_cap = self._book.view.isl_cap(a, b)
+            isl_load = self._book.isl_used.get(self._book.isl_key(a, b), 0.0)
+            perf = link_performance(isl_prop, isl_cap, isl_load)
+            total_queuing_oneway += perf.queuing_ms
+            total_tx_oneway += perf.transmission_ms
+            hop_losses.append(perf.loss_probability)
+            hop_capacities.append(isl_cap)
+
+        sf_cap = self._book.view.sat_feeder_cap(egress_sat)
+        sf_load = self._book.sat_feeder_used.get(egress_sat, 0.0)
+        sf_perf = link_performance(0.0, sf_cap, sf_load)
+        total_queuing_oneway += sf_perf.queuing_ms
+        total_tx_oneway += sf_perf.transmission_ms
+        hop_losses.append(sf_perf.loss_probability)
+        hop_capacities.append(sf_cap)
+
+        gf_cap = self._book.view.gs_feeder_cap(egress_gs)
+        gf_load = self._book.gs_feeder_used.get(egress_gs, 0.0)
+        gf_perf = link_performance(0.0, gf_cap, gf_load)
+        total_queuing_oneway += gf_perf.queuing_ms
+        total_tx_oneway += gf_perf.transmission_ms
+        hop_losses.append(gf_perf.loss_probability)
+        hop_capacities.append(gf_cap)
+
+        queuing_rtt = total_queuing_oneway * 2
+        transmission_rtt = total_tx_oneway * 2
+        satellite_rtt = propagation_rtt + queuing_rtt + transmission_rtt
+        e2e_loss = path_loss(hop_losses)
+        bneck = bottleneck_capacity(hop_capacities)
+
+        if ground_truth is None:
+            return None
+        try:
+            ground_rtt = ground_truth.estimate(pop_code, flow_key.dst) * 2
+        except KeyError:
+            return None
+
+        return ResolvedFlow(
+            pop_code=pop_code,
+            gs_id=egress_gs,
+            user_sat=ingress,
+            egress_sat=egress_sat,
+            satellite_rtt=satellite_rtt,
+            ground_rtt=ground_rtt,
+            propagation_rtt=propagation_rtt,
+            queuing_rtt=queuing_rtt,
+            transmission_rtt=transmission_rtt,
+            loss_probability=e2e_loss,
+            bottleneck_gbps=bneck,
+        )

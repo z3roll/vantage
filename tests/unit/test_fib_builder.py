@@ -381,29 +381,6 @@ class TestNearestPoPControllerRoutingPlane:
         assert plane.fib_of(0).route("pop_a").next_hop_sat == 1
         assert plane.fib_of(1).route("pop_a").egress_gs == "gs_a"
 
-    def test_legacy_compute_tables_still_works(self) -> None:
-        """Legacy CostTables path must keep producing the same values."""
-        snap = _two_sat_snapshot()
-        ctrl = NearestPoPController()
-        tables = ctrl.compute_tables(snap)
-        downlink = _expected_downlink_rtt_sat1_to_gs_a()
-        assert (0, "pop_a") in tables.sat_cost
-        assert (1, "pop_a") in tables.sat_cost
-        assert tables.sat_cost[(0, "pop_a")] == pytest.approx(2.0 + downlink)
-        assert tables.sat_cost[(1, "pop_a")] == pytest.approx(downlink)
-
-    def test_legacy_and_new_paths_agree_on_cost(self) -> None:
-        """sat_cost in CostTables must match cost_ms in RoutingPlane per-sat routing."""
-        snap = _two_sat_snapshot()
-        grid = CellGrid.from_endpoints([("alice", 0.0, 1.0)])
-        ctrl = NearestPoPController()
-        tables = ctrl.compute_tables(snap)
-        plane = ctrl.compute_routing_plane(snap, grid)
-        for ingress in (0, 1):
-            legacy = tables.sat_cost[(ingress, "pop_a")]
-            new = plane.fib_of(ingress).route("pop_a").cost_ms
-            assert legacy == pytest.approx(new)
-
     def test_cell_id_is_h3_int(self) -> None:
         """Sanity: plane.cell_to_pop keys are h3 int ids (not strings)."""
         snap = _two_sat_snapshot()

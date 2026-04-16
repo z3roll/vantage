@@ -1,13 +1,11 @@
-"""Control subsystem: TE controller protocol and strategy factory."""
+"""Control subsystem: TE controller factory and feedback protocol."""
 
 from vantage.control.controller import (
     SupportsGroundFeedback,
-    TEController,
     create_controller,
 )
 
 __all__ = [
     "SupportsGroundFeedback",
-    "TEController",
     "create_controller",
 ]

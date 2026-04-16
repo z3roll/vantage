@@ -11,11 +11,10 @@ simultaneously from the current snapshot:
        satellite reaches that PoP.
 
 All three come from the *same* argmin pass, so they are guaranteed
-consistent. Consumers that only need the cost (e.g., the legacy
-``CostTables``-based forward path) read :func:`precompute_sat_cost`,
-which is a thin adapter that drops the argmin fields. Consumers that
-need the argmin (e.g., the FIB builder) read
-:func:`precompute_per_sat_routing`.
+consistent. :func:`precompute_sat_cost` is a thin adapter that drops the argmin
+fields and returns a flat dict — used by :func:`compute_cell_sat_cost`
+for per-cell sat cost lookup. :func:`precompute_per_sat_routing`
+returns the full argmin (egress sat + GS) used by the FIB builder.
 
 Both functions share the same vectorized inner loop: for each
 ``(pop, gs, egress)`` triple we compute the cost from *every* ingress

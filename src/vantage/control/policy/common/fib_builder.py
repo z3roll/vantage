@@ -19,7 +19,7 @@ unit-tested without spinning up a full snapshot.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from types import MappingProxyType
 
 import numpy as np
@@ -27,10 +27,12 @@ import numpy as np
 from vantage.control.policy.common.sat_cost import (
     PerSatRouting,
     precompute_per_sat_routing,
+    precompute_sat_cost,
 )
 from vantage.domain import (
     CellGrid,
     CellToPopTable,
+    Endpoint,
     FIBEntry,
     NetworkSnapshot,
     PoP,
@@ -42,7 +44,11 @@ from vantage.world.satellite.routing import first_hop_on_path
 __all__ = [
     "build_cell_to_pop_nearest",
     "build_routing_plane_nearest_pop",
+    "build_routing_plane_with_overrides",
     "build_satellite_fibs",
+    "compute_cell_sat_cost",
+    "compute_e2e_overrides",
+    "rank_pops_by_e2e",
 ]
 
 _log = logging.getLogger(__name__)
@@ -230,6 +236,177 @@ def _vectorized_nearest_index(
     # ``a`` is the classic haversine kernel. Monotonic in distance.
     a = np.sin(dlat * 0.5) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon * 0.5) ** 2
     return a.argmin(axis=1)
+
+
+def compute_cell_sat_cost(
+    snapshot: NetworkSnapshot,
+    cell_grid: CellGrid,
+) -> dict[tuple[int, str], float]:
+    """Compute sat_cost from each cell's representative ingress to every PoP.
+
+    For each endpoint mapped to a cell, finds its best ingress satellite
+    (highest elevation, deterministic), then looks up
+    ``sat_cost[(ingress, pop_code)]`` for every PoP. The result is a
+    ``{(cell_id, pop_code) → sat_rtt_ms}`` table used by per-dest
+    override computation.
+    """
+    from vantage.control.policy.common.utils import find_ingress_satellite
+
+    sat_cost_table = precompute_sat_cost(snapshot)
+    sat_positions = snapshot.satellite.positions
+    pop_codes = [p.code for p in snapshot.infra.pops]
+
+    result: dict[tuple[int, str], float] = {}
+    for ep_name, cell_id in cell_grid.endpoint_to_cell.items():
+        cell = cell_grid.cells.get(cell_id)
+        if cell is None:
+            continue
+        ep = Endpoint(ep_name, cell.lat_deg, cell.lon_deg)
+        uplink = find_ingress_satellite(ep, sat_positions, top_prob=1.0)
+        if uplink is None:
+            continue
+        for pc in pop_codes:
+            sc = sat_cost_table.get((uplink.sat_id, pc))
+            if sc is not None:
+                result[(cell_id, pc)] = sc
+    return result
+
+
+def compute_e2e_overrides(
+    cell_grid: CellGrid,
+    pops: tuple[PoP, ...],
+    baseline: CellToPopTable,
+    cell_sat_cost: dict[tuple[int, str], float],
+    ground_cost_fn: Callable[[str, str], float | None],
+    dest_names: Iterable[str],
+    *,
+    min_improvement_ms: float = 2.0,
+) -> dict[tuple[int, str], str]:
+    """Find per-(cell, dest) PoP overrides that improve E2E latency.
+
+    For each active cell and destination, checks whether a non-default
+    PoP gives lower ``sat_cost + ground_cost``. Only overrides with
+    improvement exceeding *min_improvement_ms* are emitted (avoids
+    noise from near-ties).
+
+    Args:
+        ground_cost_fn: ``(pop_code, dest) → RTT_ms | None``.
+            Return ``None`` for unknown pairs.
+        dest_names: Destinations to optimise for.
+    """
+    active_cells = set(cell_grid.endpoint_to_cell.values())
+    overrides: dict[tuple[int, str], str] = {}
+
+    for cell_id in active_cells:
+        default_pop = baseline.mapping.get(cell_id)
+        if default_pop is None:
+            continue
+
+        for dest in dest_names:
+            default_ground = ground_cost_fn(default_pop, dest)
+            if default_ground is None:
+                continue
+            default_sat = cell_sat_cost.get((cell_id, default_pop), 50.0)
+            default_cost = default_sat + default_ground
+
+            best_pop = default_pop
+            best_cost = default_cost
+
+            for pop in pops:
+                if pop.code == default_pop:
+                    continue
+                gc = ground_cost_fn(pop.code, dest)
+                if gc is None:
+                    continue
+                sc = cell_sat_cost.get((cell_id, pop.code), 50.0)
+                total = sc + gc
+                if total < best_cost:
+                    best_cost = total
+                    best_pop = pop.code
+
+            if best_pop != default_pop and default_cost - best_cost > min_improvement_ms:
+                overrides[(cell_id, dest)] = best_pop
+
+    return overrides
+
+
+def rank_pops_by_e2e(
+    cell_grid: CellGrid,
+    pops: tuple[PoP, ...],
+    baseline: CellToPopTable,
+    cell_sat_cost: dict[tuple[int, str], float],
+    ground_cost_fn: Callable[[str, str], float | None],
+    dest_names: Iterable[str],
+) -> dict[tuple[int, str], list[tuple[str, float]]]:
+    """Rank all reachable PoPs by E2E cost for each (cell, dest).
+
+    Returns ``{(cell_id, dest) → [(pop_code, e2e_cost), ...]}``
+    sorted ascending by cost. The first entry is the best PoP.
+    Only includes PoPs for which both sat_cost and ground_cost exist.
+    """
+    active_cells = set(cell_grid.endpoint_to_cell.values())
+    rankings: dict[tuple[int, str], list[tuple[str, float]]] = {}
+
+    for cell_id in active_cells:
+        if cell_id not in baseline.mapping:
+            continue
+
+        for dest in dest_names:
+            scored: list[tuple[str, float]] = []
+
+            for pop in pops:
+                gc = ground_cost_fn(pop.code, dest)
+                if gc is None:
+                    continue
+                sc = cell_sat_cost.get((cell_id, pop.code))
+                if sc is None:
+                    continue
+                scored.append((pop.code, sc + gc))
+
+            if scored:
+                scored.sort(key=lambda x: x[1])
+                rankings[(cell_id, dest)] = scored
+
+    return rankings
+
+
+def build_routing_plane_with_overrides(
+    snapshot: NetworkSnapshot,
+    cell_grid: CellGrid,
+    per_dest_overrides: dict[tuple[int, str], str],
+    *,
+    baseline: CellToPopTable | None = None,
+    version: int = 0,
+) -> RoutingPlane:
+    """Build RoutingPlane with per-dest overrides on top of nearest-PoP baseline.
+
+    Composes :func:`build_cell_to_pop_nearest` with the given overrides
+    and :func:`build_satellite_fibs`. Used by all E2E-aware controllers
+    (service-aware, greedy, ground-only, static-pop).
+
+    Pass *baseline* to reuse an already-computed :class:`CellToPopTable`
+    and avoid a redundant :func:`build_cell_to_pop_nearest` call.
+    """
+    cell_to_pop_base = baseline or build_cell_to_pop_nearest(
+        cell_grid=cell_grid,
+        pops=snapshot.infra.pops,
+        built_at=snapshot.time_s,
+        version=version,
+    )
+    cell_to_pop = CellToPopTable(
+        mapping=cell_to_pop_base.mapping,
+        version=version,
+        built_at=snapshot.time_s,
+        per_dest=MappingProxyType(per_dest_overrides),
+    )
+    per_sat = precompute_per_sat_routing(snapshot)
+    sat_fibs = build_satellite_fibs(snapshot, per_sat, version=version)
+    return RoutingPlane(
+        cell_to_pop=cell_to_pop,
+        sat_fibs=MappingProxyType(sat_fibs),
+        version=version,
+        built_at=snapshot.time_s,
+    )
 
 
 def build_routing_plane_nearest_pop(

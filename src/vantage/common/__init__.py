@@ -1,4 +1,4 @@
-"""Common utilities: constants, geographic functions, propagation delays."""
+"""Common utilities: constants, geographic functions, propagation delays, link models."""
 
 from vantage.common.constants import (
     C_FIBER_KM_S,
@@ -9,6 +9,13 @@ from vantage.common.constants import (
     EARTH_RADIUS_M,
 )
 from vantage.common.geo import access_delay, haversine_km
+from vantage.common.link_model import (
+    LinkPerformance,
+    bottleneck_capacity,
+    link_performance,
+    path_loss,
+    pftk_throughput,
+)
 from vantage.common.time import resolve_local_time
 
 __all__ = [
@@ -18,7 +25,12 @@ __all__ = [
     "DEFAULT_MIN_ELEVATION_DEG",
     "EARTH_RADIUS_KM",
     "EARTH_RADIUS_M",
+    "LinkPerformance",
     "access_delay",
+    "bottleneck_capacity",
     "haversine_km",
+    "link_performance",
+    "path_loss",
+    "pftk_throughput",
     "resolve_local_time",
 ]
