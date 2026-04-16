@@ -72,9 +72,16 @@ def _two_sat_snapshot() -> NetworkSnapshot:
             ),
         ),
     )
-    # Place sat 0 near (lat=0, lon=0) and sat 1 near (lat=0, lon=1).
+    # Sat 0 is overhead the source at (0, 0); sat 1 is intentionally
+    # placed at (15°, 15°) so it sits below the source's horizon and
+    # only sat 0 ever appears in the visibility list. This keeps the
+    # per-realize stochastic `find_ingress_satellite` deterministic
+    # for tests without having to monkey-patch RNG state. Sat 1 is
+    # still the ISL neighbour and the egress for gs_a — the gateway
+    # attachment table and the delay matrix are independent of these
+    # positions.
     positions = np.array(
-        [[0.0, 0.0, 550.0], [0.0, 1.0, 550.0]],
+        [[0.0, 0.0, 550.0], [15.0, 15.0, 550.0]],
         dtype=np.float64,
     )
     positions.flags.writeable = False

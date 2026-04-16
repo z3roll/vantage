@@ -242,26 +242,37 @@ def compute_cell_sat_cost(
     snapshot: NetworkSnapshot,
     cell_grid: CellGrid,
 ) -> dict[tuple[int, str], float]:
-    """Compute sat_cost from each cell's representative ingress to every PoP.
+    """Compute sat_cost from each *cell*'s representative ingress to every PoP.
 
-    For each endpoint mapped to a cell, finds its best ingress satellite
-    (highest elevation, deterministic), then looks up
+    Iterates over the unique set of cells that host at least one
+    endpoint (``set(cell_grid.endpoint_to_cell.values())``). For each
+    active cell, picks its top-elevation ingress satellite from the
+    cell-centre coordinates and looks up
     ``sat_cost[(ingress, pop_code)]`` for every PoP. The result is a
     ``{(cell_id, pop_code) → sat_rtt_ms}`` table used by per-dest
     override computation.
+
+    Earlier code iterated over every endpoint and overwrote the same
+    ``(cell, pop)`` keys repeatedly — same data, just wasted work
+    (and pre-Bug-9 it also advanced the shared module RNG once per
+    endpoint, perturbing forward.realize's stochastic ingress).
     """
     from vantage.control.policy.common.utils import find_ingress_satellite
 
     sat_cost_table = precompute_sat_cost(snapshot)
     sat_positions = snapshot.satellite.positions
     pop_codes = [p.code for p in snapshot.infra.pops]
+    active_cell_ids = set(cell_grid.endpoint_to_cell.values())
 
     result: dict[tuple[int, str], float] = {}
-    for ep_name, cell_id in cell_grid.endpoint_to_cell.items():
+    for cell_id in active_cell_ids:
         cell = cell_grid.cells.get(cell_id)
         if cell is None:
             continue
-        ep = Endpoint(ep_name, cell.lat_deg, cell.lon_deg)
+        # Endpoint name is irrelevant — find_ingress_satellite reads
+        # only lat/lon. Use a synthetic name so future readers don't
+        # mistakenly think it's an actual endpoint.
+        ep = Endpoint(name="_cell_centre", lat_deg=cell.lat_deg, lon_deg=cell.lon_deg)
         uplink = find_ingress_satellite(ep, sat_positions, top_prob=1.0)
         if uplink is None:
             continue

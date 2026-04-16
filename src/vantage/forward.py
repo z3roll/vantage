@@ -33,6 +33,7 @@ Produces :class:`EpochResult` output. All delays in ms.
 
 from __future__ import annotations
 
+import random as _random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -254,6 +255,11 @@ def realize(
     cache, ``find_ingress_satellite``'s 80/20 stochastic branch (over
     a process-wide RNG) could scatter a single terminal's flows
     across multiple ingress sats within the same epoch.
+
+    The stochastic branch uses a per-realize RNG seeded by the
+    epoch number, so that ingress sat assignment is reproducible
+    across runs with identical demand AND independent of any other
+    module that might be sharing the global utils ``_RNG``.
     """
     sat = snapshot.satellite
     total_demand = 0.0
@@ -261,6 +267,7 @@ def realize(
     _access = SphericalAccessModel()
     _visible_cache: dict[str, list[AccessLink]] = {}
     _uplink_cache: dict[str, AccessLink | None] = {}
+    _ingress_rng = _random.Random(demand.epoch)
 
     pending: list[tuple[FlowKey, float, PathDecision]] = []
 
@@ -281,7 +288,10 @@ def realize(
                 )
             visible = _visible_cache[src_name]
             _uplink_cache[src_name] = (
-                find_ingress_satellite(src_ep, sat.positions, _visible=visible)
+                find_ingress_satellite(
+                    src_ep, sat.positions,
+                    rng=_ingress_rng, _visible=visible,
+                )
                 if visible else None
             )
         uplink = _uplink_cache[src_name]

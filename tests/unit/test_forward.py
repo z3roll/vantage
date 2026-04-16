@@ -49,7 +49,12 @@ def simple_snapshot() -> NetworkSnapshot:
         shell_id=1, timeslot=0, num_sats=2,
         edges=(ISLEdge(0, 1, 1.0, 300.0, "intra_orbit"),),
     )
-    positions = np.array([[0.0, 0.0, 550.0], [1.0, 1.0, 550.0]])
+    # Sat 1 is intentionally placed far from sat 0 (below the source's
+    # horizon) so the source at (0, 0) only ever has sat 0 as a visible
+    # ingress candidate. This keeps the per-realize stochastic
+    # `find_ingress_satellite` deterministic for tests without having
+    # to monkey-patch RNG state.
+    positions = np.array([[0.0, 0.0, 550.0], [15.0, 15.0, 550.0]])
     delay_matrix = np.array([[0.0, 1.0], [1.0, 0.0]])
     pred_matrix = np.array([[0, 0], [1, 1]], dtype=np.int32)
 
