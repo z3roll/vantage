@@ -25,11 +25,9 @@ from vantage.engine.context import RunContext
 from vantage.engine.feedback import FeedbackObserver, GroundDelayFeedback
 from vantage.forward import (
     RoutingPlaneForward,
-    precompute_path_table,
     realize,
 )
 from vantage.traffic import TrafficGenerator
-
 
 # ---------------------------------------------------------------------------
 # Configuration & result types
@@ -116,7 +114,6 @@ def run_routing(
     epoch_results: list[EpochResult] = []
     capacity_stats: list[RoutingEpochStats] = []
     plane: RoutingPlane | None = None
-    path_table: dict | None = None
     t_start = time.perf_counter()
 
     if shell is None:
@@ -179,9 +176,6 @@ def run_routing(
             plane = controller.compute_routing_plane(
                 snapshot, cell_grid, **kwargs
             )
-            path_table = precompute_path_table(
-                plane, snapshot.satellite.num_sats,
-            )
 
         view = CapacityView.from_snapshot(
             sat_state=snapshot.satellite,
@@ -190,7 +184,10 @@ def run_routing(
         )
         book = UsageBook(view=view)
 
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        # path_table is no longer threaded through — RoutingPlaneForward
+        # builds its top-K options lazily per (ingress, pop) on first
+        # touch within this realize call.
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
         result = realize(strategy, snapshot, demand, context)
 
         # Feedback: update ground knowledge from observed flows

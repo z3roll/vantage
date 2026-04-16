@@ -26,9 +26,9 @@ from vantage.domain import (
     CellGrid,
     Endpoint,
     FlowKey,
-    GSPoPEdge,
     GatewayAttachments,
     GroundStation,
+    GSPoPEdge,
     InfrastructureView,
     ISLEdge,
     ISLGraph,
@@ -40,7 +40,6 @@ from vantage.domain import (
     UsageBook,
 )
 from vantage.forward import RoutingPlaneForward, realize
-
 
 # --- Minimal fixture helpers -------------------------------------------------
 
@@ -94,8 +93,14 @@ def _two_sat_snapshot() -> NetworkSnapshot:
     gw = GatewayAttachments(
         attachments=MappingProxyType(
             {
+                # Downlink delay is one-way. Sat 1 at (15,15,550) →
+                # gs_a at (0,1,0) gives access_delay ≈ 8.05 ms; using
+                # the correct value here keeps AccessLink.delay
+                # consistent with positions, which `compute_egress_options`
+                # now relies on as the single source of truth.
                 "gs_a": (
-                    AccessLink(sat_id=1, elevation_deg=89.0, slant_range_km=550.0, delay=1.83),
+                    AccessLink(sat_id=1, elevation_deg=20.0,
+                               slant_range_km=2200.0, delay=8.05),
                 ),
             }
         )
@@ -321,14 +326,21 @@ class TestDroppedFlows:
         assert len(result.flow_outcomes) == 0
         assert result.unrouted_demand_gbps == pytest.approx(0.03)
 
-    def test_fib_two_cycle_is_dropped(self) -> None:
-        """A hand-injected FIB with a 2-cycle must bail instead of looping.
+    def test_broken_fib_does_not_break_data_plane(self) -> None:
+        """A hand-injected malformed FIB with a 2-cycle is silently
+        ignored — the data plane never consults the FIB to walk
+        paths.
 
-        Legitimate planes from ``build_satellite_fibs`` can't express
-        this — they derive from an acyclic predecessor matrix — but a
-        future policy that builds its own FIB by hand could slip one
-        in, and forward_routing must defend against it.
-        """
+        Pre-2026-04-17 the data plane walked ``plane.sat_fibs`` to
+        reconstruct paths and had a guard against FIB cycles. Post
+        per-sat-feeder reroute it derives paths directly from
+        ``snapshot.satellite.predecessor_matrix`` +
+        ``gateway_attachments``, so a broken FIB is irrelevant —
+        the flow still routes correctly via the (acyclic)
+        predecessor matrix.
+
+        This test now serves as a regression: even with a corrupt
+        FIB, the data plane gets the right answer."""
         from vantage.domain import (
             CellToPopTable,
             FIBEntry,
@@ -340,29 +352,24 @@ class TestDroppedFlows:
         alice = Endpoint(name="alice", lat_deg=0.0, lon_deg=0.0)
         grid = CellGrid.from_endpoints([(alice.name, alice.lat_deg, alice.lon_deg)])
 
-        # Build a plane where sat 0 → sat 1 and sat 1 → sat 0 (2-cycle),
-        # with no EGRESS entry anywhere.
+        # Hand-injected 2-cycle FIB, no EGRESS entry anywhere.
         fib0 = SatelliteFIB(
             sat_id=0,
             fib=MappingProxyType({"pop_a": FIBEntry.forward(1, cost_ms=10.0)}),
-            version=1,
-            built_at=0.0,
+            version=1, built_at=0.0,
         )
         fib1 = SatelliteFIB(
             sat_id=1,
             fib=MappingProxyType({"pop_a": FIBEntry.forward(0, cost_ms=10.0)}),
-            version=1,
-            built_at=0.0,
+            version=1, built_at=0.0,
         )
         cycle_plane = RoutingPlane(
             cell_to_pop=CellToPopTable(
                 mapping=MappingProxyType({grid.cell_of("alice"): "pop_a"}),
-                version=1,
-                built_at=0.0,
+                version=1, built_at=0.0,
             ),
             sat_fibs=MappingProxyType({0: fib0, 1: fib1}),
-            version=1,
-            built_at=0.0,
+            version=1, built_at=0.0,
         )
 
         ctx = _ctx({alice.name: alice, "bob": Endpoint("bob", 0.0, 1.0)})
@@ -376,12 +383,10 @@ class TestDroppedFlows:
             RoutingPlaneForward(cycle_plane, grid, book),
             snap, demand, ctx,
         )
-        # Walk bailed → flow is unrouted, no partial state charged.
-        assert len(result.flow_outcomes) == 0
-        assert result.unrouted_demand_gbps == pytest.approx(0.05)
-        assert len(book.isl_used) == 0
-        assert len(book.sat_feeder_used) == 0
-        assert len(book.gs_feeder_used) == 0
+        # Flow routes correctly via gateway_attachments + predecessor
+        # matrix, ignoring the broken FIB.
+        assert len(result.flow_outcomes) == 1
+        assert result.unrouted_demand_gbps == pytest.approx(0.0)
 
     def test_total_demand_accounting(self) -> None:
         """Served + unrouted must equal total."""

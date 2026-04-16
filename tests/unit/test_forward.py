@@ -15,12 +15,12 @@ from vantage.domain import (
     Endpoint,
     FIBEntry,
     FlowKey,
-    GSPoPEdge,
     GatewayAttachments,
     GroundStation,
+    GSPoPEdge,
+    InfrastructureView,
     ISLEdge,
     ISLGraph,
-    InfrastructureView,
     NetworkSnapshot,
     PoP,
     RoutingPlane,
@@ -31,7 +31,7 @@ from vantage.domain import (
     UsageBook,
 )
 from vantage.engine.context import RunContext
-from vantage.forward import RoutingPlaneForward, precompute_path_table, realize
+from vantage.forward import RoutingPlaneForward, realize
 from vantage.world.ground import GroundKnowledge, MeasuredGroundDelay
 
 
@@ -58,8 +58,13 @@ def simple_snapshot() -> NetworkSnapshot:
     delay_matrix = np.array([[0.0, 1.0], [1.0, 0.0]])
     pred_matrix = np.array([[0, 0], [1, 1]], dtype=np.int32)
 
+    # Downlink delay is one-way. Sat 1 at (15,15,550) → gs1 at
+    # (0.5,0.5,0) gives access_delay ≈ 8.05 ms; using the correct
+    # value keeps AccessLink.delay consistent with positions, which
+    # compute_egress_options relies on.
     gw = GatewayAttachments(attachments=MappingProxyType({
-        "gs1": (AccessLink(sat_id=1, elevation_deg=80.0, slant_range_km=560.0, delay=1.87),),
+        "gs1": (AccessLink(sat_id=1, elevation_deg=20.0,
+                           slant_range_km=2200.0, delay=8.05),),
     }))
     sat = SatelliteState(
         positions=positions, graph=graph,
@@ -113,11 +118,16 @@ def _build_routing_plane(simple_snapshot: NetworkSnapshot) -> RoutingPlane:
 
 class _StubWorld:
     calibration = None
+    # Per-sat Ka feeder cap = 20 Gbps (one antenna per egress beam),
+    # matching the documented ShellConfig default and the real
+    # CrowdLink spec — was 80 Gbps in earlier WIP, adjusted on
+    # 2026-04-17 when the per-sat-feeder reroute path made the cap
+    # observable in tests.
     shell = ShellConfig(
         shell_id=1, num_orbits=1, sats_per_orbit=2,
         altitude_km=550.0, inclination_deg=53.0,
         orbit_cycle_s=6000.0, phase_shift=1,
-        feeder_capacity_gbps=80.0,
+        feeder_capacity_gbps=20.0,
     )
     ground_stations = ()
 
@@ -153,9 +163,9 @@ class TestForward:
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
     ) -> None:
         plane, cell_grid = _build_routing_plane(simple_snapshot)
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
+        # path_table no longer needed — RoutingPlaneForward computes options lazily
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
 
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 0.01,
@@ -174,9 +184,9 @@ class TestForward:
         self, simple_snapshot: NetworkSnapshot, simple_context: RunContext,
     ) -> None:
         plane, cell_grid = _build_routing_plane(simple_snapshot)
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
+        # path_table no longer needed — RoutingPlaneForward computes options lazily
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
 
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 0.01,
@@ -199,9 +209,9 @@ class TestForward:
             ground_knowledge=GroundKnowledge(estimator=_stub_ground_truth()),
         )
         plane, cell_grid = _build_routing_plane(simple_snapshot)
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
+        # path_table no longer needed — RoutingPlaneForward computes options lazily
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
 
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "unknown"): 0.01,
@@ -284,9 +294,8 @@ class TestForwardAuditFixes:
         monkeypatch.setattr(fwd, "find_ingress_satellite", _always_sat0)
 
         grid, plane = self._multi_user_grid()
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, grid, book)
         ctx = RunContext(
             world=_StubWorld(),  # type: ignore[arg-type]
             endpoints={
@@ -296,9 +305,15 @@ class TestForwardAuditFixes:
             },
             ground_knowledge=GroundKnowledge(estimator=_stub_ground_truth()),
         )
-        # 30 Gbps × 2 = 60 Gbps on a sat_feeder cap of 80 Gbps → ρ ≈ 0.75,
-        # large enough that M/M/1/K queuing differs noticeably between
-        # ρ=0.375 (pre-fix flow 1) and ρ=0.75 (pre-fix flow 2).
+        # 30 Gbps × 2 = 60 Gbps on a sat_feeder cap of 20 Gbps → ρ ≈ 3.0
+        # (the simple_snapshot fixture has only sat 1 attached to gs1, so
+        # both flows fall through `charge`'s "all options saturated"
+        # branch and end up sharing sat 1 as egress — the multi-egress
+        # reroute does not split them onto different sats here, which
+        # keeps the same-link premise of this test intact). M/M/1/K
+        # queuing differs noticeably between ρ=1.5 (pre-fix flow 1) and
+        # ρ=3.0 (pre-fix flow 2); post-fix both should report ρ=3.0
+        # queuing identically.
         demand = TrafficDemand(epoch=0, flows=MappingProxyType({
             FlowKey("user_a", "google"): 30.0,
             FlowKey("user_b", "google"): 30.0,
@@ -334,9 +349,9 @@ class TestForwardAuditFixes:
         gs_feeder before checking ground_truth, so dropped flows
         polluted the usage book and over-stated link utilization."""
         plane, cell_grid = _build_routing_plane(simple_snapshot)
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
+        # path_table no longer needed — RoutingPlaneForward computes options lazily
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
         # The stub ground table only knows ("pop", "google"). "void" is
         # a registered endpoint with no measurement.
         ctx = RunContext(
@@ -377,8 +392,8 @@ class TestForwardAuditFixes:
         up over-stated. Tested at the helper level because triggering
         the regime through a full ``realize`` requires tiny buffers
         the M/M/1/K default does not exercise."""
-        from vantage.forward import effective_throughput
         from vantage.common.link_model import pftk_throughput
+        from vantage.forward import effective_throughput
 
         # Sanity: at low loss + low RTT PFTK far exceeds a 50 Mbps cap.
         pftk = pftk_throughput(10.0, 1e-6)
@@ -406,6 +421,288 @@ class TestForwardAuditFixes:
 
     # --- Bug D ---
 
+    # ─── Bug 14 fix: multi-egress per-sat-feeder reroute ───
+
+    @staticmethod
+    def _multi_egress_snapshot() -> NetworkSnapshot:
+        """3 sats serving 1 PoP via the same GS.
+
+        - Sat 0 is the source's ingress (overhead at (0, 0)).
+        - Sat 1 is the *primary* egress (cheaper ISL hop from sat 0).
+        - Sat 2 is the *alternate* egress (longer ISL hop from sat 0).
+        - Both sat 1 and sat 2 are attached to gs1, which feeds 'pop'.
+
+        Sat 1 and sat 2 are placed at (15, 15) so they are below the
+        source's horizon, leaving sat 0 as the only ingress (matches
+        the deterministic visibility convention used by the other
+        post-Bug-9 fixtures in this file).
+        """
+        graph = ISLGraph(
+            shell_id=1, timeslot=0, num_sats=3,
+            edges=(
+                ISLEdge(0, 1, 1.0, 300.0, "intra_orbit"),
+                ISLEdge(0, 2, 5.0, 1500.0, "intra_orbit"),
+                ISLEdge(1, 2, 0.5, 150.0, "intra_orbit"),
+            ),
+        )
+        positions = np.array([
+            [0.0, 0.0, 550.0],
+            [15.0, 15.0, 550.0],
+            [15.0, 15.0, 550.0],
+        ], dtype=np.float64)
+        delay_matrix = np.array([
+            [0.0, 1.0, 5.0],
+            [1.0, 0.0, 0.5],
+            [5.0, 0.5, 0.0],
+        ])
+        # Predecessor matrix (one-hop direct paths, the simple case).
+        pred = np.array([
+            [0, 0, 0],
+            [1, 1, 1],
+            [2, 2, 2],
+        ], dtype=np.int32)
+        # AccessLink.delay must match position-derived access_delay so
+        # compute_egress_options ranks options by realistic costs.
+        # Both sats at (15,15,550) → gs1 at (0,0,0): ≈ 8.31 ms
+        # one-way. Sat 2 has slightly worse downlink to break the tie
+        # so the helper picks sat 1 as primary deterministically (this
+        # test specifically asserts the rank order).
+        gw = GatewayAttachments(attachments=MappingProxyType({
+            "gs1": (
+                AccessLink(sat_id=1, elevation_deg=20.0,
+                           slant_range_km=2300.0, delay=8.30),
+                AccessLink(sat_id=2, elevation_deg=20.0,
+                           slant_range_km=2350.0, delay=8.50),
+            ),
+        }))
+        sat = SatelliteState(
+            positions=positions, graph=graph,
+            delay_matrix=delay_matrix, predecessor_matrix=pred,
+            gateway_attachments=gw,
+        )
+        gs = GroundStation(
+            "gs1", 0.0, 0.0, "XX", "Test", 8, 25.0,
+            True, 2.1, 1.3, 160.0, False,
+        )
+        pop = PoP("pop1", "pop", "POP", 0.0, 0.0)
+        edge = GSPoPEdge("gs1", "pop", 10.0, 0.05, 100.0)
+        infra = InfrastructureView(
+            pops=(pop,), ground_stations=(gs,), gs_pop_edges=(edge,),
+        )
+        return NetworkSnapshot(epoch=0, time_s=0.0, satellite=sat, infra=infra)
+
+    def test_compute_egress_options_returns_top_k_sorted(self) -> None:
+        """``compute_egress_options(snapshot, ingress, pop, K)`` returns
+        a ranked list of ``EgressOption`` tuples, ascending by
+        sat-segment cost. The lowest-cost (egress_sat, gs) is index 0;
+        the alternate is index 1; etc."""
+        from vantage.forward import compute_egress_options
+
+        snap = self._multi_egress_snapshot()
+        opts = compute_egress_options(snap, ingress=0, pop_code="pop", k=8)
+
+        # Two candidates: (egress=1) and (egress=2) — both via gs1.
+        assert len(opts) == 2
+        assert opts[0].egress_sat == 1, "primary should be sat 1 (cheaper ISL)"
+        assert opts[1].egress_sat == 2, "alternate should be sat 2"
+        assert opts[0].gs_id == "gs1"
+        assert opts[1].gs_id == "gs1"
+        assert opts[0].propagation_rtt < opts[1].propagation_rtt
+
+    def test_compute_egress_options_respects_k_limit(self) -> None:
+        """Asking for K=1 returns only the primary option."""
+        from vantage.forward import compute_egress_options
+
+        snap = self._multi_egress_snapshot()
+        opts = compute_egress_options(snap, ingress=0, pop_code="pop", k=1)
+        assert len(opts) == 1
+        assert opts[0].egress_sat == 1
+
+    def test_charge_reroutes_to_alternate_when_primary_sat_feeder_full(
+        self,
+    ) -> None:
+        """Bug 14 fix: when the primary egress sat's feeder is at
+        capacity, the data plane reroutes the flow via an alternate
+        egress sat (different ISL hop, different downlink — same GS
+        in this fixture)."""
+        snap = self._multi_egress_snapshot()
+        # Use a custom plane that maps the cell to "pop".
+        alice = Endpoint(name="alice", lat_deg=0.0, lon_deg=0.0)
+        cell_grid = CellGrid.from_endpoints([("alice", 0.0, 0.0)])
+        cell_id = cell_grid.cell_of("alice")
+        cell_to_pop = CellToPopTable(
+            mapping=MappingProxyType({cell_id: "pop"}),
+            version=0, built_at=0.0,
+        )
+        # Minimal FIB so .decide's legacy fallback path doesn't crash.
+        fib_0 = SatelliteFIB(
+            sat_id=0,
+            fib=MappingProxyType({"pop": FIBEntry.forward(1, cost_ms=5.0)}),
+            version=0, built_at=0.0,
+        )
+        fib_1 = SatelliteFIB(
+            sat_id=1,
+            fib=MappingProxyType({"pop": FIBEntry.egress("gs1", cost_ms=3.74)}),
+            version=0, built_at=0.0,
+        )
+        fib_2 = SatelliteFIB(
+            sat_id=2,
+            fib=MappingProxyType({"pop": FIBEntry.egress("gs1", cost_ms=3.78)}),
+            version=0, built_at=0.0,
+        )
+        plane = RoutingPlane(
+            cell_to_pop=cell_to_pop,
+            sat_fibs=MappingProxyType({0: fib_0, 1: fib_1, 2: fib_2}),
+            version=0, built_at=0.0,
+        )
+
+        # Pre-fill sat 1's feeder so the next demand can't fit (cap = 20).
+        gs = GroundStation(
+            "gs1", 0.0, 0.0, "XX", "Test", 8, 25.0,
+            True, 2.1, 1.3, 160.0, False,
+        )
+        view = CapacityView.from_snapshot(
+            sat_state=snap.satellite,
+            shell=_StubWorld.shell,
+            ground_stations={"gs1": gs},
+        )
+        book = UsageBook(view=view)
+        # Sat-feeder cap is 20 Gbps (per ShellConfig default). Pre-load
+        # 19 Gbps so a 5 Gbps incoming demand on sat 1 would overflow.
+        book.charge_sat_feeder(1, 19.0)
+
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
+        ctx = RunContext(
+            world=_StubWorld(),  # type: ignore[arg-type]
+            endpoints={
+                "alice": alice,
+                "google": Endpoint("google", 37.4, -122.1),
+            },
+            ground_knowledge=GroundKnowledge(estimator=_stub_ground_truth()),
+        )
+        demand = TrafficDemand(epoch=0, flows=MappingProxyType({
+            FlowKey("alice", "google"): 5.0,
+        }))
+        result = realize(strategy, snap, demand, ctx)
+
+        assert len(result.flow_outcomes) == 1
+        flow = result.flow_outcomes[0]
+        # Sat 1 was full (19 + 5 > 20); flow should have rerouted to sat 2.
+        assert flow.egress_sat == 2, (
+            f"expected reroute to sat 2 (alternate); got egress_sat={flow.egress_sat}"
+        )
+        # Capacity should reflect: sat 1 still at 19 (untouched by this flow),
+        # sat 2 charged with the 5 Gbps.
+        assert book.sat_feeder_used[1] == pytest.approx(19.0)
+        assert book.sat_feeder_used[2] == pytest.approx(5.0)
+
+    def test_all_options_full_falls_back_to_baseline_pop(self) -> None:
+        """When the controller's chosen PoP differs from the cell's
+        baseline (geographic-nearest) PoP, ``decide`` appends the
+        baseline-pop path as a final fallback option. If every prior
+        option's egress sat-feeder is saturated, ``charge`` uses the
+        fallback regardless of capacity (overflow accepted; surfaces
+        as elevated queuing/loss in measure)."""
+        snap = self._multi_egress_snapshot()
+        # Add a second PoP with its own GS so baseline can differ
+        # from the controller's chosen PoP. Sat 0 itself attaches to
+        # this second GS (so baseline path = sat-0-egress, no ISL).
+        gs2 = GroundStation(
+            "gs2", 0.5, 0.5, "XX", "Test", 8, 25.0,
+            True, 2.1, 1.3, 160.0, False,
+        )
+        pop2 = PoP("pop2", "popB", "POP-B", 0.5, 0.5)
+        # Sat 0 at (0, 0, 550) → gs2 at (0.5, 0.5, 0): ≈ 1.86 ms one-way.
+        gs2_link = AccessLink(
+            sat_id=0, elevation_deg=85.0, slant_range_km=560.0, delay=1.86,
+        )
+        # Augment the existing snapshot with gs2 + pop2.
+        old_attachments = dict(snap.satellite.gateway_attachments.attachments)
+        old_attachments["gs2"] = (gs2_link,)
+        new_gw = GatewayAttachments(attachments=MappingProxyType(old_attachments))
+        new_sat = SatelliteState(
+            positions=snap.satellite.positions,
+            graph=snap.satellite.graph,
+            delay_matrix=snap.satellite.delay_matrix,
+            predecessor_matrix=snap.satellite.predecessor_matrix,
+            gateway_attachments=new_gw,
+        )
+        new_infra = InfrastructureView(
+            pops=(*snap.infra.pops, pop2),
+            ground_stations=(*snap.infra.ground_stations, gs2),
+            gs_pop_edges=(
+                *snap.infra.gs_pop_edges,
+                GSPoPEdge("gs2", "popB", 5.0, 0.02, 100.0),
+            ),
+        )
+        snap = NetworkSnapshot(
+            epoch=0, time_s=0.0, satellite=new_sat, infra=new_infra,
+        )
+
+        # Cell mapping: baseline = popB (cell's nearest), but controller
+        # overrides to "pop" via per_dest. So decide will produce
+        # primary options for "pop" + a fallback option for "popB".
+        alice = Endpoint(name="alice", lat_deg=0.0, lon_deg=0.0)
+        cell_grid = CellGrid.from_endpoints([("alice", 0.0, 0.0)])
+        cell_id = cell_grid.cell_of("alice")
+        cell_to_pop = CellToPopTable(
+            mapping=MappingProxyType({cell_id: "popB"}),  # baseline
+            version=0, built_at=0.0,
+            per_dest=MappingProxyType({(cell_id, "google"): "pop"}),
+        )
+        plane = RoutingPlane(
+            cell_to_pop=cell_to_pop,
+            sat_fibs=MappingProxyType({}),  # FIB unused by new data plane
+            version=0, built_at=0.0,
+        )
+
+        view = CapacityView.from_snapshot(
+            sat_state=snap.satellite,
+            shell=_StubWorld.shell,
+            ground_stations={"gs1": GroundStation(
+                "gs1", 0.0, 0.0, "XX", "Test", 8, 25.0,
+                True, 2.1, 1.3, 160.0, False,
+            ), "gs2": gs2},
+        )
+        book = UsageBook(view=view)
+        # Saturate BOTH primary egress sats (1 and 2) for "pop" so the
+        # fallback to popB (via sat 0) is forced. cap = 20.
+        book.charge_sat_feeder(1, 20.0)
+        book.charge_sat_feeder(2, 20.0)
+
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
+        # Stub ground truth covering BOTH PoPs so decide doesn't
+        # short-circuit on missing baseline measurement.
+        ctx = RunContext(
+            world=_StubWorld(),  # type: ignore[arg-type]
+            endpoints={
+                "alice": alice,
+                "google": Endpoint("google", 37.4, -122.1),
+            },
+            ground_knowledge=GroundKnowledge(
+                estimator=MeasuredGroundDelay(one_way_rtt_ms={
+                    ("pop", "google"): 2.5,
+                    ("popB", "google"): 1.0,
+                }),
+            ),
+        )
+        demand = TrafficDemand(epoch=0, flows=MappingProxyType({
+            FlowKey("alice", "google"): 0.5,
+        }))
+        result = realize(strategy, snap, demand, ctx)
+
+        assert len(result.flow_outcomes) == 1
+        flow = result.flow_outcomes[0]
+        # Both primary options' sat feeders are full → fallback to
+        # popB used. The popB path lands at sat 0 (egress) via gs2.
+        assert flow.pop_code == "popB", (
+            f"expected fallback to baseline popB; got {flow.pop_code}"
+        )
+        assert flow.gs_id == "gs2"
+        assert flow.egress_sat == 0
+        # ground RTT = popB→google measurement (1.0) × 2 = 2.0 ms
+        assert flow.ground_rtt == pytest.approx(2.0)
+
     def test_uplink_cached_per_src_per_epoch(
         self, simple_snapshot: NetworkSnapshot, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -416,9 +713,9 @@ class TestForwardAuditFixes:
         uplink per-src per-epoch, so multiple flows from one source
         share the same ingress."""
         plane, cell_grid = _build_routing_plane(simple_snapshot)
-        path_table = precompute_path_table(plane, simple_snapshot.satellite.num_sats)
+        # path_table no longer needed — RoutingPlaneForward computes options lazily
         book = _make_book(simple_snapshot)
-        strategy = RoutingPlaneForward(plane, cell_grid, book, path_table)
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
         ctx = RunContext(
             world=_StubWorld(),  # type: ignore[arg-type]
             endpoints={

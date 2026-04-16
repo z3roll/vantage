@@ -33,9 +33,13 @@ Produces :class:`EpochResult` output. All delays in ms.
 
 from __future__ import annotations
 
+import math
 import random as _random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
+
+import numpy as np
+from numpy.typing import NDArray
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
 from vantage.common.link_model import (
@@ -63,81 +67,145 @@ if TYPE_CHECKING:
     from vantage.engine.context import RunContext
 
 __all__ = [
+    "EgressOption",
     "ForwardStrategy",
     "PathDecision",
-    "PrecomputedPath",
     "ResolvedFlow",
     "RoutingPlaneForward",
+    "compute_egress_options",
     "effective_throughput",
-    "precompute_path_table",
     "realize",
 ]
 
 
 # ---------------------------------------------------------------------------
-# Pre-computed path table
+# Egress options + helper
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class PrecomputedPath:
-    """Cached result of a FIB walk from one satellite to one PoP."""
+class EgressOption:
+    """One ``(egress_sat, gs, path)`` candidate for routing a flow.
 
-    egress_sat: int
-    egress_gs: str
-    isl_links: tuple[tuple[int, int], ...]
-    cost_ms: float  # ingress FIB entry cost_ms
+    Each option fully describes a downlink path: which PoP it lands
+    at (might be the controller's chosen PoP or the cell's baseline
+    fallback PoP — the two have different ``ground_rtt``), the
+    egress sat that downlinks to ``gs_id``, the ISL hops from the
+    flow's ingress to that egress, and the propagation/ground RTTs.
 
-
-def precompute_path_table(
-    plane: RoutingPlane,
-    num_sats: int,
-) -> dict[tuple[int, str], PrecomputedPath]:
-    """Walk every (satellite, PoP) FIB entry once, cache the result.
-
-    Called when the RoutingPlane is rebuilt (~every 15s). The returned
-    table replaces per-flow FIB walks in ``RoutingPlaneForward``.
+    Used by the data-plane multi-egress reroute logic: when the
+    primary option's egress sat-feeder has no remaining capacity,
+    :meth:`RoutingPlaneForward.charge` walks alternates in order
+    and uses the first one with room.
     """
-    table: dict[tuple[int, str], PrecomputedPath] = {}
 
-    for sat_id in plane.sat_fibs:
-        sat_fib = plane.sat_fibs[sat_id]
-        for pop_code, entry in sat_fib.fib.items():
-            path_sats: list[int] = [sat_id]
-            visited: set[int] = {sat_id}
-            egress_sat: int | None = None
-            egress_gs: str | None = None
-            current = sat_id
+    pop_code: str
+    egress_sat: int
+    gs_id: str
+    isl_links: tuple[tuple[int, int], ...]
+    propagation_rtt: float    # uplink + sat-segment (RTT)
+    ground_rtt: float         # PoP→destination (RTT)
 
-            for _ in range(num_sats):
-                try:
-                    e = plane.fib_of(current).route(pop_code)
-                except KeyError:
-                    break
-                if e.is_egress:
-                    egress_sat = current
-                    egress_gs = e.egress_gs
-                    break
-                nxt = e.next_hop_sat
-                if nxt in visited:
-                    break
-                visited.add(nxt)
-                path_sats.append(nxt)
-                current = nxt
 
-            if egress_sat is not None and egress_gs is not None:
-                isl_links = tuple(
-                    (path_sats[i], path_sats[i + 1])
-                    for i in range(len(path_sats) - 1)
-                )
-                table[(sat_id, pop_code)] = PrecomputedPath(
-                    egress_sat=egress_sat,
-                    egress_gs=egress_gs,
-                    isl_links=isl_links,
-                    cost_ms=entry.cost_ms,
-                )
+def compute_egress_options(
+    snapshot: NetworkSnapshot,
+    ingress: int,
+    pop_code: str,
+    k: int,
+) -> tuple[EgressOption, ...]:
+    """Top-K (egress_sat, gs, path) options to reach ``pop_code`` from
+    ``ingress``, ranked ascending by sat-segment RTT.
 
-    return table
+    Enumerates every ``(gs, sat)`` pair such that ``gs`` is attached
+    to ``pop_code`` and ``sat`` is a visible egress for ``gs``,
+    computes the round-trip cost ``ISL + downlink + backhaul``, sorts
+    ascending, takes the top *K*. Each returned option's
+    ``propagation_rtt`` carries only the *sat segment* — the caller
+    adds the uplink RTT before reporting the user-facing latency.
+    ``ground_rtt`` is set to 0 here; the caller fills it from the
+    ground-delay estimator (which depends on the destination, not
+    the route).
+
+    Used by :meth:`RoutingPlaneForward.decide` to enumerate
+    alternates for the per-sat-feeder reroute path. Cached per
+    ``(ingress, pop)`` inside ``RoutingPlaneForward`` because the
+    work is identical across all flows that share that pair within
+    one epoch.
+    """
+    sat = snapshot.satellite
+    infra = snapshot.infra
+    candidates: list[tuple[float, int, str]] = []
+
+    for gs_id, backhaul_oneway in infra.pop_gs_edges(pop_code):
+        if infra.gs_by_id(gs_id) is None:
+            continue
+        gs_links = sat.gateway_attachments.attachments.get(gs_id)
+        if not gs_links:
+            continue
+        backhaul_rtt = backhaul_oneway * 2
+        for link in gs_links:
+            egress = link.sat_id
+            isl_one = float(sat.delay_matrix[ingress, egress])
+            if not math.isfinite(isl_one):
+                continue
+            cost = isl_one * 2 + link.delay * 2 + backhaul_rtt
+            candidates.append((cost, egress, gs_id))
+
+    candidates.sort()
+
+    options: list[EgressOption] = []
+    for cost, egress, gs_id in candidates[:k]:
+        if egress == ingress:
+            isl_links: tuple[tuple[int, int], ...] = ()
+        else:
+            walked = _walk_isl_path(sat.predecessor_matrix, ingress, egress)
+            if walked is None:
+                continue
+            isl_links = walked
+        options.append(EgressOption(
+            pop_code=pop_code,
+            egress_sat=egress,
+            gs_id=gs_id,
+            isl_links=isl_links,
+            # ISL + downlink + backhaul RTT; the caller (decide) adds
+            # the uplink RTT to produce the user-facing propagation
+            # budget. Ground RTT is per-PoP×destination so it lives
+            # outside this helper.
+            propagation_rtt=cost,
+            ground_rtt=0.0,
+        ))
+    return tuple(options)
+
+
+def _walk_isl_path(
+    pred: NDArray[np.int32], src: int, dst: int,
+) -> tuple[tuple[int, int], ...] | None:
+    """Reconstruct the ISL hop sequence from ``src`` to ``dst`` using
+    the shortest-path predecessor matrix.
+
+    ``pred[s, t]`` is "predecessor of t on the shortest path from s",
+    so we walk backwards from ``dst`` collecting nodes until we hit
+    ``src``. Returns ``None`` if any predecessor along the way is
+    ``-1`` (unreachable) or if the walk fails to terminate within
+    ``n_sats`` iterations (pathological input). For ``src == dst``
+    returns an empty tuple (no ISL hops needed)."""
+    if src == dst:
+        return ()
+    rev_path: list[int] = [dst]
+    cur = dst
+    n = int(pred.shape[0])
+    for _ in range(n):
+        prev = int(pred[src, cur])
+        if prev < 0:
+            return None
+        rev_path.append(prev)
+        if prev == src:
+            break
+        cur = prev
+    else:
+        return None
+    path = list(reversed(rev_path))
+    return tuple((path[i], path[i + 1]) for i in range(len(path) - 1))
 
 
 # ---------------------------------------------------------------------------
@@ -164,22 +232,43 @@ class ResolvedFlow:
 
 @dataclass(frozen=True, slots=True)
 class PathDecision:
-    """Path-level decision for a flow — produced by ``decide``, consumed
-    by ``charge`` and ``measure``.
+    """Path-level routing decision for a flow.
 
-    Carries every piece of information the latter two phases need so
-    they don't have to repeat the cell→PoP / FIB-walk / ground-truth
-    work. ``ground_rtt`` is resolved at decision time precisely so a
-    failed ground lookup short-circuits *before* anything is charged.
+    Carries a ranked list of :class:`EgressOption` to try in order:
+
+    * ``options[0]`` — primary (best E2E cost) for the controller's
+      chosen PoP.
+    * ``options[1..K-1]`` — alternates for the same PoP, ranked
+      ascending by E2E cost. Used when the primary's egress sat
+      feeder (20 Gbps) is saturated.
+    * ``options[-1]`` (if it lives at a different ``pop_code`` than
+      the rest) — baseline-PoP fallback, the cell's geographic
+      nearest PoP. Used regardless of capacity if every preceding
+      option is saturated, mirroring the controller-side overflow
+      semantics.
+
+    :meth:`RoutingPlaneForward.charge` walks the list in order,
+    picks the first egress sat with remaining feeder cap, and
+    returns the chosen option so :meth:`measure` can report the
+    actual user-facing path metrics.
+
+    ``options`` must be non-empty: ``RoutingPlaneForward.decide``
+    returns ``None`` (rather than an empty-options ``PathDecision``)
+    when no candidate egress is reachable, so by the time a
+    ``PathDecision`` exists ``charge``'s ``options[-1]`` indexing
+    is safe. The invariant is enforced in ``__post_init__``.
     """
 
-    pop_code: str
-    gs_id: str
     user_sat: int
-    egress_sat: int
-    isl_links: tuple[tuple[int, int], ...]
-    propagation_rtt: float  # uplink + sat-side path cost (RTT)
-    ground_rtt: float       # PoP→destination (RTT)
+    options: tuple[EgressOption, ...]
+
+    def __post_init__(self) -> None:
+        if not self.options:
+            raise ValueError(
+                "PathDecision.options must be non-empty; callers should "
+                "return None from decide() instead of constructing an "
+                "empty-options decision",
+            )
 
 
 class ForwardStrategy(Protocol):
@@ -200,26 +289,33 @@ class ForwardStrategy(Protocol):
         context: RunContext,
         epoch: int,
     ) -> PathDecision | None:
-        """Resolve PoP, sat path, and ground RTT. Return ``None`` to
-        mark the flow unrouted; callers will not invoke ``charge`` /
-        ``measure`` for that flow."""
+        """Resolve PoP, ranked egress options, and per-PoP ground
+        RTTs. Return ``None`` to mark the flow unrouted; callers
+        will not invoke ``charge`` / ``measure`` for that flow."""
         ...
 
-    def charge(self, decision: PathDecision, flow_demand: float) -> None:
-        """Apply this flow's demand to the underlying :class:`UsageBook`.
+    def charge(
+        self, decision: PathDecision, flow_demand: float,
+    ) -> EgressOption:
+        """Pick an option from ``decision`` (primary if it has cap,
+        else alternate, else fallback) and apply ``flow_demand`` to
+        the underlying :class:`UsageBook`. Return the chosen option
+        so :meth:`measure` can use it in pass 2.
 
         Called only when ``decide`` returned a non-``None``
         :class:`PathDecision`."""
         ...
 
     def measure(
-        self, decision: PathDecision, snapshot: NetworkSnapshot,
+        self, decision: PathDecision, chosen: EgressOption,
+        snapshot: NetworkSnapshot,
     ) -> ResolvedFlow:
-        """Compute per-link queuing/loss/bottleneck using the *current*
-        :class:`UsageBook` state.
+        """Compute per-link queuing/loss/bottleneck for ``chosen``
+        using the *current* :class:`UsageBook` state.
 
-        :func:`realize` calls this in pass 2 after every flow has been
-        charged, so every measurement reflects the steady-state load."""
+        :func:`realize` calls this in pass 2 after every flow has
+        been charged, so every measurement reflects the steady-state
+        load."""
         ...
 
 
@@ -269,7 +365,7 @@ def realize(
     _uplink_cache: dict[str, AccessLink | None] = {}
     _ingress_rng = _random.Random(demand.epoch)
 
-    pending: list[tuple[FlowKey, float, PathDecision]] = []
+    pending: list[tuple[FlowKey, float, PathDecision, EgressOption]] = []
 
     # ── Pass 1: decide + charge ──
     for flow_key, flow_demand in demand.flows.items():
@@ -305,14 +401,14 @@ def realize(
         if decision is None:
             continue
 
-        strategy.charge(decision, flow_demand)
-        pending.append((flow_key, flow_demand, decision))
+        chosen = strategy.charge(decision, flow_demand)
+        pending.append((flow_key, flow_demand, decision, chosen))
 
     # ── Pass 2: measure with final loads + emit outcomes ──
     outcomes: list[FlowOutcome] = []
     routed_demand = 0.0
-    for flow_key, flow_demand, decision in pending:
-        resolved = strategy.measure(decision, snapshot)
+    for flow_key, flow_demand, decision, chosen in pending:
+        resolved = strategy.measure(decision, chosen, snapshot)
         total_rtt = resolved.satellite_rtt + resolved.ground_rtt
         eff_tput = effective_throughput(
             flow_demand, total_rtt,
@@ -375,58 +471,59 @@ def effective_throughput(
 
 
 class RoutingPlaneForward:
-    """Controller-committed PoP selection with pre-computed path table.
+    """Controller-committed PoP selection with multi-egress reroute.
 
-    Uses :class:`PrecomputedPath` table (built once per RoutingPlane)
-    instead of per-flow FIB walks.  Capacity charging and queuing
-    delay are still computed per-flow at realize time.
+    Per-flow phases:
+
+    1. ``decide`` — cell→PoP via ``RoutingPlane.cell_to_pop`` (with
+       optional per-dest override), then enumerate the top-K
+       ``EgressOption`` candidates for that ``(ingress, pop)`` and
+       append a fallback option that lands at the cell's geographic
+       nearest PoP. Resolves ground RTT for both PoPs eagerly so a
+       missing measurement short-circuits before any charge.
+
+    2. ``charge`` — try the options in rank order; pick the first
+       whose ``egress_sat`` has remaining sat-feeder capacity (20
+       Gbps per Ka antenna). If every option's egress sat is
+       saturated, take the *fallback* option regardless of capacity
+       (overflow accepted; surfaces in measure as high queuing/loss).
+
+    3. ``measure`` — use the chosen option's path metrics + the
+       final :class:`UsageBook` state to compute per-link
+       queuing/loss/bottleneck.
+
+    The ``(ingress, pop) → tuple[EgressOption, ...]`` cache is
+    populated lazily on first use within a ``RoutingPlaneForward``
+    instance and naturally bounded — the engine constructs a fresh
+    instance per epoch, so no cross-epoch leakage.
     """
 
-    __slots__ = ("_grid", "_plane", "_book", "_paths")
+    __slots__ = ("_book", "_grid", "_k", "_options_cache", "_plane")
 
     def __init__(
         self,
         routing_plane: RoutingPlane,
         cell_grid: CellGrid,
         usage_book: UsageBook,
-        path_table: dict[tuple[int, str], PrecomputedPath] | None = None,
+        path_table: object | None = None,    # ignored — kept for callers
+        k: int = 8,
     ) -> None:
+        del path_table  # legacy positional arg from the pre-multi-egress API
         self._plane = routing_plane
         self._grid = cell_grid
         self._book = usage_book
-        self._paths = path_table or {}
+        self._k = k
+        self._options_cache: dict[tuple[int, str], tuple[EgressOption, ...]] = {}
 
-    def _fib_walk(self, ingress: int, pop_code: str, max_hops: int) -> PrecomputedPath | None:
-        """Live FIB walk fallback when path_table misses."""
-        try:
-            entry = self._plane.fib_of(ingress).route(pop_code)
-        except KeyError:
-            return None
-        path_sats = [ingress]
-        visited = {ingress}
-        current = ingress
-        for _ in range(max_hops):
-            try:
-                e = self._plane.fib_of(current).route(pop_code)
-            except KeyError:
-                return None
-            if e.is_egress:
-                return PrecomputedPath(
-                    egress_sat=current,
-                    egress_gs=e.egress_gs or "",
-                    isl_links=tuple(
-                        (path_sats[i], path_sats[i + 1])
-                        for i in range(len(path_sats) - 1)
-                    ),
-                    cost_ms=entry.cost_ms,
-                )
-            nxt = e.next_hop_sat
-            if nxt in visited:
-                return None
-            visited.add(nxt)
-            path_sats.append(nxt)
-            current = nxt
-        return None
+    def _options_for(
+        self, ingress: int, pop_code: str, snapshot: NetworkSnapshot,
+    ) -> tuple[EgressOption, ...]:
+        key = (ingress, pop_code)
+        cached = self._options_cache.get(key)
+        if cached is None:
+            cached = compute_egress_options(snapshot, ingress, pop_code, self._k)
+            self._options_cache[key] = cached
+        return cached
 
     def decide(
         self,
@@ -439,9 +536,8 @@ class RoutingPlaneForward:
         epoch: int,
     ) -> PathDecision | None:
         del src_ep, epoch  # unused — present for Protocol signature stability
-        sat = snapshot.satellite
 
-        # ── cell → PoP ──
+        # ── cell → controller-chosen PoP ──
         try:
             cell_id = self._grid.cell_of(flow_key.src)
         except KeyError:
@@ -451,41 +547,99 @@ class RoutingPlaneForward:
         except KeyError:
             return None
 
-        # ── path: table lookup, fallback to live FIB walk ──
-        ppath = self._paths.get((ingress, pop_code))
-        if ppath is None:
-            ppath = self._fib_walk(ingress, pop_code, sat.num_sats)
-        if ppath is None:
-            return None
-
-        # ── ground RTT — resolved here so a missing measurement
-        # short-circuits the flow before any capacity is charged. ──
         ground_truth = context.ground_knowledge.estimator
         if ground_truth is None:
             return None
         try:
-            ground_rtt = ground_truth.estimate(pop_code, flow_key.dst) * 2
+            ground_rtt_chosen = ground_truth.estimate(pop_code, flow_key.dst) * 2
         except KeyError:
             return None
 
-        return PathDecision(
-            pop_code=pop_code,
-            gs_id=ppath.egress_gs,
-            user_sat=ingress,
-            egress_sat=ppath.egress_sat,
-            isl_links=ppath.isl_links,
-            propagation_rtt=uplink.delay * 2 + ppath.cost_ms,
-            ground_rtt=ground_rtt,
+        chosen_options = self._options_for(ingress, pop_code, snapshot)
+        if not chosen_options:
+            return None
+
+        uplink_rtt = uplink.delay * 2
+        # Lift each helper-emitted option into a "uplink + ground"-aware
+        # EgressOption usable by measure() directly.
+        primary_options: tuple[EgressOption, ...] = tuple(
+            EgressOption(
+                pop_code=opt.pop_code,
+                egress_sat=opt.egress_sat,
+                gs_id=opt.gs_id,
+                isl_links=opt.isl_links,
+                propagation_rtt=uplink_rtt + opt.propagation_rtt,
+                ground_rtt=ground_rtt_chosen,
+            )
+            for opt in chosen_options
         )
 
-    def charge(self, decision: PathDecision, flow_demand: float) -> None:
-        for a, b in decision.isl_links:
-            self._book.charge_isl(a, b, flow_demand)
-        self._book.charge_sat_feeder(decision.egress_sat, flow_demand)
-        self._book.charge_gs_feeder(decision.gs_id, flow_demand)
+        # ── Append baseline-PoP fallback if it differs from the
+        # chosen PoP. The fallback is the controller's own overflow
+        # semantic mirrored into the data plane: if every primary
+        # option is saturated, fall back to the cell's geographic
+        # nearest PoP. ──
+        baseline_pop = self._plane.cell_to_pop.mapping[cell_id]
+        if baseline_pop == pop_code:
+            return PathDecision(user_sat=ingress, options=primary_options)
+
+        try:
+            ground_rtt_baseline = ground_truth.estimate(
+                baseline_pop, flow_key.dst,
+            ) * 2
+        except KeyError:
+            # Baseline ground unmeasured — no useful fallback to add.
+            return PathDecision(user_sat=ingress, options=primary_options)
+
+        baseline_options = self._options_for(ingress, baseline_pop, snapshot)
+        if not baseline_options:
+            return PathDecision(user_sat=ingress, options=primary_options)
+
+        bp = baseline_options[0]
+        fallback = EgressOption(
+            pop_code=bp.pop_code,
+            egress_sat=bp.egress_sat,
+            gs_id=bp.gs_id,
+            isl_links=bp.isl_links,
+            propagation_rtt=uplink_rtt + bp.propagation_rtt,
+            ground_rtt=ground_rtt_baseline,
+        )
+        return PathDecision(
+            user_sat=ingress, options=primary_options + (fallback,),
+        )
+
+    def charge(
+        self, decision: PathDecision, flow_demand: float,
+    ) -> EgressOption:
+        # Per-sat Ka feeder cap; constant 20 Gbps for the default shell
+        # but read via CapacityView for forward-compat with multi-shell
+        # deployments.
+        for option in decision.options:
+            cap = self._book.view.sat_feeder_cap(option.egress_sat)
+            current = self._book.sat_feeder_used.get(option.egress_sat, 0.0)
+            if current + flow_demand <= cap:
+                self._do_charge(option, flow_demand)
+                return option
+
+        # Every option's egress sat is saturated. Take the fallback
+        # (= last option) and accept the overflow — measure() will
+        # report it as elevated queuing/loss rather than dropping the
+        # flow.
+        chosen = decision.options[-1]
+        self._do_charge(chosen, flow_demand)
+        return chosen
+
+    def _do_charge(self, option: EgressOption, demand: float) -> None:
+        for a, b in option.isl_links:
+            self._book.charge_isl(a, b, demand)
+        self._book.charge_sat_feeder(option.egress_sat, demand)
+        self._book.charge_gs_feeder(option.gs_id, demand)
 
     def measure(
-        self, decision: PathDecision, snapshot: NetworkSnapshot,
+        self,
+        decision: PathDecision,
+        chosen: EgressOption,
+        snapshot: NetworkSnapshot,
     ) -> ResolvedFlow:
         sat = snapshot.satellite
 
@@ -494,7 +648,7 @@ class RoutingPlaneForward:
         total_queuing_oneway = 0.0
         total_tx_oneway = 0.0
 
-        for a, b in decision.isl_links:
+        for a, b in chosen.isl_links:
             isl_prop = float(sat.delay_matrix[a, b])
             isl_cap = self._book.view.isl_cap(a, b)
             isl_load = self._book.isl_used.get(self._book.isl_key(a, b), 0.0)
@@ -504,16 +658,16 @@ class RoutingPlaneForward:
             hop_losses.append(perf.loss_probability)
             hop_capacities.append(isl_cap)
 
-        sf_cap = self._book.view.sat_feeder_cap(decision.egress_sat)
-        sf_load = self._book.sat_feeder_used.get(decision.egress_sat, 0.0)
+        sf_cap = self._book.view.sat_feeder_cap(chosen.egress_sat)
+        sf_load = self._book.sat_feeder_used.get(chosen.egress_sat, 0.0)
         sf_perf = link_performance(0.0, sf_cap, sf_load)
         total_queuing_oneway += sf_perf.queuing_ms
         total_tx_oneway += sf_perf.transmission_ms
         hop_losses.append(sf_perf.loss_probability)
         hop_capacities.append(sf_cap)
 
-        gf_cap = self._book.view.gs_feeder_cap(decision.gs_id)
-        gf_load = self._book.gs_feeder_used.get(decision.gs_id, 0.0)
+        gf_cap = self._book.view.gs_feeder_cap(chosen.gs_id)
+        gf_load = self._book.gs_feeder_used.get(chosen.gs_id, 0.0)
         gf_perf = link_performance(0.0, gf_cap, gf_load)
         total_queuing_oneway += gf_perf.queuing_ms
         total_tx_oneway += gf_perf.transmission_ms
@@ -522,16 +676,16 @@ class RoutingPlaneForward:
 
         queuing_rtt = total_queuing_oneway * 2
         transmission_rtt = total_tx_oneway * 2
-        satellite_rtt = decision.propagation_rtt + queuing_rtt + transmission_rtt
+        satellite_rtt = chosen.propagation_rtt + queuing_rtt + transmission_rtt
 
         return ResolvedFlow(
-            pop_code=decision.pop_code,
-            gs_id=decision.gs_id,
+            pop_code=chosen.pop_code,
+            gs_id=chosen.gs_id,
             user_sat=decision.user_sat,
-            egress_sat=decision.egress_sat,
+            egress_sat=chosen.egress_sat,
             satellite_rtt=satellite_rtt,
-            ground_rtt=decision.ground_rtt,
-            propagation_rtt=decision.propagation_rtt,
+            ground_rtt=chosen.ground_rtt,
+            propagation_rtt=chosen.propagation_rtt,
             queuing_rtt=queuing_rtt,
             transmission_rtt=transmission_rtt,
             loss_probability=path_loss(hop_losses),
