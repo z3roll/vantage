@@ -4,6 +4,30 @@
 via cell→PoP mapping and per-satellite FIBs, with capacity
 tracking via :class:`UsageBook`.
 
+Three-phase :class:`ForwardStrategy` (since the 2026-04-17 audit):
+
+  1. ``decide``  — resolve cell→PoP, FIB walk, ground RTT. Pure read.
+                   Returns ``None`` if any step fails — *nothing* is
+                   charged in that case.
+  2. ``charge``  — apply the flow's demand to the
+                   :class:`UsageBook`.
+  3. ``measure`` — read the *final* per-link load and compute
+                   queuing/loss/bottleneck for the flow.
+
+:func:`realize` runs the strategy in **two passes**: pass 1 decides
++ charges every flow, pass 2 measures each surviving flow against the
+final per-link load. This decouples the per-flow queuing-delay
+report from the iteration order of ``demand.flows``; pre-audit code
+charged then measured inside the same per-flow loop, so flows landed
+on each link with a load that depended on where they appeared in the
+dict iteration.
+
+Per-source ingress satellite is cached for the duration of one
+:func:`realize` call: a terminal picks one serving sat and reuses it
+for every flow it originates within that epoch, matching how a real
+dish behaves rather than re-rolling the stochastic ``find_ingress_*``
+per flow.
+
 Produces :class:`EpochResult` output. All delays in ms.
 """
 
@@ -39,9 +63,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ForwardStrategy",
+    "PathDecision",
     "PrecomputedPath",
     "ResolvedFlow",
     "RoutingPlaneForward",
+    "effective_throughput",
     "precompute_path_table",
     "realize",
 ]
@@ -135,21 +161,64 @@ class ResolvedFlow:
     bottleneck_gbps: float = 0.0
 
 
-class ForwardStrategy(Protocol):
-    """Protocol for per-flow PoP selection, path resolution, and RTT computation."""
+@dataclass(frozen=True, slots=True)
+class PathDecision:
+    """Path-level decision for a flow — produced by ``decide``, consumed
+    by ``charge`` and ``measure``.
 
-    def resolve_flow(
+    Carries every piece of information the latter two phases need so
+    they don't have to repeat the cell→PoP / FIB-walk / ground-truth
+    work. ``ground_rtt`` is resolved at decision time precisely so a
+    failed ground lookup short-circuits *before* anything is charged.
+    """
+
+    pop_code: str
+    gs_id: str
+    user_sat: int
+    egress_sat: int
+    isl_links: tuple[tuple[int, int], ...]
+    propagation_rtt: float  # uplink + sat-side path cost (RTT)
+    ground_rtt: float       # PoP→destination (RTT)
+
+
+class ForwardStrategy(Protocol):
+    """Three-phase data plane.
+
+    See module docstring for why this is split. Strategies are
+    expected to be reusable across the per-flow loop within a single
+    :func:`realize` call; they should not retain per-flow state.
+    """
+
+    def decide(
         self,
         flow_key: FlowKey,
-        flow_demand: float,
         src_ep: Endpoint,
         ingress: int,
         uplink: AccessLink,
         snapshot: NetworkSnapshot,
         context: RunContext,
         epoch: int,
-    ) -> ResolvedFlow | None:
-        """Resolve a single flow.  Return *None* to drop (unrouted)."""
+    ) -> PathDecision | None:
+        """Resolve PoP, sat path, and ground RTT. Return ``None`` to
+        mark the flow unrouted; callers will not invoke ``charge`` /
+        ``measure`` for that flow."""
+        ...
+
+    def charge(self, decision: PathDecision, flow_demand: float) -> None:
+        """Apply this flow's demand to the underlying :class:`UsageBook`.
+
+        Called only when ``decide`` returned a non-``None``
+        :class:`PathDecision`."""
+        ...
+
+    def measure(
+        self, decision: PathDecision, snapshot: NetworkSnapshot,
+    ) -> ResolvedFlow:
+        """Compute per-link queuing/loss/bottleneck using the *current*
+        :class:`UsageBook` state.
+
+        :func:`realize` calls this in pass 2 after every flow has been
+        charged, so every measurement reflects the steady-state load."""
         ...
 
 
@@ -164,20 +233,38 @@ def realize(
     demand: TrafficDemand,
     context: RunContext,
 ) -> EpochResult:
-    """Execute one epoch's demand through *strategy*.
+    """Execute one epoch's demand through *strategy* in two passes.
 
-    For each flow the strategy selects a PoP, resolves the satellite
-    path, and computes satellite + ground RTTs.  Flows for which the
-    strategy returns ``None`` are counted as unrouted.
+    Pass 1 (decide + charge): for every flow with a known source and a
+    visible satellite, ask the strategy for a :class:`PathDecision`.
+    On success, charge the flow's demand to the strategy's
+    :class:`UsageBook` and queue the decision for measurement. Flows
+    with no decision are counted as unrouted and never touch the
+    book.
+
+    Pass 2 (measure): walk the queued decisions, ask the strategy to
+    measure per-link queuing/loss/bottleneck against the *final*
+    book state, and emit a :class:`FlowOutcome`. Because every flow
+    is charged before any measurement happens, every flow on a given
+    link sees the same steady-state utilisation — the per-flow
+    queuing report no longer depends on dict iteration order.
+
+    Each source's ingress satellite is resolved exactly once per
+    :func:`realize` call (cached in ``_uplink_cache``). Without the
+    cache, ``find_ingress_satellite``'s 80/20 stochastic branch (over
+    a process-wide RNG) could scatter a single terminal's flows
+    across multiple ingress sats within the same epoch.
     """
     sat = snapshot.satellite
-    outcomes: list[FlowOutcome] = []
     total_demand = 0.0
-    routed_demand = 0.0
 
     _access = SphericalAccessModel()
     _visible_cache: dict[str, list[AccessLink]] = {}
+    _uplink_cache: dict[str, AccessLink | None] = {}
 
+    pending: list[tuple[FlowKey, float, PathDecision]] = []
+
+    # ── Pass 1: decide + charge ──
     for flow_key, flow_demand in demand.flows.items():
         total_demand += flow_demand
 
@@ -186,36 +273,41 @@ def realize(
             continue
 
         src_name = flow_key.src
-        if src_name not in _visible_cache:
-            _visible_cache[src_name] = _access.compute_access(
-                src_ep.lat_deg, src_ep.lon_deg, 0.0, sat.positions,
-                DEFAULT_MIN_ELEVATION_DEG,
+        if src_name not in _uplink_cache:
+            if src_name not in _visible_cache:
+                _visible_cache[src_name] = _access.compute_access(
+                    src_ep.lat_deg, src_ep.lon_deg, 0.0, sat.positions,
+                    DEFAULT_MIN_ELEVATION_DEG,
+                )
+            visible = _visible_cache[src_name]
+            _uplink_cache[src_name] = (
+                find_ingress_satellite(src_ep, sat.positions, _visible=visible)
+                if visible else None
             )
-        visible = _visible_cache[src_name]
-        if not visible:
-            continue
-        uplink = find_ingress_satellite(src_ep, sat.positions, _visible=visible)
+        uplink = _uplink_cache[src_name]
         if uplink is None:
             continue
 
-        resolved = strategy.resolve_flow(
-            flow_key, flow_demand, src_ep, uplink.sat_id, uplink,
+        decision = strategy.decide(
+            flow_key, src_ep, uplink.sat_id, uplink,
             snapshot, context, demand.epoch,
         )
-        if resolved is None:
+        if decision is None:
             continue
 
-        total_rtt = resolved.satellite_rtt + resolved.ground_rtt
-        if resolved.loss_probability > 0 and total_rtt > 0:
-            tcp_gbps = pftk_throughput(total_rtt, resolved.loss_probability)
-            eff_tput = min(flow_demand, tcp_gbps)
-        else:
-            eff_tput = (
-                min(flow_demand, resolved.bottleneck_gbps)
-                if resolved.bottleneck_gbps > 0
-                else flow_demand
-            )
+        strategy.charge(decision, flow_demand)
+        pending.append((flow_key, flow_demand, decision))
 
+    # ── Pass 2: measure with final loads + emit outcomes ──
+    outcomes: list[FlowOutcome] = []
+    routed_demand = 0.0
+    for flow_key, flow_demand, decision in pending:
+        resolved = strategy.measure(decision, snapshot)
+        total_rtt = resolved.satellite_rtt + resolved.ground_rtt
+        eff_tput = effective_throughput(
+            flow_demand, total_rtt,
+            resolved.loss_probability, resolved.bottleneck_gbps,
+        )
         outcomes.append(FlowOutcome(
             flow_key=flow_key,
             pop_code=resolved.pop_code,
@@ -242,6 +334,29 @@ def realize(
         routed_demand_gbps=routed_demand,
         unrouted_demand_gbps=total_demand - routed_demand,
     )
+
+
+def effective_throughput(
+    demand_gbps: float,
+    total_rtt_ms: float,
+    loss_probability: float,
+    bottleneck_gbps: float,
+) -> float:
+    """Cap demand by the strictest of {requested, PFTK, bottleneck}.
+
+    Earlier code's loss-branch returned ``min(demand, pftk)`` and
+    silently ignored ``bottleneck_gbps``. PFTK at low-but-nonzero
+    loss can far exceed the physical bottleneck (it is window-limited
+    by ``DEFAULT_MAX_WINDOW_BYTES`` rather than by the link), so
+    effective throughput was reported above what the link could
+    actually carry.
+    """
+    candidates = [demand_gbps]
+    if loss_probability > 0 and total_rtt_ms > 0:
+        candidates.append(pftk_throughput(total_rtt_ms, loss_probability))
+    if bottleneck_gbps > 0:
+        candidates.append(bottleneck_gbps)
+    return min(candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -303,21 +418,20 @@ class RoutingPlaneForward:
             current = nxt
         return None
 
-    def resolve_flow(
+    def decide(
         self,
         flow_key: FlowKey,
-        flow_demand: float,
         src_ep: Endpoint,
         ingress: int,
         uplink: AccessLink,
         snapshot: NetworkSnapshot,
         context: RunContext,
         epoch: int,
-    ) -> ResolvedFlow | None:
+    ) -> PathDecision | None:
+        del src_ep, epoch  # unused — present for Protocol signature stability
         sat = snapshot.satellite
-        ground_truth = context.ground_knowledge.estimator
 
-        # ── DECISION: cell → PoP ─────────────────────────────────────
+        # ── cell → PoP ──
         try:
             cell_id = self._grid.cell_of(flow_key.src)
         except KeyError:
@@ -327,33 +441,50 @@ class RoutingPlaneForward:
         except KeyError:
             return None
 
-        # ── PATH: table lookup, fallback to FIB walk ────────────────
+        # ── path: table lookup, fallback to live FIB walk ──
         ppath = self._paths.get((ingress, pop_code))
         if ppath is None:
             ppath = self._fib_walk(ingress, pop_code, sat.num_sats)
         if ppath is None:
             return None
 
-        egress_sat = ppath.egress_sat
-        egress_gs = ppath.egress_gs
+        # ── ground RTT — resolved here so a missing measurement
+        # short-circuits the flow before any capacity is charged. ──
+        ground_truth = context.ground_knowledge.estimator
+        if ground_truth is None:
+            return None
+        try:
+            ground_rtt = ground_truth.estimate(pop_code, flow_key.dst) * 2
+        except KeyError:
+            return None
 
-        # ── CHARGE CAPACITY ──────────────────────────────────────────
-        for a, b in ppath.isl_links:
+        return PathDecision(
+            pop_code=pop_code,
+            gs_id=ppath.egress_gs,
+            user_sat=ingress,
+            egress_sat=ppath.egress_sat,
+            isl_links=ppath.isl_links,
+            propagation_rtt=uplink.delay * 2 + ppath.cost_ms,
+            ground_rtt=ground_rtt,
+        )
+
+    def charge(self, decision: PathDecision, flow_demand: float) -> None:
+        for a, b in decision.isl_links:
             self._book.charge_isl(a, b, flow_demand)
-        self._book.charge_sat_feeder(egress_sat, flow_demand)
-        self._book.charge_gs_feeder(egress_gs, flow_demand)
+        self._book.charge_sat_feeder(decision.egress_sat, flow_demand)
+        self._book.charge_gs_feeder(decision.gs_id, flow_demand)
 
-        # ── MEASUREMENT: propagation baseline ────────────────────────
-        uplink_rtt = uplink.delay * 2
-        propagation_rtt = uplink_rtt + ppath.cost_ms
+    def measure(
+        self, decision: PathDecision, snapshot: NetworkSnapshot,
+    ) -> ResolvedFlow:
+        sat = snapshot.satellite
 
-        # ── QUEUING + LOSS: per-hop ──────────────────────────────────
         hop_losses: list[float] = []
         hop_capacities: list[float] = []
         total_queuing_oneway = 0.0
         total_tx_oneway = 0.0
 
-        for a, b in ppath.isl_links:
+        for a, b in decision.isl_links:
             isl_prop = float(sat.delay_matrix[a, b])
             isl_cap = self._book.view.isl_cap(a, b)
             isl_load = self._book.isl_used.get(self._book.isl_key(a, b), 0.0)
@@ -363,16 +494,16 @@ class RoutingPlaneForward:
             hop_losses.append(perf.loss_probability)
             hop_capacities.append(isl_cap)
 
-        sf_cap = self._book.view.sat_feeder_cap(egress_sat)
-        sf_load = self._book.sat_feeder_used.get(egress_sat, 0.0)
+        sf_cap = self._book.view.sat_feeder_cap(decision.egress_sat)
+        sf_load = self._book.sat_feeder_used.get(decision.egress_sat, 0.0)
         sf_perf = link_performance(0.0, sf_cap, sf_load)
         total_queuing_oneway += sf_perf.queuing_ms
         total_tx_oneway += sf_perf.transmission_ms
         hop_losses.append(sf_perf.loss_probability)
         hop_capacities.append(sf_cap)
 
-        gf_cap = self._book.view.gs_feeder_cap(egress_gs)
-        gf_load = self._book.gs_feeder_used.get(egress_gs, 0.0)
+        gf_cap = self._book.view.gs_feeder_cap(decision.gs_id)
+        gf_load = self._book.gs_feeder_used.get(decision.gs_id, 0.0)
         gf_perf = link_performance(0.0, gf_cap, gf_load)
         total_queuing_oneway += gf_perf.queuing_ms
         total_tx_oneway += gf_perf.transmission_ms
@@ -381,27 +512,18 @@ class RoutingPlaneForward:
 
         queuing_rtt = total_queuing_oneway * 2
         transmission_rtt = total_tx_oneway * 2
-        satellite_rtt = propagation_rtt + queuing_rtt + transmission_rtt
-        e2e_loss = path_loss(hop_losses)
-        bneck = bottleneck_capacity(hop_capacities)
-
-        if ground_truth is None:
-            return None
-        try:
-            ground_rtt = ground_truth.estimate(pop_code, flow_key.dst) * 2
-        except KeyError:
-            return None
+        satellite_rtt = decision.propagation_rtt + queuing_rtt + transmission_rtt
 
         return ResolvedFlow(
-            pop_code=pop_code,
-            gs_id=egress_gs,
-            user_sat=ingress,
-            egress_sat=egress_sat,
+            pop_code=decision.pop_code,
+            gs_id=decision.gs_id,
+            user_sat=decision.user_sat,
+            egress_sat=decision.egress_sat,
             satellite_rtt=satellite_rtt,
-            ground_rtt=ground_rtt,
-            propagation_rtt=propagation_rtt,
+            ground_rtt=decision.ground_rtt,
+            propagation_rtt=decision.propagation_rtt,
             queuing_rtt=queuing_rtt,
             transmission_rtt=transmission_rtt,
-            loss_probability=e2e_loss,
-            bottleneck_gbps=bneck,
+            loss_probability=path_loss(hop_losses),
+            bottleneck_gbps=bottleneck_capacity(hop_capacities),
         )
