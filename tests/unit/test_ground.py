@@ -107,32 +107,40 @@ class TestGroundInfrastructure:
 
 @pytest.mark.integration
 class TestGroundInfrastructureRealData:
-    """Test loading real processed data files."""
+    """Load the authoritative production dataset built by scripts/rebuild_gs_dataset.py.
+
+    Source of truth is ``src/vantage/config``; the legacy
+    ``data/processed`` tree is a historical preprocess output and not
+    part of the runtime path.
+    """
 
     @pytest.fixture
     def infra(self) -> GroundInfrastructure:
-        data_dir = Path(__file__).resolve().parents[2] / "data" / "processed"
+        data_dir = Path(__file__).resolve().parents[2] / "src" / "vantage" / "config"
         return GroundInfrastructure(data_dir)
 
     def test_pop_count(self, infra: GroundInfrastructure) -> None:
-        assert len(infra.pops) == 49
+        # 49 starter set minus bom → 48 PoPs (see rebuild_gs_dataset.py).
+        assert len(infra.pops) == 48
 
     def test_gs_count(self, infra: GroundInfrastructure) -> None:
-        assert len(infra.ground_stations) == 165
+        # Every Live KML gateway attached to its nearest PoP.
+        # 274 Live markers - 1 KML duplicate (Willemstad CW) = 273.
+        assert len(infra.ground_stations) == 273
 
     def test_edge_count(self, infra: GroundInfrastructure) -> None:
-        # 165 GS→nearest PoP + 11 orphan PoP→nearest GS
-        assert len(infra.gs_pop_edges) == 176
+        # One edge per unique GS under the "1 GS → 1 PoP" rule.
+        assert len(infra.gs_pop_edges) == 273
 
-    def test_most_pops_have_at_least_one_gs(self, infra: GroundInfrastructure) -> None:
-        """Most PoPs should have at least one GS within 1500km.
-
-        12 PoPs (Asia/Africa/S.America) lack nearby GS due to Starlink's
-        current GS deployment being US/EU-centric.
-        """
-        # Every PoP must have at least one GS
+    def test_every_pop_has_at_least_one_gs(self, infra: GroundInfrastructure) -> None:
+        """Nearest-rule sweep must assign ≥1 GS to every PoP."""
         for pop in infra.pops:
             assert len(infra.gs_serving_pop(pop.code)) > 0, f"PoP {pop.code} has no GS"
+
+    def test_each_gs_on_exactly_one_pop(self, infra: GroundInfrastructure) -> None:
+        """1:1 invariant: each GS participates in exactly one edge."""
+        for gs in infra.ground_stations:
+            assert len(infra.pops_reachable_from_gs(gs.gs_id)) == 1
 
     def test_coordinates_valid(self, infra: GroundInfrastructure) -> None:
         for pop in infra.pops:

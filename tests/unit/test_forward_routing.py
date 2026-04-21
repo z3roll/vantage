@@ -365,7 +365,7 @@ class TestDroppedFlows:
         )
         cycle_plane = RoutingPlane(
             cell_to_pop=CellToPopTable(
-                mapping=MappingProxyType({grid.cell_of("alice"): "pop_a"}),
+                mapping=MappingProxyType({grid.cell_of("alice"): ("pop_a",)}),
                 version=1, built_at=0.0,
             ),
             sat_fibs=MappingProxyType({0: fib0, 1: fib1}),

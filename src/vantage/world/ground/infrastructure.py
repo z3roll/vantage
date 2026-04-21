@@ -30,7 +30,13 @@ class GroundInfrastructure:
         self._ground_stations = self._load(
             data_dir / "ground_stations.json", GroundStation
         )
-        self._gs_pop_edges = self._load(
+        # gs_pop_edges.json is the authoritative N:M mapping. The
+        # 2026-04-21 dataset rebuild keeps every (PoP, GS) within
+        # the per-PoP radius rule, so a single PoP can be served by
+        # multiple GSs (real Starlink topology — eg. ord has 4 GSs).
+        # The data plane treats each GS as 8 sats × 20 Gbps; aggregate
+        # PoP cap = sum across attached GSs.
+        self._gs_pop_edges: tuple[GSPoPEdge, ...] = self._load(
             data_dir / "gs_pop_edges.json", GSPoPEdge
         )
 

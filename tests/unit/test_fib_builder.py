@@ -330,6 +330,46 @@ class TestBuildCellToPopNearest:
         assert table.pop_of(tokyo_cell) == "tok"
         assert table.pop_of(seattle_cell) == "sea"
 
+    def test_returns_ranked_top_n_cascade(self) -> None:
+        """Each cell gets a tuple of up to top_n PoPs sorted by distance ASC."""
+        pops = (
+            PoP(site_id="tk", code="tok", name="TOK", lat_deg=35.68, lon_deg=139.77),
+            PoP(site_id="sea", code="sea", name="SEA", lat_deg=47.60, lon_deg=-122.33),
+            PoP(site_id="lhr", code="lhr", name="LHR", lat_deg=51.50, lon_deg=-0.13),
+            PoP(site_id="syd", code="syd", name="SYD", lat_deg=-33.87, lon_deg=151.21),
+        )
+        grid = CellGrid.from_endpoints([("tokyo_user", 35.70, 139.80)])
+        table = build_cell_to_pop_nearest(grid, pops, built_at=0.0, top_n=3)
+
+        cascade = table.pops_of(grid.cell_of("tokyo_user"))
+        # Length capped at top_n; sorted by distance from Tokyo.
+        assert len(cascade) == 3
+        assert cascade[0] == "tok"  # closest
+        # Sydney is the second-closest of the four to Tokyo (~7800 km),
+        # then Seattle (~7700 km), then London (~9600 km). Both Seattle
+        # and Sydney are closer than London — they should both be in
+        # the top-3 cascade.
+        assert "lhr" not in cascade
+
+    def test_top_n_caps_at_pop_count(self) -> None:
+        """Asking for more PoPs than exist returns all of them, sorted."""
+        pops = (
+            PoP(site_id="tk", code="tok", name="TOK", lat_deg=35.68, lon_deg=139.77),
+            PoP(site_id="sea", code="sea", name="SEA", lat_deg=47.60, lon_deg=-122.33),
+        )
+        grid = CellGrid.from_endpoints([("tokyo_user", 35.70, 139.80)])
+        table = build_cell_to_pop_nearest(grid, pops, built_at=0.0, top_n=10)
+        cascade = table.pops_of(grid.cell_of("tokyo_user"))
+        assert cascade == ("tok", "sea")
+
+    def test_top_n_must_be_positive(self) -> None:
+        pops = (
+            PoP(site_id="tk", code="tok", name="TOK", lat_deg=35.68, lon_deg=139.77),
+        )
+        grid = CellGrid.from_endpoints([("tokyo_user", 35.70, 139.80)])
+        with pytest.raises(ValueError, match="top_n must be positive"):
+            build_cell_to_pop_nearest(grid, pops, built_at=0.0, top_n=0)
+
     def test_empty_pops_raises(self) -> None:
         grid = CellGrid.from_endpoints([("a", 0.0, 0.0)])
         with pytest.raises(ValueError, match="non-empty"):

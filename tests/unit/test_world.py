@@ -181,7 +181,7 @@ class TestWorldModel:
     def world(self, starlink_xml_path: str) -> WorldModel:
         constellation = XMLConstellationModel(starlink_xml_path, dt_s=15.0)
         ground = GroundInfrastructure(
-            Path(__file__).resolve().parents[2] / "data" / "processed"
+            Path(__file__).resolve().parents[2] / "src" / "vantage" / "config"
         )
         satellite = SatelliteSegment(
             constellation=constellation,
@@ -213,13 +213,13 @@ class TestWorldModel:
         assert len(attachments) > 0
         # Each attached GS has at most top-k links
         for _gs_id, links in attachments.items():
-            assert len(links) <= 5  # default top_k
+            assert len(links) <= 8  # default top_k (= 8 Ka antennas per GS)
             assert all(link.elevation_deg > 0 for link in links)
 
     def test_snapshot_has_infrastructure(self, world: WorldModel) -> None:
         snapshot = world.snapshot_at(epoch=0, time_s=0.0)
-        assert len(snapshot.infra.pops) == 49
-        assert len(snapshot.infra.ground_stations) == 165
+        assert len(snapshot.infra.pops) == 48
+        assert len(snapshot.infra.ground_stations) == 273
         assert len(snapshot.infra.gs_pop_edges) > 0
 
     def test_snapshot_is_frozen(self, world: WorldModel) -> None:

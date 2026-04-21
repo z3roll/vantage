@@ -116,12 +116,33 @@ class TestCellToPopTable:
 
     def test_pop_of(self) -> None:
         table = CellToPopTable(
-            mapping=MappingProxyType({111: "pop_tokyo", 222: "pop_seattle"}),
+            mapping=MappingProxyType({
+                111: ("pop_tokyo", "pop_osaka"),
+                222: ("pop_seattle",),
+            }),
             version=1,
             built_at=0.0,
         )
+        # pop_of returns the head of the ranked tuple.
         assert table.pop_of(111) == "pop_tokyo"
         assert table.pop_of(222) == "pop_seattle"
+        # pops_of returns the full ranked cascade.
+        assert table.pops_of(111) == ("pop_tokyo", "pop_osaka")
+        assert table.pops_of(222) == ("pop_seattle",)
+
+    def test_per_dest_override(self) -> None:
+        table = CellToPopTable(
+            mapping=MappingProxyType({111: ("pop_tokyo", "pop_osaka")}),
+            version=1,
+            built_at=0.0,
+            per_dest=MappingProxyType({
+                (111, "google"): ("pop_osaka", "pop_tokyo"),
+            }),
+        )
+        # Per-dest override wins for matching dest; default cascade for others.
+        assert table.pops_of(111, "google") == ("pop_osaka", "pop_tokyo")
+        assert table.pop_of(111, "google") == "pop_osaka"
+        assert table.pops_of(111, "netflix") == ("pop_tokyo", "pop_osaka")
 
     def test_missing_raises(self) -> None:
         table = CellToPopTable(
@@ -133,10 +154,11 @@ class TestCellToPopTable:
             table.pop_of(999)
 
     def test_live_dict_frozen_on_construction(self) -> None:
-        live: dict[int, str] = {111: "pop_tokyo"}
+        live: dict[int, tuple[str, ...]] = {111: ("pop_tokyo",)}
         table = CellToPopTable(mapping=live, version=1, built_at=0.0)
-        live[111] = "pop_hijacked"
+        live[111] = ("pop_hijacked",)
         assert table.pop_of(111) == "pop_tokyo"
+        assert table.pops_of(111) == ("pop_tokyo",)
 
 
 @pytest.mark.unit

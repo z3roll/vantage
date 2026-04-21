@@ -150,53 +150,87 @@ def build_cell_to_pop_nearest(
     *,
     built_at: float,
     version: int = 0,
+    top_n: int | None = None,
 ) -> CellToPopTable:
-    """Assign every cell to its geographically-nearest PoP.
+    """Assign every active cell to its full ranked PoP cascade by distance.
 
-    Vectorized haversine over the full ``(|cells|, |pops|)`` cartesian
-    product, then ``argmin`` along the PoP axis. Baseline scale
-    (~10 k cells × ~50 PoPs) is ~10 ms end-to-end — cheap enough to
-    re-run per routing-plane refresh should the PoP set ever become
-    dynamic, though in practice the baseline plan calls this once at
-    setup time.
+    Returns a :class:`CellToPopTable` whose ``mapping`` value is a
+    ``tuple[str, ...]`` of length ``min(top_n, |pops|)`` — by default
+    *all* PoPs sorted by haversine distance ASC. The head is the
+    closest PoP; the tail is the cascading fallback chain the data
+    plane walks when nearer PoPs' Ka feeders saturate.
 
-    The output assignment depends only on geography, so it never
-    changes between refreshes for a fixed ``(cell_grid, pops)`` pair.
-    Capacity-aware policies (Progressive Filling etc.) will replace
-    this with a TE solver in a later phase.
+    Only *active* cells (those that host at least one endpoint) are
+    materialised in ``mapping``: the data plane only ever queries
+    source endpoints' cells, and stub cells covering empty land
+    would otherwise blow the table up by 300× at the production
+    528 k-cell scale.
+
+    Vectorized haversine + per-row sort. Production scale
+    (~1.7 k active cells × ~50 PoPs) is < 5 ms end-to-end and ~700 KB
+    of memory.
+
+    The output ranking depends only on geography, so it never changes
+    between refreshes for a fixed ``(cell_grid, pops)`` pair.
+    Capacity-aware policies (Progressive Filling etc.) consume this
+    output as their reference baseline AND emit their own per-(cell,
+    dest) ranked overrides on top.
 
     Args:
         cell_grid: The set of cells in play (from endpoints).
         pops: All PoPs eligible as destinations.
         built_at: Simulation time stamp to record on the produced table.
         version: Monotonic version tag.
+        top_n: Maximum length of each cell's ranked PoP tuple. ``None``
+            (the default) means "all PoPs" — the controller's full
+            cascade. Pass an explicit smaller integer to truncate
+            (useful for tests or memory-constrained experiments).
 
     Raises:
-        ValueError: If ``pops`` is empty (no PoPs means no assignment
-            is meaningful and callers should surface the mistake).
+        ValueError: If ``pops`` is empty, or if ``top_n`` is non-positive.
     """
     pop_list = tuple(pops)
     if not pop_list:
         raise ValueError("build_cell_to_pop_nearest: pops must be non-empty")
+    if top_n is not None and top_n <= 0:
+        raise ValueError(
+            f"build_cell_to_pop_nearest: top_n must be positive (got {top_n})"
+        )
+    effective_n = min(top_n if top_n is not None else len(pop_list), len(pop_list))
 
-    # Materialize parallel cell / pop coordinate arrays once. dict.values()
-    # is iteration-order-stable in CPython ≥ 3.7, so ``cell_ids[i]`` aligns
-    # with ``cell_lats[i]`` / ``cell_lons[i]`` without an explicit zip.
-    cell_ids = tuple(cell_grid.cells.keys())
-    cell_coords = np.fromiter(
-        (coord for cell in cell_grid.cells.values() for coord in (cell.lat_deg, cell.lon_deg)),
+    # Restrict to active cells: data plane only queries cells of
+    # source endpoints. cell_grid.endpoint_to_cell.values() is the
+    # full active set; intersect with cells.keys() defensively in
+    # case any endpoint maps to a stripped cell.
+    active_cell_ids = set(cell_grid.endpoint_to_cell.values())
+    cell_ids = tuple(c for c in active_cell_ids if c in cell_grid.cells)
+
+    if not cell_ids:
+        return CellToPopTable(
+            mapping=MappingProxyType({}),
+            version=version,
+            built_at=built_at,
+        )
+
+    cell_coords = np.array(
+        [
+            (cell_grid.cells[cid].lat_deg, cell_grid.cells[cid].lon_deg)
+            for cid in cell_ids
+        ],
         dtype=np.float64,
-        count=len(cell_ids) * 2,
-    ).reshape(-1, 2)
+    )
 
     pop_coords = np.array(
         [(p.lat_deg, p.lon_deg) for p in pop_list], dtype=np.float64
     )
 
-    nearest_idx = _vectorized_nearest_index(cell_coords, pop_coords)
+    ranked_idx = _vectorized_nearest_indices(
+        cell_coords, pop_coords, top_n=effective_n,
+    )
+    pop_codes = tuple(p.code for p in pop_list)
 
-    mapping: dict[int, str] = {
-        cell_id: pop_list[int(nearest_idx[i])].code
+    mapping: dict[int, tuple[str, ...]] = {
+        cell_id: tuple(pop_codes[int(j)] for j in ranked_idx[i])
         for i, cell_id in enumerate(cell_ids)
     }
 
@@ -207,23 +241,28 @@ def build_cell_to_pop_nearest(
     )
 
 
-def _vectorized_nearest_index(
+def _vectorized_nearest_indices(
     cell_coords: np.ndarray,
     pop_coords: np.ndarray,
+    *,
+    top_n: int,
 ) -> np.ndarray:
-    """Vectorized haversine argmin ``cell → pop``.
+    """Vectorized haversine top-N PoPs per cell, sorted ASC.
 
     Args:
         cell_coords: shape ``(n_cells, 2)`` ``(lat_deg, lon_deg)``.
         pop_coords:  shape ``(n_pops, 2)`` ``(lat_deg, lon_deg)``.
+        top_n: Number of nearest PoP indices to return per cell. Must
+            satisfy ``1 <= top_n <= n_pops``.
 
     Returns:
-        ``(n_cells,)`` int array of the PoP index each cell maps to.
+        ``(n_cells, top_n)`` int array; ``out[i, k]`` is the index of
+        cell ``i``'s ``k``-th nearest PoP (0-th = closest).
     """
     # Broadcast ``(n_cells, 1, 2)`` vs ``(1, n_pops, 2)`` into
     # ``(n_cells, n_pops, 2)``, then reduce along the last axis for
-    # the haversine. We don't need the actual distance — argmin on
-    # ``sin²(Δ/2)`` gives the same answer monotonically because ``arcsin``
+    # the haversine. We don't need the actual distance — sorting on
+    # ``sin²(Δ/2)`` gives the same order monotonically because ``arcsin``
     # and multiplication by a positive constant preserve ordering — so we
     # skip ``arcsin`` / Earth-radius multiplication entirely.
     cell_rad = np.deg2rad(cell_coords)[:, None, :]  # (n_cells, 1, 2)
@@ -236,7 +275,20 @@ def _vectorized_nearest_index(
 
     # ``a`` is the classic haversine kernel. Monotonic in distance.
     a = np.sin(dlat * 0.5) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon * 0.5) ** 2
-    return a.argmin(axis=1)
+
+    n_pops = a.shape[1]
+    if top_n >= n_pops:
+        # Fewer / equal PoPs than requested — full sort is exactly
+        # what we want and avoids the argpartition split.
+        return np.argsort(a, axis=1)[:, :top_n]
+
+    # argpartition pulls the top-N indices to the front (unsorted),
+    # then we argsort just within that slice. O(n_pops + top_n log
+    # top_n) per row vs O(n_pops log n_pops) for a full sort.
+    part = np.argpartition(a, kth=top_n - 1, axis=1)[:, :top_n]
+    rows = np.arange(a.shape[0])[:, None]
+    order = np.argsort(a[rows, part], axis=1)
+    return part[rows, order]
 
 
 def compute_cell_ingress(
@@ -330,9 +382,13 @@ def compute_e2e_overrides(
     overrides: dict[tuple[int, str], str] = {}
 
     for cell_id in active_cells:
-        default_pop = baseline.mapping.get(cell_id)
-        if default_pop is None:
+        # ``baseline.mapping`` is now ``cell → ranked PoP tuple``; the
+        # head is the geographic-nearest, which is what this legacy
+        # override picker treats as "default".
+        default_ranked = baseline.mapping.get(cell_id)
+        if not default_ranked:
             continue
+        default_pop = default_ranked[0]
 
         for dest in dest_names:
             default_ground = ground_cost_fn(default_pop, dest)
@@ -418,6 +474,13 @@ def build_routing_plane_with_overrides(
 
     Pass *baseline* to reuse an already-computed :class:`CellToPopTable`
     and avoid a redundant :func:`build_cell_to_pop_nearest` call.
+
+    ``per_dest_overrides`` is the legacy single-PoP override shape
+    (``(cell, dest) → str``). Each value is wrapped into a 1-tuple
+    before being stored on the :class:`CellToPopTable`, which now
+    expects ranked tuples per (cell, dest); fallback alternates for
+    these legacy controllers come from the baseline ``mapping`` walk
+    that the data plane does after the override is exhausted.
     """
     cell_to_pop_base = baseline or build_cell_to_pop_nearest(
         cell_grid=cell_grid,
@@ -425,11 +488,14 @@ def build_routing_plane_with_overrides(
         built_at=snapshot.time_s,
         version=version,
     )
+    ranked_overrides: dict[tuple[int, str], tuple[str, ...]] = {
+        key: (pop_code,) for key, pop_code in per_dest_overrides.items()
+    }
     cell_to_pop = CellToPopTable(
         mapping=cell_to_pop_base.mapping,
         version=version,
         built_at=snapshot.time_s,
-        per_dest=MappingProxyType(per_dest_overrides),
+        per_dest=MappingProxyType(ranked_overrides),
     )
     per_sat = precompute_per_sat_routing(snapshot)
     sat_fibs = build_satellite_fibs(snapshot, per_sat, version=version)

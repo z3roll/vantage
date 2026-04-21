@@ -41,7 +41,7 @@ class SatelliteSegment:
         shell_id: int,
         ground_stations: tuple[GroundStation, ...] = (),
         visibility: AccessModel | None = None,
-        gateway_top_k: int = 5,
+        gateway_top_k: int = 8,
         routing: RoutingComputer | None = None,
         use_tvg: bool = True,
     ) -> None:

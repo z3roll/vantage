@@ -161,16 +161,23 @@ class SatelliteFIB:
 class CellToPopTable:
     """Cell-to-PoP assignment pushed by the controller.
 
-    ``mapping``: default ``cell → pop`` (baseline / fallback).
-    ``per_dest``: optional ``(cell, dest) → pop`` overrides for
-    performance-aware routing — different destinations may route
-    to different PoPs from the same cell.
+    ``mapping``: default ``cell → ranked PoP tuple`` (baseline /
+    fallback). The tuple is ordered by increasing preference cost
+    (geographic distance for the nearest-PoP baseline, E2E RTT for
+    capacity-aware policies). ``mapping[cell][0]`` is the controller's
+    primary pick; the data plane walks the rest as cascading fallbacks
+    when upstream sat feeders saturate.
+
+    ``per_dest``: optional ``(cell, dest) → ranked PoP tuple``
+    overrides for performance-aware routing — different destinations
+    may rank PoPs differently from the same cell. Same head-of-tuple
+    semantics as ``mapping``.
     """
 
-    mapping: Mapping[CellId, str]
+    mapping: Mapping[CellId, tuple[str, ...]]
     version: int
     built_at: float
-    per_dest: Mapping[tuple[CellId, str], str] = field(
+    per_dest: Mapping[tuple[CellId, str], tuple[str, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
 
@@ -181,7 +188,17 @@ class CellToPopTable:
             object.__setattr__(self, "per_dest", MappingProxyType(dict(self.per_dest)))
 
     def pop_of(self, cell_id: CellId, dest: str | None = None) -> str:
-        """PoP for (cell, dest). Falls back to default if no per-dest override."""
+        """Primary PoP for (cell, dest) — head of the ranked tuple."""
+        return self.pops_of(cell_id, dest)[0]
+
+    def pops_of(
+        self, cell_id: CellId, dest: str | None = None,
+    ) -> tuple[str, ...]:
+        """Full ranked PoP tuple for (cell, dest).
+
+        Falls back to the ``mapping`` entry if no per-dest override is
+        present. Raises ``KeyError`` if the cell itself is unmapped.
+        """
         if dest is not None:
             override = self.per_dest.get((cell_id, dest))
             if override is not None:

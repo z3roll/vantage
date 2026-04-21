@@ -90,13 +90,12 @@ def cell_grid(endpoints: dict[str, Endpoint]) -> CellGrid:
 def _make_context(world: WorldModel, endpoints: dict[str, Endpoint]) -> RunContext:
     """Build a RunContext with a GeographicGroundDelay estimator.
 
-    The 2026-04-17 progressive fix made `_ground_cost` raise on
-    missing measurements; the older `MeasuredGroundDelay`
-    (traceroute-backed, ~29 PoPs covered) doesn't have data for
-    every PoP in the snapshot (~49) and would now KeyError. Using
-    the haversine-based GeographicGroundDelay keeps the integration
-    test self-contained and guarantees an estimate for every
-    (PoP, destination) pair that any controller might consult.
+    The data plane's ``RoutingPlaneForward.decide`` calls the
+    estimator directly for ground RTT on every cascade PoP. Using
+    haversine-based GeographicGroundDelay (vs. the sparse
+    MeasuredGroundDelay) guarantees an estimate for every (PoP,
+    destination) pair so no flow gets silently dropped for missing
+    ground data in tests.
     """
     infra = world.snapshot_at(0, 0.0).infra
     pop_coords = {p.code: (p.lat_deg, p.lon_deg) for p in infra.pops}

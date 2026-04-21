@@ -1,10 +1,10 @@
 {
   "schema_version": 3,
-  "generated_at": "2026-04-13",
-  "generator": "real Starlink GS data from CSV + preprocess.py for PoPs",
+  "generated_at": "2026-04-21",
+  "generator": "rebuild_gs_dataset.py (KML Live + special-case rules)",
   "counts": {
-    "ground_stations": 179,
-    "pops": 49,
-    "gs_pop_edges": 179
+    "ground_stations": 273,
+    "pops": 48,
+    "gs_pop_edges": 273
   }
 }

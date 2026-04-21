@@ -189,13 +189,6 @@
     "lon_deg": 9.1037672
   },
   {
-    "site_id": "mmbiind1",
-    "code": "bom",
-    "name": "BOM - MMBIIND1",
-    "lat_deg": 19.110795,
-    "lon_deg": 72.901065
-  },
-  {
     "site_id": "mmmiflx1",
     "code": "mia",
     "name": "MIA - MMMIFLX1",

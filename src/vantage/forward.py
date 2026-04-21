@@ -1,8 +1,10 @@
 """Data plane: flow-level PoP selection + delay computation.
 
-**RoutingPlaneForward**: controller pre-commits PoP assignments
-via cell→PoP mapping and per-satellite FIBs, with capacity
-tracking via :class:`UsageBook`.
+**RoutingPlaneForward**: controller pre-commits a per-(cell, dest)
+ranked PoP cascade and per-satellite FIBs; the data plane walks
+the cascade × top-K sats per PoP and picks the first feasible
+egress against the per-Ka-feeder capacity tracked in
+:class:`UsageBook`.
 
 Three-phase :class:`ForwardStrategy` (since the 2026-04-17 audit):
 
@@ -33,10 +35,12 @@ Produces :class:`EpochResult` output. All delays in ms.
 
 from __future__ import annotations
 
+import logging
 import math
 import random as _random
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -78,25 +82,35 @@ __all__ = [
 ]
 
 
+_log = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Egress options + helper
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class EgressOption:
+class EgressOption(NamedTuple):
     """One ``(egress_sat, gs, path)`` candidate for routing a flow.
 
     Each option fully describes a downlink path: which PoP it lands
-    at (might be the controller's chosen PoP or the cell's baseline
-    fallback PoP — the two have different ``ground_rtt``), the
+    at (one of the PoPs in the cell's ranked cascade — different PoPs
+    have different ``ground_rtt`` to the same destination), the
     egress sat that downlinks to ``gs_id``, the ISL hops from the
     flow's ingress to that egress, and the propagation/ground RTTs.
 
-    Used by the data-plane multi-egress reroute logic: when the
-    primary option's egress sat-feeder has no remaining capacity,
+    Used by the data-plane multi-egress reroute logic: when one
+    option's egress sat feeder has no remaining capacity,
     :meth:`RoutingPlaneForward.charge` walks alternates in order
-    and uses the first one with room.
+    (within the same PoP first, then across the controller's
+    next-ranked PoP) and uses the first one with room.
+
+    Implemented as ``NamedTuple`` (not ``@dataclass(frozen=True,
+    slots=True)``) because decide() allocates up to
+    ``max_cascade_pops × k`` of these per flow: ``NamedTuple.__new__``
+    is ~3× faster than the frozen-dataclass constructor at our scale
+    (1.9 M allocations/epoch), and the tuple backing also lets
+    ``min(options, key=...)`` iterate without attribute lookups.
     """
 
     pop_code: str
@@ -234,41 +248,54 @@ class ResolvedFlow:
 class PathDecision:
     """Path-level routing decision for a flow.
 
-    Carries a ranked list of :class:`EgressOption` to try in order:
+    Stores the controller's ranked PoP cascade lazily: each entry
+    is ``(pop_code, raw_options_tuple, ground_rtt_for_this_pop)``
+    where ``raw_options_tuple`` is the cached per-``(ingress, pop)``
+    top-K sat list (propagation_rtt = sat segment only, ground_rtt
+    = 0 on the raw options). :meth:`RoutingPlaneForward.charge`
+    walks the cascade lazily and only materialises a fully-enriched
+    :class:`EgressOption` (with uplink + ground baked in) for the
+    one option it ultimately chooses.
 
-    * ``options[0]`` — primary (best E2E cost) for the controller's
-      chosen PoP.
-    * ``options[1..K-1]`` — alternates for the same PoP, ranked
-      ascending by E2E cost. Used when the primary's egress sat
-      feeder (20 Gbps) is saturated.
-    * ``options[-1]`` (if it lives at a different ``pop_code`` than
-      the rest) — baseline-PoP fallback, the cell's geographic
-      nearest PoP. Used regardless of capacity if every preceding
-      option is saturated, mirroring the controller-side overflow
-      semantics.
+    This avoids the pre-2026-04-20 pattern where ``decide`` eagerly
+    built up to ``max_cascade_pops × k`` enriched options per flow
+    (~400 allocations at production scale), most of which the
+    first-fit loop never touched.
 
-    :meth:`RoutingPlaneForward.charge` walks the list in order,
-    picks the first egress sat with remaining feeder cap, and
-    returns the chosen option so :meth:`measure` can report the
-    actual user-facing path metrics.
-
-    ``options`` must be non-empty: ``RoutingPlaneForward.decide``
-    returns ``None`` (rather than an empty-options ``PathDecision``)
-    when no candidate egress is reachable, so by the time a
-    ``PathDecision`` exists ``charge``'s ``options[-1]`` indexing
-    is safe. The invariant is enforced in ``__post_init__``.
+    ``options`` materialises the full enriched cascade on demand for
+    tests and legacy callers; hot-path code iterates via
+    :meth:`iter_options` instead.
     """
 
     user_sat: int
-    options: tuple[EgressOption, ...]
+    uplink_rtt: float
+    pop_cascade: tuple[tuple[str, tuple[EgressOption, ...], float], ...]
 
     def __post_init__(self) -> None:
-        if not self.options:
+        if not self.pop_cascade or not any(ro for _, ro, _ in self.pop_cascade):
             raise ValueError(
-                "PathDecision.options must be non-empty; callers should "
-                "return None from decide() instead of constructing an "
-                "empty-options decision",
+                "PathDecision.pop_cascade must contain at least one "
+                "(pop, raw_options, ground_rtt) entry with non-empty "
+                "raw_options; decide() should return None rather than "
+                "constructing an empty cascade",
             )
+
+    def iter_options(self) -> Iterator[EgressOption]:
+        """Yield each option with uplink + ground RTT baked in."""
+        for pop_code, raw_opts, ground_rtt in self.pop_cascade:
+            for raw in raw_opts:
+                yield EgressOption(
+                    pop_code=raw.pop_code,
+                    egress_sat=raw.egress_sat,
+                    gs_id=raw.gs_id,
+                    isl_links=raw.isl_links,
+                    propagation_rtt=self.uplink_rtt + raw.propagation_rtt,
+                    ground_rtt=ground_rtt,
+                )
+
+    @property
+    def options(self) -> tuple[EgressOption, ...]:
+        return tuple(self.iter_options())
 
 
 class ForwardStrategy(Protocol):
@@ -471,22 +498,23 @@ def effective_throughput(
 
 
 class RoutingPlaneForward:
-    """Controller-committed PoP selection with multi-egress reroute.
+    """Controller-committed PoP cascade with per-PoP multi-egress reroute.
 
     Per-flow phases:
 
-    1. ``decide`` — cell→PoP via ``RoutingPlane.cell_to_pop`` (with
-       optional per-dest override), then enumerate the top-K
-       ``EgressOption`` candidates for that ``(ingress, pop)`` and
-       append a fallback option that lands at the cell's geographic
-       nearest PoP. Resolves ground RTT for both PoPs eagerly so a
-       missing measurement short-circuits before any charge.
+    1. ``decide`` — cell→ranked PoP cascade via
+       ``CellToPopTable.pops_of(cell, dest)``. Builds a *lazy*
+       :class:`PathDecision` holding (per PoP) the cached raw
+       options tuple plus that PoP's ground RTT; no per-option
+       :class:`EgressOption` is allocated yet.
 
-    2. ``charge`` — try the options in rank order; pick the first
-       whose ``egress_sat`` has remaining sat-feeder capacity (20
-       Gbps per Ka antenna). If every option's egress sat is
-       saturated, take the *fallback* option regardless of capacity
-       (overflow accepted; surfaces in measure as high queuing/loss).
+    2. ``charge`` — walk the cascade (PoPs in rank order, sats in
+       E2E order within each PoP); pick the first whose
+       ``egress_sat`` has remaining sat-feeder capacity (20 Gbps
+       per Ka antenna) and allocate the enriched EgressOption right
+       then. If every option's egress sat is saturated, pick the
+       option with the smallest current load ratio and accept the
+       overflow (still only one allocation).
 
     3. ``measure`` — use the chosen option's path metrics + the
        final :class:`UsageBook` state to compute per-link
@@ -498,7 +526,10 @@ class RoutingPlaneForward:
     instance per epoch, so no cross-epoch leakage.
     """
 
-    __slots__ = ("_book", "_grid", "_k", "_options_cache", "_plane")
+    __slots__ = (
+        "_book", "_decision_cache", "_grid", "_ground_rtt_cache", "_k",
+        "_max_cascade_pops", "_options_cache", "_plane",
+    )
 
     def __init__(
         self,
@@ -507,13 +538,47 @@ class RoutingPlaneForward:
         usage_book: UsageBook,
         path_table: object | None = None,    # ignored — kept for callers
         k: int = 8,
+        max_cascade_pops: int | None = None,
     ) -> None:
         del path_table  # legacy positional arg from the pre-multi-egress API
         self._plane = routing_plane
         self._grid = cell_grid
         self._book = usage_book
         self._k = k
+        # Cap how many ranked PoPs decide() considers per flow.
+        # ``None`` (default) means "the full controller cascade" —
+        # cell's geographic fallback chain goes all the way until
+        # capacity is found. The lazy cascade representation
+        # (pop_cascade = tuple of (pop, raw_options, ground_rtt))
+        # means the decide-time cost is proportional to the number
+        # of PoPs in the cascade, not options; the per-option
+        # EgressOption allocation happens only in charge() for the
+        # single chosen option, so full-cascade planning is
+        # affordable.
+        self._max_cascade_pops = (
+            max_cascade_pops
+            if max_cascade_pops is not None
+            else 1 << 30
+        )
         self._options_cache: dict[tuple[int, str], tuple[EgressOption, ...]] = {}
+        # Decisions depend only on (ingress_sat, cell_id, dest) — uplink
+        # RTT is a property of the ingress (cached per src by realize),
+        # cascade PoPs come from the plane, options per (ingress, pop)
+        # are already memoised in ``_options_cache``, and ground RTTs
+        # per (pop, dest) are deterministic at the snapshot level. So
+        # every flow that shares (ingress, cell, dest) — which at scale
+        # is most of them because subendpoints of the same city share
+        # cell + ingress — can reuse the same ``PathDecision`` instead
+        # of rebuilding up to 400 EgressOption objects per flow.
+        self._decision_cache: dict[
+            tuple[int, int, str], PathDecision | None
+        ] = {}
+        # Sample each (pop, dest) ground RTT once per epoch instead
+        # of per flow. LogNormal sampling in GeographicGroundDelay
+        # was the dominant cost: 30 k flows × 50 PoPs ≈ 1.5 M RNG
+        # draws = ~1 s. Per-flow ground-RTT jitter isn't load-bearing
+        # for any downstream metric at the epoch aggregation level.
+        self._ground_rtt_cache: dict[tuple[str, str], float] = {}
 
     def _options_for(
         self, ingress: int, pop_code: str, snapshot: NetworkSnapshot,
@@ -537,95 +602,128 @@ class RoutingPlaneForward:
     ) -> PathDecision | None:
         del src_ep, epoch  # unused — present for Protocol signature stability
 
-        # ── cell → controller-chosen PoP ──
+        # ── cell → controller-chosen ranked PoP cascade ──
         try:
             cell_id = self._grid.cell_of(flow_key.src)
         except KeyError:
             return None
+
+        cache_key = (ingress, cell_id, flow_key.dst)
+        cached = self._decision_cache.get(cache_key)
+        if cached is not None or cache_key in self._decision_cache:
+            return cached
+
         try:
-            pop_code = self._plane.cell_to_pop.pop_of(cell_id, dest=flow_key.dst)
+            pop_codes = self._plane.cell_to_pop.pops_of(
+                cell_id, dest=flow_key.dst,
+            )
         except KeyError:
+            self._decision_cache[cache_key] = None
+            return None
+        if not pop_codes:
+            self._decision_cache[cache_key] = None
             return None
 
         ground_truth = context.ground_knowledge.estimator
         if ground_truth is None:
             return None
-        try:
-            ground_rtt_chosen = ground_truth.estimate(pop_code, flow_key.dst) * 2
-        except KeyError:
-            return None
-
-        chosen_options = self._options_for(ingress, pop_code, snapshot)
-        if not chosen_options:
-            return None
 
         uplink_rtt = uplink.delay * 2
-        # Lift each helper-emitted option into a "uplink + ground"-aware
-        # EgressOption usable by measure() directly.
-        primary_options: tuple[EgressOption, ...] = tuple(
-            EgressOption(
-                pop_code=opt.pop_code,
-                egress_sat=opt.egress_sat,
-                gs_id=opt.gs_id,
-                isl_links=opt.isl_links,
-                propagation_rtt=uplink_rtt + opt.propagation_rtt,
-                ground_rtt=ground_rtt_chosen,
-            )
-            for opt in chosen_options
+
+        # Build the cascade lazily: each entry is
+        # ``(pop_code, raw_options_for_this_pop, ground_rtt)``. The
+        # raw options come from the per-``(ingress, pop)`` cache
+        # (shared across every flow originating at this ingress),
+        # so no per-flow allocation happens here beyond the cascade
+        # tuple itself. ``charge`` materialises a single enriched
+        # :class:`EgressOption` only for the option it picks.
+        #
+        # PoPs whose ground-delay estimator raises or whose egress
+        # options are empty are skipped — the cascade just gets
+        # shorter for this flow rather than rejecting it.
+        cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
+        dst = flow_key.dst
+        rtt_cache = self._ground_rtt_cache
+        for pop_code in pop_codes[: self._max_cascade_pops]:
+            key = (pop_code, dst)
+            ground_rtt = rtt_cache.get(key)
+            if ground_rtt is None:
+                try:
+                    ground_rtt = ground_truth.estimate(pop_code, dst) * 2
+                except KeyError:
+                    _log.debug(
+                        "decide: no ground estimate for (%s, %s); "
+                        "skipping in cell-%s cascade",
+                        pop_code, dst, cell_id,
+                    )
+                    continue
+                rtt_cache[key] = ground_rtt
+            raw_opts = self._options_for(ingress, pop_code, snapshot)
+            if not raw_opts:
+                continue
+            cascade.append((pop_code, raw_opts, ground_rtt))
+
+        if not cascade:
+            self._decision_cache[cache_key] = None
+            return None
+        decision = PathDecision(
+            user_sat=ingress,
+            uplink_rtt=uplink_rtt,
+            pop_cascade=tuple(cascade),
         )
-
-        # ── Append baseline-PoP fallback if it differs from the
-        # chosen PoP. The fallback is the controller's own overflow
-        # semantic mirrored into the data plane: if every primary
-        # option is saturated, fall back to the cell's geographic
-        # nearest PoP. ──
-        baseline_pop = self._plane.cell_to_pop.mapping[cell_id]
-        if baseline_pop == pop_code:
-            return PathDecision(user_sat=ingress, options=primary_options)
-
-        try:
-            ground_rtt_baseline = ground_truth.estimate(
-                baseline_pop, flow_key.dst,
-            ) * 2
-        except KeyError:
-            # Baseline ground unmeasured — no useful fallback to add.
-            return PathDecision(user_sat=ingress, options=primary_options)
-
-        baseline_options = self._options_for(ingress, baseline_pop, snapshot)
-        if not baseline_options:
-            return PathDecision(user_sat=ingress, options=primary_options)
-
-        bp = baseline_options[0]
-        fallback = EgressOption(
-            pop_code=bp.pop_code,
-            egress_sat=bp.egress_sat,
-            gs_id=bp.gs_id,
-            isl_links=bp.isl_links,
-            propagation_rtt=uplink_rtt + bp.propagation_rtt,
-            ground_rtt=ground_rtt_baseline,
-        )
-        return PathDecision(
-            user_sat=ingress, options=primary_options + (fallback,),
-        )
+        self._decision_cache[cache_key] = decision
+        return decision
 
     def charge(
         self, decision: PathDecision, flow_demand: float,
     ) -> EgressOption:
-        # Per-sat Ka feeder cap; constant 20 Gbps for the default shell
-        # but read via CapacityView for forward-compat with multi-shell
-        # deployments.
-        for option in decision.options:
-            cap = self._book.view.sat_feeder_cap(option.egress_sat)
-            current = self._book.sat_feeder_used.get(option.egress_sat, 0.0)
-            if current + flow_demand <= cap:
-                self._do_charge(option, flow_demand)
-                return option
+        book = self._book
+        view = book.view
+        used = book.sat_feeder_used
+        uplink_rtt = decision.uplink_rtt
 
-        # Every option's egress sat is saturated. Take the fallback
-        # (= last option) and accept the overflow — measure() will
-        # report it as elevated queuing/loss rather than dropping the
-        # flow.
-        chosen = decision.options[-1]
+        # Per-sat Ka feeder cap; constant 20 Gbps for the default
+        # shell but read via CapacityView for forward-compat.
+        for pop_code, raw_opts, ground_rtt in decision.pop_cascade:
+            for raw in raw_opts:
+                sat = raw.egress_sat
+                if used.get(sat, 0.0) + flow_demand <= view.sat_feeder_cap(sat):
+                    chosen = EgressOption(
+                        pop_code=raw.pop_code, egress_sat=sat,
+                        gs_id=raw.gs_id, isl_links=raw.isl_links,
+                        propagation_rtt=uplink_rtt + raw.propagation_rtt,
+                        ground_rtt=ground_rtt,
+                    )
+                    self._do_charge(chosen, flow_demand)
+                    return chosen
+
+        # Every option's egress sat is saturated. Pick the option
+        # with the smallest post-charge load ratio so overflow
+        # spreads evenly instead of piling on one sat. For the
+        # default uniform 20 Gbps cap this is the same as
+        # minimising raw load; generalises to "smallest ratio" if
+        # shells ever advertise per-sat caps.
+        best_raw: EgressOption | None = None
+        best_pop = ""
+        best_ground = 0.0
+        best_ratio = float("inf")
+        for pop_code, raw_opts, ground_rtt in decision.pop_cascade:
+            for raw in raw_opts:
+                sat = raw.egress_sat
+                ratio = used.get(sat, 0.0) / max(view.sat_feeder_cap(sat), 1e-9)
+                if ratio < best_ratio:
+                    best_ratio = ratio
+                    best_raw = raw
+                    best_pop = pop_code
+                    best_ground = ground_rtt
+
+        assert best_raw is not None  # pop_cascade invariant: non-empty
+        chosen = EgressOption(
+            pop_code=best_pop, egress_sat=best_raw.egress_sat,
+            gs_id=best_raw.gs_id, isl_links=best_raw.isl_links,
+            propagation_rtt=uplink_rtt + best_raw.propagation_rtt,
+            ground_rtt=best_ground,
+        )
         self._do_charge(chosen, flow_demand)
         return chosen
 

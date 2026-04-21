@@ -106,7 +106,7 @@ def _build_routing_plane(simple_snapshot: NetworkSnapshot) -> RoutingPlane:
     cell_grid = CellGrid.from_endpoints([("user_a", 0.0, 0.0)])
     cell_id = cell_grid.cell_of("user_a")
     cell_to_pop = CellToPopTable(
-        mapping=MappingProxyType({cell_id: "pop"}),
+        mapping=MappingProxyType({cell_id: ("pop",)}),
         version=0, built_at=0.0,
     )
     return RoutingPlane(
@@ -244,7 +244,7 @@ class TestForwardAuditFixes:
             "fixture invariant: both users must hash to the same cell"
         )
         cell_to_pop = CellToPopTable(
-            mapping=MappingProxyType({cell_id: "pop"}),
+            mapping=MappingProxyType({cell_id: ("pop",)}),
             version=0, built_at=0.0,
         )
         fib_0 = SatelliteFIB(
@@ -531,7 +531,7 @@ class TestForwardAuditFixes:
         cell_grid = CellGrid.from_endpoints([("alice", 0.0, 0.0)])
         cell_id = cell_grid.cell_of("alice")
         cell_to_pop = CellToPopTable(
-            mapping=MappingProxyType({cell_id: "pop"}),
+            mapping=MappingProxyType({cell_id: ("pop",)}),
             version=0, built_at=0.0,
         )
         # Minimal FIB so .decide's legacy fallback path doesn't crash.
@@ -596,13 +596,14 @@ class TestForwardAuditFixes:
         assert book.sat_feeder_used[1] == pytest.approx(19.0)
         assert book.sat_feeder_used[2] == pytest.approx(5.0)
 
-    def test_all_options_full_falls_back_to_baseline_pop(self) -> None:
-        """When the controller's chosen PoP differs from the cell's
-        baseline (geographic-nearest) PoP, ``decide`` appends the
-        baseline-pop path as a final fallback option. If every prior
-        option's egress sat-feeder is saturated, ``charge`` uses the
-        fallback regardless of capacity (overflow accepted; surfaces
-        as elevated queuing/loss in measure)."""
+    def test_all_options_full_falls_back_to_next_ranked_pop(self) -> None:
+        """When the controller's per-dest cascade names a primary PoP
+        followed by a 2nd-ranked PoP, ``decide`` concatenates per-PoP
+        top-K (sat, gs) options in cascade order. If every primary-PoP
+        sat feeder is saturated, ``charge`` walks down to the 2nd PoP's
+        first feasible sat — exactly the behaviour that lets PG fall
+        back to negative-improvement alternates instead of overloading
+        a single sat."""
         snap = self._multi_egress_snapshot()
         # Add a second PoP with its own GS so baseline can differ
         # from the controller's chosen PoP. Sat 0 itself attaches to
@@ -639,16 +640,19 @@ class TestForwardAuditFixes:
             epoch=0, time_s=0.0, satellite=new_sat, infra=new_infra,
         )
 
-        # Cell mapping: baseline = popB (cell's nearest), but controller
-        # overrides to "pop" via per_dest. So decide will produce
-        # primary options for "pop" + a fallback option for "popB".
+        # Cell mapping: baseline ranked-tuple = ("popB",) (only the
+        # geographic nearest in this fixture), but the controller
+        # overrides per-dest to ("pop", "popB") — a ranked cascade
+        # that should cascade to popB once "pop"'s sat feeders saturate.
         alice = Endpoint(name="alice", lat_deg=0.0, lon_deg=0.0)
         cell_grid = CellGrid.from_endpoints([("alice", 0.0, 0.0)])
         cell_id = cell_grid.cell_of("alice")
         cell_to_pop = CellToPopTable(
-            mapping=MappingProxyType({cell_id: "popB"}),  # baseline
+            mapping=MappingProxyType({cell_id: ("popB",)}),  # baseline
             version=0, built_at=0.0,
-            per_dest=MappingProxyType({(cell_id, "google"): "pop"}),
+            per_dest=MappingProxyType({
+                (cell_id, "google"): ("pop", "popB"),
+            }),
         )
         plane = RoutingPlane(
             cell_to_pop=cell_to_pop,
@@ -693,15 +697,118 @@ class TestForwardAuditFixes:
 
         assert len(result.flow_outcomes) == 1
         flow = result.flow_outcomes[0]
-        # Both primary options' sat feeders are full → fallback to
-        # popB used. The popB path lands at sat 0 (egress) via gs2.
+        # Both "pop" sat feeders (sat 1 + sat 2) are full → cascade
+        # to popB used. The popB path lands at sat 0 (egress) via gs2.
         assert flow.pop_code == "popB", (
-            f"expected fallback to baseline popB; got {flow.pop_code}"
+            f"expected cascade to second-ranked popB; got {flow.pop_code}"
         )
         assert flow.gs_id == "gs2"
         assert flow.egress_sat == 0
         # ground RTT = popB→google measurement (1.0) × 2 = 2.0 ms
         assert flow.ground_rtt == pytest.approx(2.0)
+
+    def test_all_cascade_pops_saturated_takes_last_option(self) -> None:
+        """Defensive tail: when *every* sat in *every* cascade PoP is
+        saturated, ``charge`` force-charges ``options[-1]`` rather
+        than dropping the flow. The user said "不至于" but production
+        bugs love saying hello — this test pins the fallback behaviour
+        so a future refactor can't silently turn it into a drop."""
+        snap = self._multi_egress_snapshot()
+        # Reuse the popB-with-gs2 augmentation pattern from the
+        # cascade test above.
+        gs2 = GroundStation(
+            "gs2", 0.5, 0.5, "XX", "Test", 8, 25.0,
+            True, 2.1, 1.3, 160.0, False,
+        )
+        pop2 = PoP("pop2", "popB", "POP-B", 0.5, 0.5)
+        gs2_link = AccessLink(
+            sat_id=0, elevation_deg=85.0, slant_range_km=560.0, delay=1.86,
+        )
+        old_attachments = dict(snap.satellite.gateway_attachments.attachments)
+        old_attachments["gs2"] = (gs2_link,)
+        new_gw = GatewayAttachments(attachments=MappingProxyType(old_attachments))
+        new_sat = SatelliteState(
+            positions=snap.satellite.positions,
+            graph=snap.satellite.graph,
+            delay_matrix=snap.satellite.delay_matrix,
+            predecessor_matrix=snap.satellite.predecessor_matrix,
+            gateway_attachments=new_gw,
+        )
+        new_infra = InfrastructureView(
+            pops=(*snap.infra.pops, pop2),
+            ground_stations=(*snap.infra.ground_stations, gs2),
+            gs_pop_edges=(
+                *snap.infra.gs_pop_edges,
+                GSPoPEdge("gs2", "popB", 5.0, 0.02, 100.0),
+            ),
+        )
+        snap = NetworkSnapshot(
+            epoch=0, time_s=0.0, satellite=new_sat, infra=new_infra,
+        )
+
+        alice = Endpoint(name="alice", lat_deg=0.0, lon_deg=0.0)
+        cell_grid = CellGrid.from_endpoints([("alice", 0.0, 0.0)])
+        cell_id = cell_grid.cell_of("alice")
+        cell_to_pop = CellToPopTable(
+            mapping=MappingProxyType({cell_id: ("pop", "popB")}),
+            version=0, built_at=0.0,
+        )
+        plane = RoutingPlane(
+            cell_to_pop=cell_to_pop,
+            sat_fibs=MappingProxyType({}),
+            version=0, built_at=0.0,
+        )
+
+        view = CapacityView.from_snapshot(
+            sat_state=snap.satellite,
+            shell=_StubWorld.shell,
+            ground_stations={"gs1": GroundStation(
+                "gs1", 0.0, 0.0, "XX", "Test", 8, 25.0,
+                True, 2.1, 1.3, 160.0, False,
+            ), "gs2": gs2},
+        )
+        book = UsageBook(view=view)
+        # Saturate EVERY egress sat in the cascade: sat 1 + sat 2 (pop)
+        # and sat 0 (popB via gs2). cap = 20 each.
+        book.charge_sat_feeder(0, 20.0)
+        book.charge_sat_feeder(1, 20.0)
+        book.charge_sat_feeder(2, 20.0)
+
+        strategy = RoutingPlaneForward(plane, cell_grid, book)
+        ctx = RunContext(
+            world=_StubWorld(),  # type: ignore[arg-type]
+            endpoints={
+                "alice": alice,
+                "google": Endpoint("google", 37.4, -122.1),
+            },
+            ground_knowledge=GroundKnowledge(
+                estimator=MeasuredGroundDelay(one_way_rtt_ms={
+                    ("pop", "google"): 2.5,
+                    ("popB", "google"): 1.0,
+                }),
+            ),
+        )
+        demand = TrafficDemand(epoch=0, flows=MappingProxyType({
+            FlowKey("alice", "google"): 0.5,
+        }))
+        result = realize(strategy, snap, demand, ctx)
+
+        # Flow MUST land somewhere — never silently dropped — even
+        # when every cascade option's egress sat is over capacity.
+        assert len(result.flow_outcomes) == 1
+        flow = result.flow_outcomes[0]
+        # The defensive tail picks the option with the LOWEST current
+        # post-charge utilisation across the cascade — not options[-1]
+        # — so many cells sharing the same cascade don't all stack on
+        # the same final sat. In this fixture sats 0/1/2 are all
+        # pre-loaded to 20.0 Gbps (= cap). After charging, the chosen
+        # sat goes to 20.5 Gbps; the un-chosen ones remain at 20.0.
+        assert flow.demand_gbps == pytest.approx(0.5)
+        used = book.sat_feeder_used
+        assert used[flow.egress_sat] == pytest.approx(20.5)
+        for sat_id in (0, 1, 2):
+            if sat_id != flow.egress_sat:
+                assert used[sat_id] == pytest.approx(20.0)
 
     def test_uplink_cached_per_src_per_epoch(
         self, simple_snapshot: NetworkSnapshot, monkeypatch: pytest.MonkeyPatch,
