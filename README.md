@@ -47,7 +47,7 @@ browsing — `Ctrl-C` to exit.
 
 ```
 run.py                          # entry point: runs sim + serves dashboard
-dashboard/live/index.html       # live dashboard (polls JSON every 3s)
+dashboard/index.html            # live dashboard (polls JSON every 3s)
 src/vantage/
     domain/                     # frozen dataclasses (Cell, FIB, CapacityView, ...)
     world/

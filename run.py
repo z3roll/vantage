@@ -2,8 +2,8 @@
 
 Runs the Baseline (nearest-PoP) and Progressive (cascade) controllers
 in lockstep against bit-identical traffic, streams per-epoch results
-to ``dashboard/live/sim_data_<ts>.json``, and serves the interactive
-dashboard (``dashboard/live/index.html``) on a local HTTP server.
+to ``dashboard/sim_data_<ts>.json``, and serves the interactive
+dashboard (``dashboard/index.html``) on a local HTTP server.
 
     $ uv run python run.py              # 60-epoch demo, opens browser
     $ uv run python run.py --epochs 600 # longer run
@@ -48,7 +48,7 @@ DATA_DIR = REPO_ROOT / "src" / "vantage" / "config"
 XML = DATA_DIR / "Starlink.xml"
 LAND_GEOJSON = DATA_DIR / "ne_countries.geojson"
 CELL_CACHE = REPO_ROOT / "data" / "processed" / "land_cells_res5.json"
-DASHBOARD_DIR = REPO_ROOT / "dashboard" / "live"
+DASHBOARD_DIR = REPO_ROOT / "dashboard"
 DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
 CELL_CACHE.parent.mkdir(parents=True, exist_ok=True)
 

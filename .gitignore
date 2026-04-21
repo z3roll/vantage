@@ -20,11 +20,9 @@ CLAUDE.md
 
 # Generated artifacts (large, rebuildable from sim runs).
 # Keep the dashboard page itself tracked; ignore everything else the
-# simulator dumps there (sim_data_*.json, index.json, legacy files).
+# simulator dumps there (sim_data_*.json, index.json).
 dashboard/*
-!dashboard/live/
-dashboard/live/*
-!dashboard/live/index.html
+!dashboard/index.html
 figures/
 slides/
 
