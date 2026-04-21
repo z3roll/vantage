@@ -25,6 +25,8 @@ dashboard/*
 !dashboard/index.html
 figures/
 slides/
+tests/
+scripts/
 
 # Local session journals & ad-hoc experiment scripts
 SESSION_PROGRESS.md

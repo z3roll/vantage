@@ -64,7 +64,6 @@ src/vantage/
     analysis/                   # offline metrics helpers
     common/                     # physical constants, geo utilities
     config/                     # bundled inputs (Starlink.xml, geojson, JSONs)
-tests/unit/                     # pytest unit tests
 ```
 
 All domain types are immutable (`@dataclass(frozen=True, slots=True)`); all
