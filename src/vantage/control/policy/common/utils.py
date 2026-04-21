@@ -1,7 +1,6 @@
 """Shared utilities for controller policy implementations.
 
 Common helpers:
-- find_nearest_pop: geographic PoP selection
 - find_ingress_satellite: user→satellite uplink resolution
 """
 
@@ -12,26 +11,12 @@ import random as _random
 import numpy as np
 from numpy.typing import NDArray
 
-from vantage.common import DEFAULT_MIN_ELEVATION_DEG, haversine_km
-from vantage.domain import AccessLink, Endpoint, PoP
+from vantage.common import DEFAULT_MIN_ELEVATION_DEG
+from vantage.domain import AccessLink, Endpoint
 from vantage.world.satellite.visibility import SphericalAccessModel
 
 _ACCESS_MODEL = SphericalAccessModel()
 _RNG = _random.Random(0)
-
-
-def find_nearest_pop(
-    lat: float, lon: float, pops: tuple[PoP, ...]
-) -> PoP | None:
-    """Find the PoP geographically closest to (lat, lon)."""
-    best_dist = float("inf")
-    best: PoP | None = None
-    for pop in pops:
-        d = haversine_km(lat, lon, pop.lat_deg, pop.lon_deg)
-        if d < best_dist:
-            best_dist = d
-            best = pop
-    return best
 
 
 def find_ingress_satellite(

@@ -14,25 +14,21 @@ from vantage.domain import (
 )
 from vantage.world.ground import GroundInfrastructure
 from vantage.world.satellite import SatelliteSegment
-from vantage.world.satellite.calibration import SatelliteDelayCalibration
 
 
 class WorldModel:
     """Composes satellite and ground segments into a complete world model.
 
     Produces frozen NetworkSnapshot at each epoch.
-    Owns satellite delay calibration (adjusts propagation estimates).
     """
 
     def __init__(
         self,
         satellite: SatelliteSegment,
         ground: GroundInfrastructure,
-        calibration: SatelliteDelayCalibration | None = None,
     ) -> None:
         self._satellite = satellite
         self._ground = ground
-        self._calibration = calibration
 
         # Pre-build frozen infrastructure view (static, never changes)
         self._infra_view = InfrastructureView(
@@ -40,10 +36,6 @@ class WorldModel:
             ground_stations=ground.ground_stations,
             gs_pop_edges=ground.gs_pop_edges,
         )
-
-    @property
-    def calibration(self) -> SatelliteDelayCalibration | None:
-        return self._calibration
 
     @property
     def shell(self) -> ShellConfig:

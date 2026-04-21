@@ -18,12 +18,7 @@ from vantage.domain.fib import (
     SatelliteFIB,
 )
 from vantage.domain.ground import GroundStation, GSPoPEdge, PoP
-from vantage.domain.result import (
-    EpochResult,
-    FlowOutcome,
-    PathAllocation,
-    SLAViolation,
-)
+from vantage.domain.result import EpochResult, FlowOutcome
 from vantage.domain.satellite import (
     AccessLink,
     ConstellationConfig,
@@ -61,11 +56,9 @@ __all__ = [
     "ISLGraph",
     "InfrastructureView",
     "NetworkSnapshot",
-    "PathAllocation",
     "PoP",
     "ROUTING_PLANE_REFRESH_S",
     "RoutingPlane",
-    "SLAViolation",
     "SatelliteFIB",
     "SatelliteState",
     "ShellConfig",

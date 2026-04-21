@@ -7,18 +7,8 @@ explicit, testable, and replaceable. The engine calls
 
 from __future__ import annotations
 
-from typing import Protocol
-
 from vantage.domain.result import EpochResult
 from vantage.world.ground import GroundKnowledge
-
-
-class FeedbackObserver(Protocol):
-    """Protocol for post-epoch feedback processing."""
-
-    def observe(self, result: EpochResult) -> None:
-        """Process realized results and update knowledge stores."""
-        ...
 
 
 class GroundDelayFeedback:

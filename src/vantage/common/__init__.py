@@ -16,7 +16,6 @@ from vantage.common.link_model import (
     path_loss,
     pftk_throughput,
 )
-from vantage.common.time import resolve_local_time
 
 __all__ = [
     "C_FIBER_KM_S",
@@ -32,5 +31,4 @@ __all__ = [
     "link_performance",
     "path_loss",
     "pftk_throughput",
-    "resolve_local_time",
 ]

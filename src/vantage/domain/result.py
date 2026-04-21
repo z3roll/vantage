@@ -11,16 +11,6 @@ from vantage.domain.traffic import FlowKey
 
 
 @dataclass(frozen=True, slots=True)
-class PathAllocation:
-    """Fully resolved single path for a flow (internal use by forward)."""
-
-    pop_code: str
-    gs_id: str
-    user_sat: int
-    egress_sat: int
-
-
-@dataclass(frozen=True, slots=True)
 class FlowOutcome:
     """Realized outcome for a single flow. All RTT values in ms.
 
@@ -55,32 +45,3 @@ class EpochResult:
     total_demand_gbps: float
     routed_demand_gbps: float
     unrouted_demand_gbps: float
-
-
-@dataclass(frozen=True, slots=True)
-class SLAViolation:
-    """One flow's SLA was not met: its served rate fell below its CIR.
-
-    SLA semantics: a flow meets its SLA when the post-throttle served
-    rate is ≥ its committed information rate (CIR). This type records
-    one violation with enough context to compute severity in
-    ``[0.0, 1.0]`` — ``0`` means "just barely below CIR",
-    ``1`` means "entirely blocked".
-    """
-
-    flow_key: FlowKey
-    demand_gbps: float
-    served_gbps: float
-    cir_gbps: float
-
-    @property
-    def shortfall_gbps(self) -> float:
-        """How far below CIR the flow landed."""
-        return max(0.0, self.cir_gbps - self.served_gbps)
-
-    @property
-    def severity(self) -> float:
-        """Fraction of the CIR missed, in ``[0.0, 1.0]``."""
-        if self.cir_gbps <= 0:
-            return 0.0
-        return min(1.0, self.shortfall_gbps / self.cir_gbps)
