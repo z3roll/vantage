@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Baseline vs Progressive — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; background: #f5f5f5; color: #333; padding: 12px; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 20px; }
+  .subtitle { text-align: center; color: #888; margin-bottom: 12px; font-size: 12px; }
+  .summary { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .card { background: #fff; border-radius: 6px; padding: 10px 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 110px; text-align: center; }
+  .card .label { font-size: 10px; color: #888; text-transform: uppercase; }
+  .card .value { font-size: 18px; font-weight: 600; margin-top: 2px; }
+  .card .sub { font-size: 12px; font-weight: 600; }
+  .improve { color: #2e7d32; }
+  .worsen { color: #c62828; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .chart-box { background: #fff; border-radius: 6px; padding: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .chart-box.wide { grid-column: 1 / -1; }
+  .chart-box h3 { font-size: 12px; color: #555; margin-bottom: 6px; }
+  canvas { width: 100% !important; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: right; }
+  th { background: #fafafa; font-weight: 600; position: sticky; top: 0; }
+  td:first-child, th:first-child { text-align: left; }
+  .pop-scroll { max-height: 400px; overflow-y: auto; }
+  #status { text-align: center; color: #888; font-size: 11px; margin-top: 6px; }
+  .over100 { background: #ffebee; }
+  .over80 { background: #fff3e0; }
+  .pop-row { cursor: pointer; }
+  .pop-row:hover { background: #f0f7ff; }
+  .pop-row td:first-child::before { content: "▸ "; color: #888; font-size: 9px; }
+  .pop-row.expanded td:first-child::before { content: "▾ "; color: #333; }
+  .pop-detail-row { background: #fafafa; }
+  .pop-detail-row td { padding: 8px 12px; }
+  .breakdown-side { display: inline-block; vertical-align: top; width: 49%; padding: 0 6px; }
+  .breakdown-side h4 { font-size: 11px; color: #555; margin-bottom: 4px; font-weight: 600; }
+  .breakdown-tbl { width: 100%; font-size: 10px; }
+  .breakdown-tbl th, .breakdown-tbl td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #eee; }
+  .breakdown-tbl th:nth-child(-n+2), .breakdown-tbl td:nth-child(-n+2) { text-align: left; }
+</style>
+</head>
+<body>
+<h1>Baseline vs Progressive</h1>
+<div class="subtitle" id="info">Loading...</div>
+<div style="text-align:center; margin-bottom:12px; font-size:12px;">
+  <label for="file_select">Run:&nbsp;</label>
+  <select id="file_select" style="font-size:12px; padding:4px 8px; min-width:340px;"></select>
+</div>
+<div class="summary" id="summary-cards"></div>
+
+<div class="grid">
+  <div class="chart-box wide"><h3>E2E RTT Over Time (per-epoch)</h3><canvas id="c_rtt"></canvas></div>
+  <div class="chart-box wide"><h3>Per-Service Demand Over Time (Gbps)</h3><canvas id="c_svc_demand_t"></canvas></div>
+  <div class="chart-box"><h3>Satellite RTT (per-epoch)</h3><canvas id="c_sat"></canvas></div>
+  <div class="chart-box"><h3>Ground RTT (per-epoch)</h3><canvas id="c_gnd"></canvas></div>
+  <div class="chart-box"><h3>P95 Latency (per-epoch)</h3><canvas id="c_p95"></canvas></div>
+  <div class="chart-box"><h3>P99 Latency (per-epoch)</h3><canvas id="c_p99"></canvas></div>
+  <div class="chart-box wide"><h3>Traffic Demand (Gbps, per-epoch)</h3><canvas id="c_demand"></canvas></div>
+
+  <div class="chart-box wide">
+    <h3>Per-Service Mean RTT — Cumulative Average (from start to now)</h3>
+    <canvas id="c_svc"></canvas>
+  </div>
+  <div class="chart-box wide">
+    <h3>Per-Service Improvement % — Cumulative Average</h3>
+    <canvas id="c_svc_impr"></canvas>
+  </div>
+
+  <div class="chart-box wide">
+    <h3>Per-Service Cumulative Average Table</h3>
+    <table id="svc_table"><thead><tr>
+      <th>Service</th><th>BL Mean</th><th>PG Mean</th><th>Improve</th><th>%</th>
+      <th>BL P99</th><th>PG P99</th><th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="chart-box wide">
+    <h3>All PoPs — Current Load vs Capacity (latest epoch)</h3>
+    <div class="pop-scroll">
+    <table id="pop_table"><thead><tr>
+      <th>PoP</th><th>#GS</th><th>Cap (Gb)</th>
+      <th title="BL load / PG load (Gbps)">Load BL/PG</th>
+      <th title="BL util / PG util (% of capacity)">Util BL/PG</th>
+      <th title="BL %traffic / PG %traffic (share of total demand)">%Traf BL/PG</th>
+      <th title="For PG flows landing here, mean PG E2E vs same flows' BL E2E. Negative = PG faster.">Δ E2E vs BL</th>
+    </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div class="chart-box wide">
+    <h3>Per-Epoch Reallocation Stats (latest first)</h3>
+    <div class="pop-scroll" style="max-height: 460px;">
+    <table id="epoch_tbl"><thead><tr>
+      <th>Ep</th><th>Time</th>
+      <th title="Number of distinct (src, dst) flows this epoch (BL and PG share identical FlowKey set)">#flow</th>
+      <th title="# flows whose PG PoP ≠ BL PoP (count / % of all flows)">Reroute (#flow / %)</th>
+      <th title="Of rerouted flows, split by E2E outcome vs BL (±0.5 ms tolerance). Values are % of rerouted flows.">Impr / Worse / Neu (% of reroute)</th>
+      <th title="Flow-count mean E2E RTT this epoch — Baseline (ms) / Progressive (ms) / Δ% = (PG − BL)/BL × 100. Negative Δ = PG faster.">Mean E2E (BL ms / PG ms / Δ%)</th>
+      <th title="Flow-count mean ΔSat (PG − BL) / BL_sat × 100">ΔSat (%)</th>
+      <th title="Flow-count mean ΔGnd (PG − BL) / BL_gnd × 100">ΔGnd (%)</th>
+      <th title="Flow-count p95 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δ%">P95 E2E (BL ms / PG ms / Δ%)</th>
+      <th title="Flow-count p99 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δ%">P99 E2E (BL ms / PG ms / Δ%)</th>
+      <th title="Controller plan time (wall) — how long each controller spent computing the cell × destination → PoP routing plan this epoch. Plans refresh every 15 epochs; cached epochs show 'cached'. BL = geographic nearest-PoP (build_cell_to_pop_nearest), PG = full _progressive_filling sweep including GK prime + E2E ranking.">Plan time BL / PG (ms)</th>
+    </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div class="chart-box wide">
+    <h3>PG Ground-Knowledge Cache (current RTT ms, PoP × service)</h3>
+    <div style="overflow:auto; max-height:460px;">
+    <table id="cache_tbl" style="font-size:10px; border-collapse:collapse;">
+      <thead><tr id="cache_thead"><th style="position:sticky; left:0; background:#fafafa; z-index:1;">PoP</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <div style="font-size:10px; color:#888; margin-top:6px;">
+      Color: bold green = low RTT (best), faint grey = high (per-service min-max scaling).
+      Values are round-trip ms, stored as EWMA (α=0.3) of per-epoch data-plane samples.
+      Only the PG controller maintains this cache (BL ignores it).
+    </div>
+  </div>
+
+  <div class="chart-box wide">
+    <h3>PG Service → PoP Allocation Heatmap (latest epoch)</h3>
+    <div style="overflow:auto; max-height:520px;">
+    <table id="svc_pop_tbl" style="font-size:10px; border-collapse:collapse; width:100%;">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <div style="font-size:10px; color:#888; margin-top:6px;">
+      Each cell = % of that service's total demand routed to that PoP (row-normalized, so each row sums to 100).
+      Columns sorted by PoP total demand across all services. Darker green = higher concentration.
+      Hover a cell for exact Gbps. "+N" column aggregates the long tail.
+    </div>
+  </div>
+</div>
+<div id="status"></div>
+
+<script>
+const BL="rgb(76,114,176)", PG="rgb(221,132,82)";
+const charts = {};
+
+function mk(id, type, ds, xL, yL, aspect) {
+  charts[id] = new Chart(document.getElementById(id), {
+    type, data: { labels: [], datasets: ds },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: true,
+      aspectRatio: aspect || (type==="bar"?2.5:3),
+      scales: {
+        x: { title: { display:!!xL, text:xL } },
+        y: { title: { display:!!yL, text:yL }, beginAtZero: type==="bar" },
+      },
+      plugins: { legend: { labels: { boxWidth:10, padding:6, font:{size:10} } } },
+      elements: { point:{radius:0}, line:{borderWidth:1.5} },
+    },
+  });
+}
+const L = (l,c) => ({label:l,borderColor:c,backgroundColor:c,data:[],fill:false});
+
+function init() {
+  mk("c_rtt","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
+  mk("c_sat","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
+  mk("c_gnd","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
+  mk("c_p95","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
+  mk("c_p99","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
+  mk("c_demand","line",[L("Demand",BL)],"Time","Gbps");
+  // c_svc_flows is initialized dynamically when we know service names
+  mk("c_svc","bar",[{label:"Baseline",backgroundColor:BL,data:[]},{label:"Progressive",backgroundColor:PG,data:[]}],"","ms");
+  mk("c_svc_impr","bar",[{label:"Improvement %",backgroundColor:PG,data:[]}],"","%");
+}
+
+// Render the per-epoch reallocation stats table (latest first).
+// Shows the last MAX_ROWS epochs; older data stays in memory but is
+// truncated from the DOM so rendering stays responsive for long runs
+// (3600 epochs × ~15 columns would otherwise hit DOM-reflow limits).
+const EPOCH_TABLE_ROWS = 120;
+
+function colorDelta(v) {
+  if (v == null) return "#666";
+  return v < -0.2 ? "#2e7d32" : v > 0.2 ? "#c62828" : "#555";
+}
+
+window._cacheSortCol = null;
+window._cacheSortAsc = true;
+window._lastCacheData = null;
+window._lastCacheSvcs = null;
+
+window.setCacheSort = function(s) {
+  if (!s) s = null;
+  if (window._cacheSortCol === s) {
+    window._cacheSortAsc = !window._cacheSortAsc;
+  } else {
+    window._cacheSortCol = s;
+    window._cacheSortAsc = true;
+  }
+  if (window._lastCacheData && window._lastCacheSvcs) {
+    renderCacheTable(window._lastCacheData, window._lastCacheSvcs);
+  }
+};
+
+function renderCacheTable(cache, svcs) {
+  window._lastCacheData = cache;
+  window._lastCacheSvcs = svcs;
+  const thead = document.querySelector("#cache_thead");
+  const tbody = document.querySelector("#cache_tbl tbody");
+  if (!thead || !tbody) return;
+  // Rebuild header each update — service list is fixed per run but
+  // cheap to regenerate, avoids stale state if config changes mid-run.
+  thead.innerHTML =
+    `<th style="position:sticky; left:0; background:#fafafa; z-index:1; text-align:left; cursor:pointer; user-select:none;" onclick="window.setCacheSort(null)">PoP <span style="color:#2196f3">${window._cacheSortCol === null ? (window._cacheSortAsc ? '▲' : '▼') : ''}</span></th>`
+    + svcs.map(s => {
+        const ind = window._cacheSortCol === s ? (window._cacheSortAsc ? '▲' : '▼') : '';
+        return `<th style="padding:3px 6px; font-size:10px; text-align:center; white-space:nowrap; cursor:pointer; user-select:none;" data-col="${s}" onclick="window.setCacheSort(this.getAttribute('data-col'))">${s} <span style="color:#2196f3">${ind}</span></th>`;
+      }).join("");
+
+  if (!cache || Object.keys(cache).length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${svcs.length + 1}" style="color:#888; text-align:center; padding:10px;">cache not populated yet</td></tr>`;
+    return;
+  }
+
+  // Per-service min/max so colors compare within a service column
+  // (absolute RTT differs hugely across services). This makes
+  // "is this PoP a good entry for service X?" visible row-wise.
+  const ranges = {};
+  for (const s of svcs) {
+    let mn = Infinity, mx = -Infinity;
+    for (const pop of Object.keys(cache)) {
+      const v = cache[pop]?.[s];
+      if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    }
+    ranges[s] = [mn, mx];
+  }
+
+  let pops = Object.keys(cache);
+  if (window._cacheSortCol) {
+    pops.sort((a, b) => {
+      const va = cache[a]?.[window._cacheSortCol] ?? Infinity;
+      const vb = cache[b]?.[window._cacheSortCol] ?? Infinity;
+      return window._cacheSortAsc ? va - vb : vb - va;
+    });
+  } else {
+    pops.sort((a, b) => window._cacheSortAsc ? a.localeCompare(b) : b.localeCompare(a));
+  }
+
+  tbody.innerHTML = pops.map(pop => {
+    const cells = svcs.map(s => {
+      const v = cache[pop]?.[s];
+      if (v == null) return `<td style="color:#ccc; text-align:center; padding:2px 6px;">—</td>`;
+      const [mn, mx] = ranges[s];
+      const t = mx > mn ? (v - mn) / (mx - mn) : 0;
+
+      // t=0 → lowest RTT (best) = saturated green; t=1 → highest = faint grey.
+      // Prominence decreases with t so the best PoP pops visually.
+      let bg, color, weight;
+      if (t < 0.1) {
+        // Best: bold saturated green
+        bg = `rgba(27, 94, 32, ${(0.15 + (0.1 - t) * 1.5).toFixed(2)})`;
+        color = '#1b5e20';
+        weight = '700';
+      } else if (t < 0.35) {
+        // Good: medium green
+        bg = `rgba(46, 125, 50, ${(0.08 - (t - 0.1) * 0.25).toFixed(2)})`;
+        color = '#2e7d32';
+        weight = '500';
+      } else {
+        // Rest: barely visible grey, muted text
+        bg = `rgba(200, 200, 200, ${(0.03 - Math.min(0.02, (t - 0.35) * 0.03)).toFixed(2)})`;
+        color = '#bbb';
+        weight = '400';
+      }
+      
+      return `<td style="background:${bg}; text-align:right; padding:2px 6px; font-variant-numeric:tabular-nums; font-weight:${weight}; color:${color}">${v.toFixed(1)}</td>`;
+    }).join("");
+    return `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; padding:2px 6px;">${pop}</td>${cells}</tr>`;
+  }).join("");
+}
+
+// Render the Service → PoP allocation heatmap.
+//
+// Rows = services (12 destinations from config.services).
+// Cols = PoPs, sorted by total demand across all services (top HM_TOP_POPS
+// shown individually, the remainder aggregated into a "+N" column so the
+// row still sums to 100%).
+//
+// Row-normalized: each cell shows what percentage of that service's total
+// demand PG routed to that PoP. This makes per-service allocation patterns
+// directly comparable — a service that concentrates 50% of traffic into
+// one PoP looks visibly darker than a service that spreads uniformly.
+const HM_TOP_POPS = 30;
+
+function renderSvcPopAlloc(breakdown, svcs) {
+  const tb = document.querySelector("#svc_pop_tbl tbody");
+  const thead = document.querySelector("#svc_pop_tbl thead");
+  if (!tb || !thead) return;
+  const pg = (breakdown || {}).progressive || {};
+  if (Object.keys(pg).length === 0) {
+    thead.innerHTML = `<tr><th style="text-align:left; padding:4px 6px;">Service</th><th>—</th></tr>`;
+    tb.innerHTML = `<tr><td colspan="2" style="color:#888; text-align:center; padding:10px;">no breakdown data yet</td></tr>`;
+    return;
+  }
+
+  // Build svc → pop → gbps using svc_gbps (exact) with fallback to top[]
+  // for old JSON files that predate the svc_gbps field.
+  const svcPopGbps = {};
+  for (const svc of svcs) svcPopGbps[svc] = {};
+  const hasSvcGbps = Object.values(pg).some(d => d?.svc_gbps);
+  if (hasSvcGbps) {
+    for (const [pop, d] of Object.entries(pg)) {
+      if (!d?.svc_gbps) continue;
+      for (const [svc, gbps] of Object.entries(d.svc_gbps)) {
+        if (svcPopGbps[svc] == null) continue;
+        svcPopGbps[svc][pop] = (svcPopGbps[svc][pop] || 0) + gbps;
+      }
+    }
+  } else {
+    for (const [pop, d] of Object.entries(pg)) {
+      if (!d?.top) continue;
+      for (const entry of d.top) {
+        if (svcPopGbps[entry.svc] == null) continue;
+        svcPopGbps[entry.svc][pop] = (svcPopGbps[entry.svc][pop] || 0) + entry.gbps;
+      }
+    }
+  }
+
+  // Rank PoPs globally by total cross-service demand. Top-N become columns;
+  // the rest fold into a single "+N" aggregate column so rows stay to 100%.
+  const popTotal = {};
+  for (const svc of svcs) {
+    for (const [pop, g] of Object.entries(svcPopGbps[svc])) {
+      popTotal[pop] = (popTotal[pop] || 0) + g;
+    }
+  }
+  const rankedPops = Object.entries(popTotal).sort((a, b) => b[1] - a[1]);
+  const shownPops = rankedPops.slice(0, HM_TOP_POPS).map(([p]) => p);
+  const tailCount = Math.max(0, rankedPops.length - HM_TOP_POPS);
+
+  // Header: Service column (sticky), then one column per top PoP, then tail.
+  const popHeaders = shownPops.map(p => {
+    const gTotal = popTotal[p] || 0;
+    return `<th style="padding:4px 2px; font-size:9px; text-align:center; font-weight:600; color:#333; writing-mode:horizontal-tb;" title="${p}: ${gTotal.toFixed(0)} Gbps across all services">${p}</th>`;
+  }).join('');
+  const tailHdr = tailCount > 0
+    ? `<th style="padding:4px 4px; font-size:9px; text-align:center; color:#888; font-weight:500;" title="Tail: ${tailCount} smaller PoPs aggregated">+${tailCount}</th>`
+    : '';
+  thead.innerHTML = `<tr>
+    <th style="text-align:left; padding:4px 6px; position:sticky; left:0; background:#fafafa; z-index:2; min-width:110px;">Service <span style="color:#aaa; font-weight:400;">(Gbps)</span></th>
+    ${popHeaders}${tailHdr}
+  </tr>`;
+
+  // Color helper: t in [0, 1] → rgba green at t × saturated, white at t=0.
+  // Cap saturation at 25% to keep the common 5-15% range visible rather
+  // than drowned by the one or two 30%+ cells.
+  const cellColor = (pct) => {
+    if (pct < 0.1) return { bg: '#fff', color: '#ccc', weight: '400' };
+    const t = Math.min(pct / 25, 1);
+    const alpha = (0.1 + t * 0.7).toFixed(2);
+    const bg = `rgba(27, 94, 32, ${alpha})`;
+    const color = t > 0.35 ? '#fff' : '#1b5e20';
+    const weight = t > 0.2 ? '700' : '500';
+    return { bg, color, weight };
+  };
+
+  // Render one <tr> per service. Each row shows the service name+total,
+  // then one % cell per shown PoP, then the "+N" tail aggregate.
+  tb.innerHTML = svcs.map(svc => {
+    const popData = svcPopGbps[svc] || {};
+    const total = Object.values(popData).reduce((a, b) => a + b, 0);
+    if (total <= 0) {
+      return `<tr>
+        <td style="padding:3px 6px; font-weight:600; position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap;">${svc} <span style="color:#aaa; font-weight:400;">(0)</span></td>
+        <td colspan="${shownPops.length + (tailCount > 0 ? 1 : 0)}" style="color:#aaa; text-align:center; padding:3px 6px;">no traffic this epoch</td>
+      </tr>`;
+    }
+
+    const cells = shownPops.map(pop => {
+      const gbps = popData[pop] || 0;
+      const pct = gbps / total * 100;
+      const { bg, color, weight } = cellColor(pct);
+      const content = pct < 0.1 ? '·' : pct.toFixed(pct < 10 ? 1 : 0);
+      return `<td style="background:${bg}; color:${color}; text-align:center; padding:2px 2px; font-size:9.5px; font-weight:${weight}; font-variant-numeric:tabular-nums;" title="${svc} → ${pop}: ${gbps.toFixed(2)} Gbps (${pct.toFixed(2)}%)">${content}</td>`;
+    }).join('');
+
+    let tailCell = '';
+    if (tailCount > 0) {
+      const tailGbps = rankedPops.slice(HM_TOP_POPS).reduce((s, [p]) => s + (popData[p] || 0), 0);
+      const tailPct = tailGbps / total * 100;
+      const { bg, color, weight } = cellColor(tailPct);
+      const content = tailPct < 0.1 ? '·' : tailPct.toFixed(tailPct < 10 ? 1 : 0);
+      tailCell = `<td style="background:${bg}; color:${color}; text-align:center; padding:2px 2px; font-size:9.5px; font-weight:${weight}; font-variant-numeric:tabular-nums; border-left:1px solid #eee;" title="Tail (${tailCount} PoPs): ${tailGbps.toFixed(2)} Gbps (${tailPct.toFixed(2)}%)">${content}</td>`;
+    }
+
+    return `<tr>
+      <td style="padding:3px 6px; font-weight:600; position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap;">${svc} <span style="color:#888; font-weight:400; font-size:9.5px;">(${total.toFixed(0)})</span></td>
+      ${cells}${tailCell}
+    </tr>`;
+  }).join('');
+}
+
+function renderEpochTable(compare) {
+  const tb = document.querySelector("#epoch_tbl tbody");
+  if (!tb) return;
+  if (!compare || compare.length === 0) {
+    tb.innerHTML = "<tr><td colspan='11' style='color:#888; text-align:center;'>no data yet</td></tr>";
+    return;
+  }
+  const rows = compare.slice(-EPOCH_TABLE_ROWS).reverse();
+  // Δ% = (pg − bl) / bl × 100, guarded against bl = 0 (epoch 0 edge).
+  const pctOf = (bl, pg) => bl > 0 ? (pg - bl) / bl * 100 : 0;
+  const fmtPct = v => (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+  // Combined cell: "BL ms / PG ms / Δ%" with Δ colored by direction.
+  const triCell = (bl, pg, weight) => {
+    if (bl == null || pg == null) return "—";
+    const dp = pctOf(bl, pg);
+    const w = weight || "400";
+    return `<span style="color:#555;">${bl.toFixed(1)}</span>
+      <span style="color:#aaa;"> / </span>
+      <span style="color:#555;">${pg.toFixed(1)}</span>
+      <span style="color:#aaa;"> / </span>
+      <span style="color:${colorDelta(dp)}; font-weight:${w};">${fmtPct(dp)}</span>`;
+  };
+  const pctCell = (bl, pg) => {
+    if (bl == null || pg == null) return "—";
+    const dp = pctOf(bl, pg);
+    return `<span style="color:${colorDelta(dp)};">${fmtPct(dp)}</span>`;
+  };
+
+  tb.innerHTML = rows.map(r => {
+    const reColor = r.reroute_pct > 30 ? "#1565c0" : "#333";
+    const split = `<span style="color:#2e7d32;">${r.impr_pct_of_re.toFixed(0)}</span>
+      /<span style="color:#c62828;">${r.worse_pct_of_re.toFixed(0)}</span>
+      /<span style="color:#888;">${(100 - r.impr_pct_of_re - r.worse_pct_of_re).toFixed(0)}</span>`;
+    const planMs = (v) =>
+      v == null ? `<span style="color:#bbb;">cached</span>`
+                : `<span style="font-variant-numeric:tabular-nums;">${v.toFixed(v < 10 ? 2 : 1)}</span>`;
+    return `<tr>
+      <td>${r.epoch}</td>
+      <td>${r.time_str}</td>
+      <td>${r.total_flows.toLocaleString()}</td>
+      <td><span style="color:${reColor}; font-weight:${r.reroute_pct > 20 ? '600' : '400'};">${r.reroute_flows.toLocaleString()} (${r.reroute_pct.toFixed(0)}%)</span></td>
+      <td>${split}</td>
+      <td>${triCell(r.bl_mean_rtt, r.pg_mean_rtt, "600")}</td>
+      <td>${pctCell(r.bl_sat_rtt, r.pg_sat_rtt)}</td>
+      <td>${pctCell(r.bl_gnd_rtt, r.pg_gnd_rtt)}</td>
+      <td>${triCell(r.bl_p95_rtt, r.pg_p95_rtt)}</td>
+      <td>${triCell(r.bl_p99_rtt, r.pg_p99_rtt)}</td>
+      <td>${planMs(r.bl_plan_ms)} / ${planMs(r.pg_plan_ms)}</td>
+    </tr>`;
+  }).join("");
+}
+
+// Render the BL vs PG contributor side-by-side panel for one PoP.
+// Expects `brk = {baseline: {pop: {top, total, n_distinct, sats, n_sats}}, ...}`.
+function renderBreakdown(code, brk) {
+  const bl = brk.baseline?.[code];
+  const pg = brk.progressive?.[code];
+  if (!bl && !pg) {
+    return "<i style='color:#888; font-size:11px;'>No breakdown available — re-run with the updated run_1hour.py to populate <code>latest_breakdown</code>.</i>";
+  }
+  const SAT_CAP = 20.0;
+  function side(label, s) {
+    if (!s) return `<div class="breakdown-side"><h4>${label}</h4><i>no data</i></div>`;
+    const rows = s.top.map(c =>
+      `<tr><td>${c.country}</td><td>${c.svc}</td><td>${c.gbps.toFixed(1)}</td><td>${(c.gbps/s.total*100).toFixed(1)}%</td></tr>`
+    ).join("");
+    const tail = s.n_distinct - s.top.length;
+    const tailRow = tail > 0
+      ? `<tr><td colspan="4" style="color:#888; text-align:center;">... + ${tail} more contributors</td></tr>`
+      : "";
+    // Per-GS load with per-sat nested underneath. Each GS = 8 Ka
+    // antennas × 20 Gbps = 160 Gbps theoretical; each sat = 20 Gbps.
+    const GS_CAP = 160.0;
+    const gss = (s.gss || []);
+    function bar(load, cap) {
+      const u = load / cap * 100;
+      const colour = u > 100 ? "#c62828" : u > 80 ? "#ef6c00" : "#388e3c";
+      const fill = Math.min(100, u);
+      return `<td>${load.toFixed(1)}/${cap}</td>
+        <td><div style="width:80px; background:#eee; height:8px; position:relative; display:inline-block;">
+              <div style="width:${fill}%; background:${colour}; height:100%;"></div>
+              ${u > 100 ? `<div style="position:absolute; left:100%; top:0; width:${Math.min(150, u-100)}%; background:repeating-linear-gradient(45deg, #c62828, #c62828 2px, #fff 2px, #fff 4px); height:100%;"></div>` : ""}
+            </div></td>
+        <td style="color:${colour}; font-weight:${u > 100 ? '600' : '400'};">${u.toFixed(0)}%</td>`;
+    }
+    let totalOverCap = 0;
+    const gsBlocks = gss.map(g => {
+      const satsInner = (g.sats || []);
+      totalOverCap += satsInner.filter(x => x.load > SAT_CAP).length;
+      const satRows = satsInner.map(sat => `<tr style="background:#f5f9ff;">
+        <td style="padding-left:18px; color:#555;">↳ sat ${sat.sat_id}</td>
+        ${bar(sat.load, SAT_CAP)}
+      </tr>`).join("");
+      return `<tr style="background:#eef3fb; font-weight:600;">
+          <td>📡 ${g.gs_id}  <span style="color:#888; font-weight:400;">(${g.n_sats} sats)</span></td>
+          ${bar(g.load, GS_CAP)}
+        </tr>
+        ${satRows}`;
+    }).join("");
+    const gsHeader = gss.length > 0
+      ? `<h4 style="margin-top:8px;">Per-GS / Per-sat load (${gss.length} GS${gss.length>1?'s':''} serving this PoP${totalOverCap > 0 ? `, <span style='color:#c62828;'>${totalOverCap} sat${totalOverCap>1?'s':''} over cap</span>` : ""})</h4>
+         <table class="breakdown-tbl"><thead><tr><th>GS / Sat</th><th>Load (Gbps)</th><th>Bar</th><th>Util</th></tr></thead>
+         <tbody>${gsBlocks}</tbody></table>`
+      : "";
+
+    return `<div class="breakdown-side">
+      <h4>${label} — ${s.total.toFixed(0)} Gbps total, ${s.n_distinct} (country, service) pairs</h4>
+      <table class="breakdown-tbl"><thead><tr><th>Country</th><th>Service</th><th>Gbps</th><th>%</th></tr></thead>
+      <tbody>${rows}${tailRow}</tbody></table>
+      ${gsHeader}
+    </div>`;
+  }
+  return side("Baseline", bl) + side("Progressive", pg);
+}
+
+// Compute cumulative per-service averages from all epochs
+function cumAvgSvc(epochs, svcs) {
+  const totals = {};
+  svcs.forEach(s => totals[s] = {sum_mean:0, sum_p99:0, sum_sat:0, sum_gnd:0, cnt:0});
+  for (const ep of epochs) {
+    if (!ep.services) continue;
+    for (const s of svcs) {
+      const d = ep.services[s];
+      if (!d) continue;
+      totals[s].sum_mean += d.mean * d.n;
+      totals[s].sum_p99 += d.p99 * d.n;
+      totals[s].sum_sat += d.sat * d.n;
+      totals[s].sum_gnd += d.gnd * d.n;
+      totals[s].cnt += d.n;
+    }
+  }
+  const out = {};
+  for (const s of svcs) {
+    const t = totals[s];
+    if (t.cnt === 0) continue;
+    out[s] = {
+      mean: t.sum_mean/t.cnt, p99: t.sum_p99/t.cnt,
+      sat: t.sum_sat/t.cnt, gnd: t.sum_gnd/t.cnt,
+    };
+  }
+  return out;
+}
+
+function update(data) {
+  const bl=data.baseline, pg=data.progressive, svcs=data.config.services;
+  if (!bl.length) return;
+  const labels = bl.map(d=>d.time_str);
+  const N = bl.length;
+
+  function setLine(id,k) {
+    const c=charts[id]; c.data.labels=labels;
+    c.data.datasets[0].data=bl.map(d=>d[k]);
+    c.data.datasets[1].data=pg.map(d=>d[k]);
+    c.update();
+  }
+  setLine("c_rtt","mean_rtt"); setLine("c_sat","mean_sat"); setLine("c_gnd","mean_gnd");
+  setLine("c_p95","p95_rtt"); setLine("c_p99","p99_rtt");
+  const cd=charts["c_demand"]; cd.data.labels=labels; cd.data.datasets[0].data=bl.map(d=>d.demand_gbps); cd.update();
+
+  // Cumulative averages
+  const blAvg = cumAvgSvc(bl, svcs);
+  const pgAvg = cumAvgSvc(pg, svcs);
+
+  const cs=charts["c_svc"];
+  cs.data.labels=svcs;
+  cs.data.datasets[0].data=svcs.map(s=>blAvg[s]?.mean||0);
+  cs.data.datasets[1].data=svcs.map(s=>pgAvg[s]?.mean||0);
+  cs.update();
+
+  const ci=charts["c_svc_impr"];
+  ci.data.labels=svcs;
+  ci.data.datasets[0].data=svcs.map(s=>{
+    const b=blAvg[s]?.mean||0, p=pgAvg[s]?.mean||0;
+    return b>0?+((b-p)/b*100).toFixed(1):0;
+  });
+  ci.update();
+
+  // Summary cards — cumulative
+  const cumBL = bl.reduce((a,d)=>({rtt:a.rtt+d.mean_rtt,p95:a.p95+d.p95_rtt,p99:a.p99+d.p99_rtt,n:a.n+1}),{rtt:0,p95:0,p99:0,n:0});
+  const cumPG = pg.reduce((a,d)=>({rtt:a.rtt+d.mean_rtt,p95:a.p95+d.p95_rtt,p99:a.p99+d.p99_rtt,n:a.n+1}),{rtt:0,p95:0,p99:0,n:0});
+  const bAvg=cumBL.rtt/cumBL.n, pAvg=cumPG.rtt/cumPG.n;
+  const diff=pAvg-bAvg, diffPct=(diff/bAvg*100).toFixed(1);
+  const bP95=cumBL.p95/cumBL.n, pP95=cumPG.p95/cumPG.n;
+  const bP99=cumBL.p99/cumBL.n, pP99=cumPG.p99/cumPG.n;
+
+  const p95Diff = pP95 - bP95, p95Pct = (p95Diff/bP95*100).toFixed(1);
+  const p99Diff = pP99 - bP99, p99Pct = (p99Diff/bP99*100).toFixed(1);
+
+  // Cumulative re-route percentage — flow-count (matches the per-epoch
+  // stats table below and the top "PG Mean" card's flow-count mean
+  // convention). Σ reroute_flows / Σ total_flows across all epochs.
+  //
+  // Earlier implementations used PoP-level |Δload| (undercounted
+  // symmetric swaps) or demand-weighted (biased by heavy-demand
+  // flows that barely change). Flow-count is the simplest consistent
+  // story.
+  let reFlows = 0, allFlows = 0;
+  for (const e of data.epoch_compare || []) {
+    reFlows += e.reroute_flows || 0;
+    allFlows += e.total_flows || 0;
+  }
+  const reroutePctCum = allFlows > 0 ? (reFlows / allFlows * 100) : 0;
+
+  document.getElementById("summary-cards").innerHTML=`
+    <div class="card"><div class="label">Epoch</div><div class="value">${bl[N-1].epoch}</div><div class="sub" style="color:#888">${bl[N-1].time_str}</div></div>
+    <div class="card"><div class="label">Flows</div><div class="value">${bl[N-1].n_flows.toLocaleString()}</div></div>
+    <div class="card"><div class="label">Demand</div><div class="value">${bl[N-1].demand_gbps.toFixed(0)} Gb</div></div>
+    <div class="card"><div class="label">PG Re-Routed</div><div class="value" style="color:#1565c0">${reroutePctCum.toFixed(1)}%</div><div class="sub" style="color:#888">of demand (cum)</div></div>
+    <div class="card"><div class="label">BL Mean (cum)</div><div class="value">${bAvg.toFixed(1)}ms</div></div>
+    <div class="card"><div class="label">PG Mean (cum)</div><div class="value">${pAvg.toFixed(1)}ms</div><div class="sub ${diff<0?'improve':'worsen'}">${diff.toFixed(1)}ms (${diffPct}%)</div></div>
+    <div class="card"><div class="label">BL P95 (cum)</div><div class="value">${bP95.toFixed(1)}ms</div></div>
+    <div class="card"><div class="label">PG P95 (cum)</div><div class="value">${pP95.toFixed(1)}ms</div><div class="sub ${p95Diff<0?'improve':'worsen'}">${p95Diff.toFixed(1)}ms (${p95Pct}%)</div></div>
+    <div class="card"><div class="label">BL P99 (cum)</div><div class="value">${bP99.toFixed(1)}ms</div></div>
+    <div class="card"><div class="label">PG P99 (cum)</div><div class="value">${pP99.toFixed(1)}ms</div><div class="sub ${p99Diff<0?'improve':'worsen'}">${p99Diff.toFixed(1)}ms (${p99Pct}%)</div></div>
+  `;
+
+  // Per-service demand over time
+  if (!charts["c_svc_demand_t"] && svcs.length > 0) {
+    const colors = ["#4C72B0","#DD8452","#55A868","#C44E52","#8172B3",
+                    "#937860","#DA8BC3","#8C8C8C","#CCB974","#64B5CD","#E377C2","#7F7F7F"];
+    const ds = svcs.map((s,i) => ({
+      label: s, borderColor: colors[i%colors.length],
+      backgroundColor: colors[i%colors.length], data: [], fill: false,
+    }));
+    mk("c_svc_demand_t","line", ds, "Time", "Gbps", 3);
+  }
+  if (charts["c_svc_demand_t"]) {
+    const c = charts["c_svc_demand_t"];
+    c.data.labels = labels;
+    svcs.forEach((s, i) => {
+      c.data.datasets[i].data = bl.map(d => d.services?.[s]?.demand_gbps || 0);
+    });
+    c.update();
+  }
+
+  // Service table — cumulative
+  const stb=document.querySelector("#svc_table tbody");
+  stb.innerHTML=svcs.map(s=>{
+    const b=blAvg[s]||{}, p=pgAvg[s]||{};
+    const impr=(b.mean||0)-(p.mean||0);
+    const pctI=b.mean>0?(impr/b.mean*100).toFixed(1):"0";
+    return `<tr>
+      <td>${s}</td><td>${(b.mean||0).toFixed(1)}</td><td>${(p.mean||0).toFixed(1)}</td>
+      <td class="${impr>0?'improve':'worsen'}">${impr>0?'+':''}${impr.toFixed(1)}</td>
+      <td class="${impr>0?'improve':'worsen'}">${impr>0?'+':''}${pctI}%</td>
+      <td>${(b.p99||0).toFixed(1)}</td><td>${(p.p99||0).toFixed(1)}</td>
+      <td>${(b.sat||0).toFixed(1)}</td><td>${(p.sat||0).toFixed(1)}</td>
+      <td>${(b.gnd||0).toFixed(1)}</td><td>${(p.gnd||0).toFixed(1)}</td>
+    </tr>`;
+  }).join("");
+
+  // PoP table — ALL PoPs, aligned by PoP code
+  const blPops = bl[N-1].pops || [];
+  const pgPops = pg[N-1].pops || [];
+  const blMap = Object.fromEntries(blPops.map(p=>[p.code, p]));
+  const pgMap = Object.fromEntries(pgPops.map(p=>[p.code, p]));
+  const allCodes = [...new Set([...blPops.map(p=>p.code), ...pgPops.map(p=>p.code)])];
+  allCodes.sort((a,b) => {
+    const aMax = Math.max(blMap[a]?.load||0, pgMap[a]?.load||0);
+    const bMax = Math.max(blMap[b]?.load||0, pgMap[b]?.load||0);
+    return bMax - aMax;
+  });
+  const brk = data.latest_breakdown || {baseline:{}, progressive:{}};
+  // Cache currently-expanded rows so they persist across update() rebuilds.
+  const prevExpanded = new Set(
+    [...document.querySelectorAll(".pop-row.expanded")].map(r => r.dataset.pop)
+  );
+  const ptb=document.querySelector("#pop_table tbody");
+  ptb.innerHTML=allCodes.flatMap(code=>{
+    const bp = blMap[code] || {load:0, cap:0, util:0};
+    const pp = pgMap[code] || {load:0, cap:0, util:0};
+    const cap = bp.cap || pp.cap || 0;
+    const bUtil = cap>0 ? bp.load/cap*100 : 0;
+    const pUtil = cap>0 ? pp.load/cap*100 : 0;
+    const bClass = bUtil>100?'over100':bUtil>80?'over80':'';
+    const pClass = pUtil>100?'over100':pUtil>80?'over80':'';
+    const expanded = prevExpanded.has(code);
+    const detail = expanded ? renderBreakdown(code, brk) : "";
+    const nGss = bp.n_gss_total ?? pp.n_gss_total ?? 0;
+    const cmp = (data.latest_pop_compare || {})[code] || {};
+    const blTraf = cmp.bl_pct != null ? cmp.bl_pct.toFixed(1) + "%" : "—";
+    const pgTraf = cmp.pg_pct != null ? cmp.pg_pct.toFixed(1) + "%" : "—";
+    let deltaCell = "—";
+    if (cmp.delta_pct != null) {
+      const d = cmp.delta_pct;
+      const colour = d < -1 ? "#2e7d32" : d > 1 ? "#c62828" : "#666";
+      const sign = d > 0 ? "+" : "";
+      deltaCell = `<span style="color:${colour}; font-weight:600;">${sign}${d.toFixed(1)}%</span>`;
+    }
+    // Combined cells: BL on left, PG on right, with " / " separator.
+    // Per-side colour for util so saturation is still glanceable.
+    const blColB = bUtil > 100 ? "#c62828" : bUtil > 80 ? "#ef6c00" : "#333";
+    const pgColB = pUtil > 100 ? "#c62828" : pUtil > 80 ? "#ef6c00" : "#333";
+    const loadCell = `<span style="color:#333;">${bp.load.toFixed(0)}</span>
+      <span style="color:#aaa;"> / </span>
+      <span style="color:#333;">${pp.load.toFixed(0)}</span>`;
+    const utilCell = `<span style="color:${blColB}; font-weight:${bUtil>100?'600':'400'};">${bUtil.toFixed(1)}%</span>
+      <span style="color:#aaa;"> / </span>
+      <span style="color:${pgColB}; font-weight:${pUtil>100?'600':'400'};">${pUtil.toFixed(1)}%</span>`;
+    const trafCell = `<span style="color:#333;">${blTraf}</span>
+      <span style="color:#aaa;"> / </span>
+      <span style="color:#333;">${pgTraf}</span>`;
+    return [
+      `<tr class="pop-row ${expanded?'expanded':''}" data-pop="${code}">
+        <td>${code}</td>
+        <td>${nGss}</td>
+        <td>${cap}</td>
+        <td>${loadCell}</td>
+        <td>${utilCell}</td>
+        <td>${trafCell}</td>
+        <td>${deltaCell}</td>
+      </tr>`,
+      `<tr class="pop-detail-row" data-pop="${code}-detail" style="display:${expanded?'table-row':'none'};">
+        <td colspan="7">${detail}</td>
+      </tr>`,
+    ];
+  }).join("");
+  // Single delegated click handler on tbody (re-attached every update()).
+  ptb.onclick = ev => {
+    const row = ev.target.closest("tr.pop-row");
+    if (!row) return;
+    const code = row.dataset.pop;
+    const detail = ptb.querySelector(`tr[data-pop="${code}-detail"]`);
+    if (!detail) return;
+    if (row.classList.contains("expanded")) {
+      row.classList.remove("expanded");
+      detail.style.display = "none";
+    } else {
+      row.classList.add("expanded");
+      detail.querySelector("td").innerHTML = renderBreakdown(code, brk);
+      detail.style.display = "table-row";
+    }
+  };
+
+  // Per-epoch reallocation stats table (replaces the old country-mix stacked chart).
+  renderEpochTable(data.epoch_compare);
+
+  // PG ground-knowledge cache state — PoP × service RTT heatmap.
+  renderCacheTable(data.cache_state, svcs);
+
+  // PG service → PoP allocation stacked bar chart.
+  renderSvcPopAlloc(data.latest_breakdown, svcs);
+
+  document.getElementById("info").textContent=
+    `${(data.config.user_scale)}x users | ${data.config.total_capacity_gbps} Gbps sys cap | ${data.config.refresh_s}s refresh | ${svcs.length} services`;
+  document.getElementById("status").textContent=
+    `Updated: ${new Date().toLocaleTimeString()} | ${N}/${data.config.num_epochs} epochs`;
+}
+
+// Selected sim_data file (timestamped). Falls back to legacy "sim_data.json"
+// if no index.json is present yet.
+let currentFile = "sim_data.json";
+
+function fmtOption(f) {
+  // 20260417_213045 → 2026-04-17 21:30:45
+  const t = f.timestamp || "";
+  const pretty = t.length === 15
+    ? `${t.slice(0,4)}-${t.slice(4,6)}-${t.slice(6,8)} ${t.slice(9,11)}:${t.slice(11,13)}:${t.slice(13,15)}`
+    : t || f.filename;
+  const progress = (f.epochs_done != null && f.epochs_total != null)
+    ? ` — ${f.epochs_done}/${f.epochs_total} ep` : "";
+  const scale = f.user_scale != null ? `, ${f.user_scale}× users` : "";
+  // Status badge:
+  //  ● LIVE if mtime updated within the last 30 s (run_1hour.py rewrites
+  //    every epoch ≈ once per second, so any longer gap means dead).
+  //  ✓ done if epochs_done has caught up to epochs_total.
+  //  ✗ interrupted otherwise (started but stale).
+  // Color-coded status badges via emoji (works in <option> across browsers,
+  // unlike CSS color which Safari / Firefox ignore on <option>).
+  let status = "";
+  if (f.epochs_done != null && f.epochs_total != null) {
+    const stale = f.mtime != null
+      && (Date.now() / 1000 - f.mtime) > 30;
+    if (f.epochs_done >= f.epochs_total) status = " ✓ done";
+    else if (!stale) status = " 🟢 LIVE";
+    else status = " 🔴 INTERRUPTED";
+  }
+  return `${pretty}${progress}${scale}${status}`;
+}
+
+async function refreshFileList() {
+  try {
+    const r = await fetch("index.json?"+Date.now());
+    let files = [];
+    if (r.ok) {
+      const idx = await r.json();
+      files = idx.files || [];
+    }
+    // Always offer the legacy un-timestamped sim_data.json as a fallback
+    // entry at the end of the list, even if the running version of
+    // run_1hour.py didn't include it in index.json yet.
+    if (!files.some(f => f.filename === "sim_data.json")) {
+      files.push({
+        filename: "sim_data.json", timestamp: "(legacy)",
+        epochs_done: null, epochs_total: null, user_scale: null,
+      });
+    }
+    const sel = document.getElementById("file_select");
+    const prev = sel.value;
+    sel.innerHTML = files.map(f =>
+      `<option value="${f.filename}">${fmtOption(f)}</option>`
+    ).join("");
+    if (prev && [...sel.options].some(o => o.value === prev)) {
+      sel.value = prev;
+    } else if (sel.options.length > 0) {
+      sel.value = sel.options[0].value;
+      currentFile = sel.value;
+    }
+  } catch(e) {}
+}
+
+async function loadCurrent() {
+  try {
+    const r = await fetch(currentFile + "?" + Date.now());
+    if (r.ok) update(await r.json());
+  } catch(e) {}
+}
+
+async function poll() {
+  await refreshFileList();
+  await loadCurrent();
+}
+
+document.getElementById("file_select").addEventListener("change", e => {
+  currentFile = e.target.value;
+  loadCurrent();
+});
+
+init(); poll(); setInterval(poll, 3000);
+</script>
+</body>
+</html>

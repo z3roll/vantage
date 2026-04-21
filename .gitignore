@@ -18,11 +18,18 @@ refine-logs/
 future.md
 CLAUDE.md
 
-# Generated artifacts (large, rebuildable from sim runs)
-dashboard/
+# Generated artifacts (large, rebuildable from sim runs).
+# Keep the dashboard page itself tracked; ignore everything else the
+# simulator dumps there (sim_data_*.json, index.json, legacy files).
+dashboard/*
+!dashboard/live/
+dashboard/live/*
+!dashboard/live/index.html
 figures/
 slides/
 
 # Local session journals & ad-hoc experiment scripts
 SESSION_PROGRESS.md
 run_1hour.py
+run_1hour.log
+.runlogs/

@@ -1,132 +1,72 @@
-# Argus
+# Vantage
 
-**Steering Satellite Traffic with End-to-End Awareness.**
+**End-to-end-aware traffic steering for Starlink-class satellite networks.**
 
-## Key Idea
+Vantage is an event-driven simulator that compares two PoP-selection strategies
+for user-to-service flows that traverse the Starlink constellation:
 
-Current satellite networks optimize each segment in isolation — ISL routing minimizes satellite hop delay, but is oblivious to what happens after traffic exits the constellation. This local optimization produces globally suboptimal end-to-end paths.
+- **Baseline (nearest-PoP):** every cell is pinned to its geographically
+  closest PoP — the current Starlink default.
+- **Progressive (cascade):** a central controller ranks PoPs per
+  `(cell, destination)` by predicted end-to-end RTT and emits a ranked
+  cascade; the data plane walks the cascade and picks the first egress
+  whose Ka-feeder still has capacity.
 
-Argus takes a holistic view: by jointly reasoning about satellite and terrestrial segments, the system steers traffic toward exit points that minimize *total* path delay, not just the space segment. The core insight is that a moderately longer satellite path can dramatically shorten the overall journey if it delivers traffic to a better terrestrial handoff point.
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          SIMULATION ENGINE                               │
-│  Orchestrates all subsystems. Drives time. Manages feedback loop.       │
-│                                                                          │
-│  ┌─ Epoch Loop ───────────────────────────────────────────────────────┐  │
-│  │                                                                     │  │
-│  │  ┌─────────┐     ┌────────────┐     ┌──────────────┐               │  │
-│  │  │  Clock   │────▶│   World    │────▶│  Network     │               │  │
-│  │  │  (time t)│     │   Model    │     │  Snapshot(t) │               │  │
-│  │  └─────────┘     └────────────┘     └──────┬───────┘               │  │
-│  │                                            │                        │  │
-│  │                  ┌─────────────────────────┼────────────────┐       │  │
-│  │                  │     CONTROL PLANE       │                │       │  │
-│  │                  │                         ▼                │       │  │
-│  │  ┌──────────┐    │  ┌───────────────────────────────────┐   │       │  │
-│  │  │ Traffic  │    │  │  TE Controller                     │   │       │  │
-│  │  │ (demand) │───▶│  │  (CandidateBasedController)       │   │       │  │
-│  │  └──────────┘    │  │  enumerate candidates → score →   │   │       │  │
-│  │                  │  │  select best → RoutingIntent       │   │       │  │
-│  │  ┌──────────┐    │  └──────────────┬────────────────────┘   │       │  │
-│  │  │  Ground  │───▶│                 │                        │       │  │
-│  │  │Knowledge │    │  Strategies:    │                        │       │  │
-│  │  │(L1+L2/L3)│◀ ─ ┤  nearest_pop | ground_only |           │       │  │
-│  │  └──────────┘    │  static_pop  | greedy                   │       │  │
-│  │       ▲          └─────────────┼───────────────────────────┘       │  │
-│  │       │                        │                                    │  │
-│  │       │                        ▼                                    │  │
-│  │       │  ┌──────────────────────────────────────────────────────┐   │  │
-│  │       │  │  Forwarding Engine (forward.py)                      │   │  │
-│  │       │  │  RoutingIntent × Snapshot × Demand → EpochResult    │   │  │
-│  │       │  │  Computes actual E2E delays along resolved paths     │   │  │
-│  │       │  └──────────────────────┬───────────────────────────────┘   │  │
-│  │       │                         │                                   │  │
-│  │       │  ┌──────────────────────▼───────────────────────────────┐   │  │
-│  │       │  │  Feedback Observer (engine_feedback.py)               │   │  │
-│  │       └──│  EpochResult → ground_knowledge.put(pop, dest, rtt) │   │  │
-│  │          └──────────────────────┬───────────────────────────────┘   │  │
-│  │                                 │                                   │  │
-│  │                                 ▼                                   │  │
-│  │          ┌──────────────────────────────────────────────────────┐   │  │
-│  │          │  Analysis (analysis/metrics.py)                      │   │  │
-│  │          │  EpochResult → latency stats, controller comparison │   │  │
-│  │          └──────────────────────────────────────────────────────┘   │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-### Dependency Model
-
-```
-engine ──orchestrates──▶ { world, traffic, control, forward, feedback, analysis }
-
-control  ──reads──▶ world            (NetworkSnapshot: satellite positions, ISL graph)
-control  ──reads──▶ ground_knowledge (GroundKnowledge: cached + estimated ground delays)
-control  ──reads──▶ traffic          (TrafficDemand: flow demands per epoch)
-
-forward  ──reads──▶ world            (truth: actual topology, actual delays)
-forward  ──reads──▶ control          (RoutingIntent to realize)
-forward  ──reads──▶ ground_knowledge (ground delay for E2E computation)
-
-feedback ──writes─▶ ground_knowledge (observed ground delays from forwarding results)
-
-analysis ──reads──▶ forward          (EpochResult to analyze, offline only)
-
-world    ──reads──▶ nothing          (pure model of physical reality)
-traffic  ──reads──▶ nothing          (pure demand generator)
-```
-
-### Key Design Rules
-
-- All domain types are **frozen dataclasses** (`frozen=True, slots=True`)
-- **Protocol** over ABC — duck typing, any class with right methods works
-- No subsystem calls "upward" to engine
-- Control plane never modifies world state (read-only)
-- `GroundKnowledge` is the **single source of truth** for ground delays
-- New strategies require only a new `CandidateScorer` implementation
-
-## E2E Delay Decomposition
-
-```
-User → (uplink) → Sat_ingress → (ISL hops) → Sat_egress → (downlink) → GS → (backhaul) → PoP → (ground) → Destination
-         ~2ms          variable (~5-60ms)          ~2ms        ~1ms              variable (~1-105ms)
-```
-
-All delay values in the system are **RTT** (round-trip time).
+Both controllers run in lockstep against bit-identical traffic
+(~6.4M users, 7 destination services, ~50 PoPs, 1-second epochs). Every
+flow's latency is decomposed into propagation, queuing, transmission and
+ground components, and results stream live to a browser dashboard.
 
 ## Quick Start
 
+Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.13+. Everything
+else (constellation XML, geography, configs) is bundled in the repo.
+
 ```bash
-uv sync                                    # install deps
-uv run python -m vantage.config.preprocess  # preprocess raw data (run once)
-uv run python -m vantage.main              # run experiment
-uv run pytest tests/                        # run tests
+uv sync                 # one-time dependency install
+uv run python run.py    # runs 60-epoch demo, auto-opens dashboard
 ```
+
+The script starts a local HTTP server on `http://localhost:8000/` and opens
+it in your default browser. The dashboard polls every 3 seconds, so you can
+watch results fill in while the simulation is still running.
+
+### Options
+
+```bash
+uv run python run.py --epochs 600        # longer run (~10 min)
+uv run python run.py --user-scale 1.0    # use real ~6.4M user count
+uv run python run.py --port 9000         # alternative HTTP port
+uv run python run.py --no-browser        # headless (server still up)
+```
+
+When the simulation finishes the server keeps running so you can keep
+browsing — `Ctrl-C` to exit.
 
 ## Project Structure
 
 ```
+run.py                          # entry point: runs sim + serves dashboard
+dashboard/live/index.html       # live dashboard (polls JSON every 3s)
 src/vantage/
-    engine/              # Epoch loop orchestrator + RunContext
-    domain/              # Frozen dataclasses (pure data models)
+    domain/                     # frozen dataclasses (Cell, FIB, CapacityView, ...)
     world/
-        ground/          # GroundKnowledge, GroundInfrastructure, delay models
-        satellite/       # SatelliteSegment, TVG routing (scipy), constellation
+        ground/                 # ground infra, PoPs, GroundKnowledge cache
+        satellite/              # constellation, ISL topology, visibility
     control/
-        controller.py    # TEController Protocol + factory
         policy/
-            common/      # CandidateBasedController, candidate, scoring, utils
-            nearest_pop.py
-            ground_only.py
-            static_pop.py
-            greedy.py
-    forward.py           # Realize intent → compute actual delays
-    engine_feedback.py   # GroundDelayFeedback observer
-    traffic/             # EndpointPopulation, generators (Uniform / Gravity)
-    analysis/            # Metrics, controller comparison
-    common/              # Physical constants, geographic utilities
-    config/              # Preprocessed data + preprocess script
+            nearest_pop.py      # Baseline controller
+            greedy.py           # Progressive (cascade) controller
+            common/             # shared FIB / candidate-scorer infrastructure
+    traffic/                    # EndpointPopulation, FlowLevelGenerator
+    engine/                     # RunContext, GroundDelayFeedback
+    forward.py                  # data plane: realize intent -> per-flow RTT
+    analysis/                   # offline metrics helpers
+    common/                     # physical constants, geo utilities
+    config/                     # bundled inputs (Starlink.xml, geojson, JSONs)
+tests/unit/                     # pytest unit tests
 ```
+
+All domain types are immutable (`@dataclass(frozen=True, slots=True)`); all
+latencies are in **ms**; all capacities in **Gbps**; all coordinates in
+**degrees**.

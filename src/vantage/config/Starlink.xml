@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Starlink Constellation Configuration -->
+<!-- Generated from: starlink_2026_02_10.csv -->
+<!-- Active satellites: 9238 | Shells identified: 6 -->
+<!-- Orbit periods computed via Kepler's Third Law from mean altitude (apogee+perigee)/2 -->
+<constellation>
+    <number_of_shells>6</number_of_shells>
+
+    <!-- Shell 1: Gen2 — 53.0° inclination, ~476 km -->
+    <!-- Active: ~2323 satellites (raising/operational) -->
+    <shell1>
+        <altitude>476</altitude>
+        <orbit_cycle>5638</orbit_cycle>
+        <inclination>53.0</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>72</number_of_orbit>
+        <number_of_satellite_per_orbit>32</number_of_satellite_per_orbit>
+    </shell1>
+
+    <!-- Shell 2: Gen1 — 53.0° inclination, ~541 km (target 550 km) -->
+    <!-- Active: ~1654 satellites -->
+    <shell2>
+        <altitude>541</altitude>
+        <orbit_cycle>5719</orbit_cycle>
+        <inclination>53.0</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>72</number_of_orbit>
+        <number_of_satellite_per_orbit>22</number_of_satellite_per_orbit>
+    </shell2>
+
+    <!-- Shell 3: Gen2 — 43.0° inclination, ~483 km -->
+    <!-- Active: ~1646 satellites -->
+    <shell3>
+        <altitude>483</altitude>
+        <orbit_cycle>5647</orbit_cycle>
+        <inclination>43.0</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>48</number_of_orbit>
+        <number_of_satellite_per_orbit>30</number_of_satellite_per_orbit>
+    </shell3>
+
+    <!-- Shell 4: Gen2 — 43.0° inclination, ~559 km -->
+    <!-- Active: ~1269 satellites -->
+    <shell4>
+        <altitude>559</altitude>
+        <orbit_cycle>5741</orbit_cycle>
+        <inclination>43.0</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>48</number_of_orbit>
+        <number_of_satellite_per_orbit>27</number_of_satellite_per_orbit>
+    </shell4>
+
+    <!-- Shell 5: Gen1 — 70.0° inclination, ~572 km (target 570 km) -->
+    <!-- Active: ~651 satellites -->
+    <shell5>
+        <altitude>572</altitude>
+        <orbit_cycle>5757</orbit_cycle>
+        <inclination>70.0</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>36</number_of_orbit>
+        <number_of_satellite_per_orbit>20</number_of_satellite_per_orbit>
+    </shell5>
+
+    <!-- Shell 6: Gen1 — 97.5° inclination (near-polar SSO), ~552 km (target 560 km) -->
+    <!-- Active: ~514 satellites -->
+    <shell6>
+        <altitude>552</altitude>
+        <orbit_cycle>5733</orbit_cycle>
+        <inclination>97.5</inclination>
+        <phase_shift>1</phase_shift>
+        <number_of_orbit>6</number_of_orbit>
+        <number_of_satellite_per_orbit>58</number_of_satellite_per_orbit>
+    </shell6>
+
+</constellation>
