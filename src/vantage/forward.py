@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import math
 import random as _random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
@@ -47,6 +47,7 @@ from numpy.typing import NDArray
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
 from vantage.common.link_model import (
+    LinkPerformance,
     bottleneck_capacity,
     link_performance,
     path_loss,
@@ -126,6 +127,7 @@ def compute_egress_options(
     ingress: int,
     pop_code: str,
     k: int,
+    path_walker: "Callable[[int, int], tuple[tuple[int, int], ...] | None] | None" = None,
 ) -> tuple[EgressOption, ...]:
     """Top-K (egress_sat, gs, path) options to reach ``pop_code`` from
     ``ingress``, ranked ascending by sat-segment RTT.
@@ -145,6 +147,13 @@ def compute_egress_options(
     ``(ingress, pop)`` inside ``RoutingPlaneForward`` because the
     work is identical across all flows that share that pair within
     one epoch.
+
+    ``path_walker`` lets the caller supply a memoized ``_walk_isl_path``
+    — the same ``(ingress, egress)`` pair is walked by every ``(pop)``
+    whose attached GSs include that egress sat, so per-realize caching
+    collapses tens of thousands of walk calls into the ~unique-sat
+    count. If ``None``, falls back to calling ``_walk_isl_path``
+    directly (no memoization).
     """
     sat = snapshot.satellite
     infra = snapshot.infra
@@ -167,12 +176,22 @@ def compute_egress_options(
 
     candidates.sort()
 
+    if path_walker is None:
+        pred = sat.predecessor_matrix
+
+        def _walk(i: int, e: int) -> tuple[tuple[int, int], ...] | None:
+            return _walk_isl_path(pred, i, e)
+
+        walker = _walk
+    else:
+        walker = path_walker
+
     options: list[EgressOption] = []
     for cost, egress, gs_id in candidates[:k]:
         if egress == ingress:
             isl_links: tuple[tuple[int, int], ...] = ()
         else:
-            walked = _walk_isl_path(sat.predecessor_matrix, ingress, egress)
+            walked = walker(ingress, egress)
             if walked is None:
                 continue
             isl_links = walked
@@ -527,8 +546,10 @@ class RoutingPlaneForward:
     """
 
     __slots__ = (
-        "_book", "_decision_cache", "_grid", "_ground_rtt_cache", "_k",
-        "_max_cascade_pops", "_options_cache", "_plane",
+        "_book", "_decision_cache", "_gf_perf_cache", "_grid",
+        "_ground_rtt_cache", "_isl_perf_cache", "_k",
+        "_max_cascade_pops", "_options_cache", "_path_cache", "_plane",
+        "_sf_perf_cache",
     )
 
     def __init__(
@@ -579,6 +600,21 @@ class RoutingPlaneForward:
         # draws = ~1 s. Per-flow ground-RTT jitter isn't load-bearing
         # for any downstream metric at the epoch aggregation level.
         self._ground_rtt_cache: dict[tuple[str, str], float] = {}
+        # Per-realize ISL path cache. _walk_isl_path depends only on
+        # ``(ingress, egress)`` for a fixed snapshot, but the same
+        # ``(ingress, egress)`` pair is visited by every PoP whose
+        # attached GSs include that egress sat — without this cache
+        # we see ~125 k walks for ~10 k unique pairs per realize
+        # (≈ 1.8 s of pure Python iteration).
+        self._path_cache: dict[
+            tuple[int, int], tuple[tuple[int, int], ...] | None
+        ] = {}
+        # measure() pass-2 caches. Book is frozen across pass 2 so
+        # per-link performance depends only on the link id. ~45 k
+        # link_performance calls collapse to ~1 k unique links.
+        self._isl_perf_cache: dict[tuple[int, int], LinkPerformance] = {}
+        self._sf_perf_cache: dict[int, LinkPerformance] = {}
+        self._gf_perf_cache: dict[str, LinkPerformance] = {}
 
     def _options_for(
         self, ingress: int, pop_code: str, snapshot: NetworkSnapshot,
@@ -586,7 +622,20 @@ class RoutingPlaneForward:
         key = (ingress, pop_code)
         cached = self._options_cache.get(key)
         if cached is None:
-            cached = compute_egress_options(snapshot, ingress, pop_code, self._k)
+            pred = snapshot.satellite.predecessor_matrix
+            path_cache = self._path_cache
+
+            def walker(i: int, e: int) -> tuple[tuple[int, int], ...] | None:
+                wk = (i, e)
+                if wk in path_cache:
+                    return path_cache[wk]
+                result = _walk_isl_path(pred, i, e)
+                path_cache[wk] = result
+                return result
+
+            cached = compute_egress_options(
+                snapshot, ingress, pop_code, self._k, path_walker=walker,
+            )
             self._options_cache[key] = cached
         return cached
 
@@ -644,6 +693,14 @@ class RoutingPlaneForward:
         cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
         dst = flow_key.dst
         rtt_cache = self._ground_rtt_cache
+        options_cache = self._options_cache
+        path_cache = self._path_cache
+        pred = snapshot.satellite.predecessor_matrix
+        k = self._k
+        # Cascade loop runs up to 48 × 12 k flows = ~600 k
+        # iterations per epoch, so the lookups are inlined to drop
+        # one Python frame per iteration; the options/path caches
+        # are accessed directly instead of through ``_options_for``.
         for pop_code in pop_codes[: self._max_cascade_pops]:
             key = (pop_code, dst)
             ground_rtt = rtt_cache.get(key)
@@ -658,7 +715,26 @@ class RoutingPlaneForward:
                     )
                     continue
                 rtt_cache[key] = ground_rtt
-            raw_opts = self._options_for(ingress, pop_code, snapshot)
+            opts_key = (ingress, pop_code)
+            raw_opts = options_cache.get(opts_key)
+            if raw_opts is None:
+                def walker(
+                    i: int, e: int,
+                    _pc: dict[tuple[int, int],
+                              tuple[tuple[int, int], ...] | None] = path_cache,
+                    _pred=pred,
+                ) -> tuple[tuple[int, int], ...] | None:
+                    wk = (i, e)
+                    if wk in _pc:
+                        return _pc[wk]
+                    result = _walk_isl_path(_pred, i, e)
+                    _pc[wk] = result
+                    return result
+
+                raw_opts = compute_egress_options(
+                    snapshot, ingress, pop_code, k, path_walker=walker,
+                )
+                options_cache[opts_key] = raw_opts
             if not raw_opts:
                 continue
             cascade.append((pop_code, raw_opts, ground_rtt))
@@ -740,37 +816,59 @@ class RoutingPlaneForward:
         snapshot: NetworkSnapshot,
     ) -> ResolvedFlow:
         sat = snapshot.satellite
+        book = self._book
+        view = book.view
+        isl_cache = self._isl_perf_cache
+        sf_cache = self._sf_perf_cache
+        gf_cache = self._gf_perf_cache
 
         hop_losses: list[float] = []
         hop_capacities: list[float] = []
         total_queuing_oneway = 0.0
         total_tx_oneway = 0.0
 
+        # The usage book is frozen across pass 2 so per-link performance
+        # depends only on the link id. Caching here collapses ~45 k
+        # link_performance calls (mostly ISL hops revisited by many
+        # flows) down to ~1 k unique links per realize.
         for a, b in chosen.isl_links:
-            isl_prop = float(sat.delay_matrix[a, b])
-            isl_cap = self._book.view.isl_cap(a, b)
-            isl_load = self._book.isl_used.get(self._book.isl_key(a, b), 0.0)
-            perf = link_performance(isl_prop, isl_cap, isl_load)
+            key = (a, b)
+            perf = isl_cache.get(key)
+            if perf is None:
+                isl_cap = view.isl_cap(a, b)
+                isl_load = book.isl_used.get(book.isl_key(a, b), 0.0)
+                perf = link_performance(
+                    float(sat.delay_matrix[a, b]), isl_cap, isl_load,
+                )
+                isl_cache[key] = perf
             total_queuing_oneway += perf.queuing_ms
             total_tx_oneway += perf.transmission_ms
             hop_losses.append(perf.loss_probability)
-            hop_capacities.append(isl_cap)
+            hop_capacities.append(view.isl_cap(a, b))
 
-        sf_cap = self._book.view.sat_feeder_cap(chosen.egress_sat)
-        sf_load = self._book.sat_feeder_used.get(chosen.egress_sat, 0.0)
-        sf_perf = link_performance(0.0, sf_cap, sf_load)
+        egress_sat = chosen.egress_sat
+        sf_perf = sf_cache.get(egress_sat)
+        if sf_perf is None:
+            sf_cap = view.sat_feeder_cap(egress_sat)
+            sf_load = book.sat_feeder_used.get(egress_sat, 0.0)
+            sf_perf = link_performance(0.0, sf_cap, sf_load)
+            sf_cache[egress_sat] = sf_perf
         total_queuing_oneway += sf_perf.queuing_ms
         total_tx_oneway += sf_perf.transmission_ms
         hop_losses.append(sf_perf.loss_probability)
-        hop_capacities.append(sf_cap)
+        hop_capacities.append(view.sat_feeder_cap(egress_sat))
 
-        gf_cap = self._book.view.gs_feeder_cap(chosen.gs_id)
-        gf_load = self._book.gs_feeder_used.get(chosen.gs_id, 0.0)
-        gf_perf = link_performance(0.0, gf_cap, gf_load)
+        gs_id = chosen.gs_id
+        gf_perf = gf_cache.get(gs_id)
+        if gf_perf is None:
+            gf_cap = view.gs_feeder_cap(gs_id)
+            gf_load = book.gs_feeder_used.get(gs_id, 0.0)
+            gf_perf = link_performance(0.0, gf_cap, gf_load)
+            gf_cache[gs_id] = gf_perf
         total_queuing_oneway += gf_perf.queuing_ms
         total_tx_oneway += gf_perf.transmission_ms
         hop_losses.append(gf_perf.loss_probability)
-        hop_capacities.append(gf_cap)
+        hop_capacities.append(view.gs_feeder_cap(gs_id))
 
         queuing_rtt = total_queuing_oneway * 2
         transmission_rtt = total_tx_oneway * 2
@@ -778,9 +876,9 @@ class RoutingPlaneForward:
 
         return ResolvedFlow(
             pop_code=chosen.pop_code,
-            gs_id=chosen.gs_id,
+            gs_id=gs_id,
             user_sat=decision.user_sat,
-            egress_sat=chosen.egress_sat,
+            egress_sat=egress_sat,
             satellite_rtt=satellite_rtt,
             ground_rtt=chosen.ground_rtt,
             propagation_rtt=chosen.propagation_rtt,

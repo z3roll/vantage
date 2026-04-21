@@ -105,11 +105,15 @@ def main() -> None:
     num_epochs: int = args.epochs
     user_scale: float = args.user_scale
 
-    # ── Launch dashboard first so the TA sees it load immediately ───
-    httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
+    # ── Launch dashboard only when we're going to serve it. With
+    # --no-browser nobody will connect, and spinning up the socket
+    # just leaves the process wedged on `while True: sleep(1)` below
+    # when the run finishes (see end of this function).
+    httpd = None
     url = f"http://localhost:{args.port}/"
-    print(f"Dashboard: {url}")
     if not args.no_browser:
+        httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
+        print(f"Dashboard: {url}")
         try:
             webbrowser.open(url)
         except Exception:  # noqa: BLE001 — browser-open is best-effort
@@ -487,6 +491,8 @@ def main() -> None:
     wall_total = time.perf_counter() - t_wall_start
     print(f"\nDone in {wall_total:.0f}s ({wall_total / 60:.1f} min)")
     print(f"Data: {out_file}")
+    if httpd is None:
+        return
     print(f"Dashboard still serving at {url}  (Ctrl-C to stop)")
     try:
         while True:
