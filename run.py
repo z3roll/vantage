@@ -15,6 +15,7 @@ live while the simulation is still running.
 from __future__ import annotations
 
 import argparse
+import errno
 import http.server
 import json
 import socketserver
@@ -156,14 +157,34 @@ def main() -> None:
     # while the human opens the URL manually.
     httpd = None
     url = f"http://localhost:{args.port}/"
+    # Browser auto-open is deferred to after the world-build summary
+    # below — opening the tab before the build finishes made it spin
+    # on an empty index for ~30 s. ``should_open_browser`` flips on
+    # whenever the dashboard URL is reachable (either we bound to it
+    # ourselves or a pre-existing server is already serving the same
+    # ``dashboard/`` directory on that port) and the user did not
+    # pass ``--no-browser``.
+    should_open_browser = False
     if not args.no_serve:
-        httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
-        print(f"Dashboard: {url}")
-        if not args.no_browser:
-            try:
-                webbrowser.open(url)
-            except Exception:  # noqa: BLE001 — browser-open is best-effort
-                pass
+        # A port already in use is a recoverable condition — it's
+        # typically another run.py still serving the same dashboard
+        # directory, so the URL the user sees is still live. We print
+        # it to stdout and auto-open the browser anyway. Other bind
+        # errors are still fatal.
+        try:
+            httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            print(f"Port {args.port} already in use — another server is "
+                  f"already bound to it. Reusing that server.")
+            print(f"Dashboard: {url}")
+            if not args.no_browser:
+                should_open_browser = True
+        else:
+            print(f"Dashboard: {url}")
+            if not args.no_browser:
+                should_open_browser = True
 
     start_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = DASHBOARD_DIR / f"sim_data_{start_ts}.json"
@@ -263,6 +284,16 @@ def main() -> None:
           f"Services: {len(svc_names)}  PoPs: {len(pop_list)}")
     print(f"Epochs: {num_epochs} × {EPOCH_S}s = {num_epochs * EPOCH_S / 60:.1f} min")
     print(f"Output: {out_file}\n")
+
+    # Deferred browser auto-open. ``should_open_browser`` is true only
+    # when the dashboard server actually started and the user did not
+    # pass ``--no-browser``; a port-busy fallback or a build failure
+    # earlier in this function both leave it false, so no tab opens.
+    if should_open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 — browser-open is best-effort
+            pass
 
     def compute_breakdown(result, top_contrib: int = 12, top_sats: int = 12) -> dict:
         pop_country_svc: dict[str, dict[tuple[str, str], float]] = defaultdict(
@@ -664,15 +695,12 @@ def main() -> None:
     wall_total = time.perf_counter() - t_wall_start
     print(f"\nDone in {wall_total:.0f}s ({wall_total / 60:.1f} min)")
     print(f"Data: {out_file}")
-    if httpd is None:
-        return
-    print(f"Dashboard still serving at {url}  (Ctrl-C to stop)")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        httpd.shutdown()
-        print("Server stopped.")
+    # No trailing ``while True: sleep`` keep-alive: the HTTP server
+    # runs in a daemon thread, so returning from ``main`` lets the
+    # interpreter tear it down as the process exits. Users who want
+    # the dashboard up longer can keep a separate instance running
+    # in another terminal — but the sim run itself shouldn't require
+    # a second Ctrl-C to quit.
 
 
 if __name__ == "__main__":
