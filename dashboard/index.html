@@ -16,16 +16,44 @@
   .card .sub { font-size: 12px; font-weight: 600; }
   .improve { color: #2e7d32; }
   .worsen { color: #c62828; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-  .chart-box { background: #fff; border-radius: 6px; padding: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-  .chart-box.wide { grid-column: 1 / -1; }
-  .chart-box h3 { font-size: 12px; color: #555; margin-bottom: 6px; }
-  canvas { width: 100% !important; }
+  /* 12-column grid: lets each panel claim a span from 3 (quarter) to
+     12 (full row), so we can pack several charts on one row instead
+     of stacking full-width cards down the page. Everything collapses
+     to single-column under 900 px so it still works on a laptop. */
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 8px; margin-bottom: 8px; }
+  .section { margin-bottom: 10px; }
+  .section > h2 { font-size: 12px; color: #444; margin: 8px 2px 4px; padding: 3px 2px; border-bottom: 1px solid #ddd; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .chart-box { background: #fff; border-radius: 6px; padding: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); grid-column: span 6; min-width: 0; }
+  .chart-box.wide     { grid-column: 1 / -1; }
+  .chart-box.two-third { grid-column: span 8; }
+  .chart-box.third    { grid-column: span 4; }
+  .chart-box.quarter  { grid-column: span 3; }
+  /* Sub-row for exactly 5 equally-sized panels on one line — used for
+     the latency overview (E2E / P95 / P99 / Sat / Gnd). The 12-col
+     parent grid can't split into 5 equal spans, so this nested grid
+     occupies the full row and redistributes into 5 tracks of its own. */
+  .row-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+           grid-column: 1 / -1; }
+  .row-5 > .chart-box { grid-column: auto; }
+  @media (max-width: 900px) {
+    .chart-box,
+    .chart-box.wide,
+    .chart-box.two-third,
+    .chart-box.third,
+    .chart-box.quarter { grid-column: 1 / -1; }
+    .row-5 { grid-template-columns: 1fr; }
+  }
+  .chart-box h3 { font-size: 11px; color: #555; margin-bottom: 4px; }
+  /* ``canvas`` is sized by chart.js via its ``aspectRatio`` option; the
+     ``max-height`` here is a fallback ceiling for very wide viewports
+     where the aspect-driven height would still render taller than we
+     want on scan-friendly layouts. */
+  canvas { width: 100% !important; max-height: 260px; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  th, td { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: right; }
+  th, td { padding: 3px 6px; border-bottom: 1px solid #eee; text-align: right; }
   th { background: #fafafa; font-weight: 600; position: sticky; top: 0; }
   td:first-child, th:first-child { text-align: left; }
-  .pop-scroll { max-height: 400px; overflow-y: auto; }
+  .pop-scroll { max-height: 320px; overflow-y: auto; }
   #status { text-align: center; color: #888; font-size: 11px; margin-top: 6px; }
   .over100 { background: #ffebee; }
   .over80 { background: #fff3e0; }
@@ -51,98 +79,126 @@
 </div>
 <div class="summary" id="summary-cards"></div>
 
-<div class="grid">
-  <div class="chart-box wide"><h3>E2E RTT Over Time (per-epoch)</h3><canvas id="c_rtt"></canvas></div>
-  <div class="chart-box wide"><h3>Per-Service Demand Over Time (Gbps)</h3><canvas id="c_svc_demand_t"></canvas></div>
-  <div class="chart-box"><h3>Satellite RTT (per-epoch)</h3><canvas id="c_sat"></canvas></div>
-  <div class="chart-box"><h3>Ground RTT (per-epoch)</h3><canvas id="c_gnd"></canvas></div>
-  <div class="chart-box"><h3>P95 Latency (per-epoch)</h3><canvas id="c_p95"></canvas></div>
-  <div class="chart-box"><h3>P99 Latency (per-epoch)</h3><canvas id="c_p99"></canvas></div>
-  <div class="chart-box wide"><h3>Traffic Demand (Gbps, per-epoch)</h3><canvas id="c_demand"></canvas></div>
+<section class="section">
+  <h2>Latency &amp; Improvement</h2>
+  <div class="grid">
+    <div class="row-5">
+      <div class="chart-box"><h3>E2E RTT Over Time (per-epoch)</h3><canvas id="c_rtt"></canvas></div>
+      <div class="chart-box"><h3>P95 Latency (per-epoch)</h3><canvas id="c_p95"></canvas></div>
+      <div class="chart-box"><h3>P99 Latency (per-epoch)</h3><canvas id="c_p99"></canvas></div>
+      <div class="chart-box"><h3>Satellite RTT (per-epoch)</h3><canvas id="c_sat"></canvas></div>
+      <div class="chart-box"><h3>Ground RTT (per-epoch)</h3><canvas id="c_gnd"></canvas></div>
+    </div>
 
-  <div class="chart-box wide">
-    <h3>Per-Service Mean RTT — Cumulative Average (from start to now)</h3>
-    <canvas id="c_svc"></canvas>
-  </div>
-  <div class="chart-box wide">
-    <h3>Per-Service Improvement % — Cumulative Average</h3>
-    <canvas id="c_svc_impr"></canvas>
-  </div>
+    <div class="chart-box wide">
+      <h3>Per-Epoch Reallocation Stats (latest first)</h3>
+      <div class="pop-scroll" style="max-height: 340px;">
+      <table id="epoch_tbl"><thead><tr>
+        <th>Ep</th><th>Time</th>
+        <th title="Number of distinct (src, dst) flows this epoch (BL and PG share identical FlowKey set)">#flow</th>
+        <th title="# flows whose PG PoP ≠ BL PoP (count / % of all flows)">Reroute (#flow / %)</th>
+        <th title="Of rerouted flows, split by E2E outcome vs BL (±0.5 ms tolerance). Each bucket shows #flow (% of reroute).">Impr / Worse / Neu (#flow (% of reroute))</th>
+        <th title="Flow-count mean E2E RTT this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%) where Δ = PG − BL. Negative Δ = PG faster.">Mean E2E (BL ms / PG ms / Δms (Δ%))</th>
+        <th title="Flow-count mean ΔSat = PG_sat − BL_sat, shown as Δms (Δ%) with Δ% = ΔSat / BL_sat × 100.">ΔSat (ms (%))</th>
+        <th title="Flow-count mean ΔGnd = PG_gnd − BL_gnd, shown as Δms (Δ%) with Δ% = ΔGnd / BL_gnd × 100.">ΔGnd (ms (%))</th>
+        <th title="Flow-count p95 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%)">P95 E2E (BL ms / PG ms / Δms (Δ%))</th>
+        <th title="Flow-count p99 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%)">P99 E2E (BL ms / PG ms / Δms (Δ%))</th>
+        <th title="Controller plan time (wall) — how long each controller spent computing the cell × destination → PoP routing plan this epoch. Plans refresh every 15 epochs; cached epochs show 'cached'. BL = geographic nearest-PoP (build_cell_to_pop_nearest), PG = full _progressive_filling sweep including GK prime + E2E ranking.">Plan time BL / PG (ms)</th>
+      </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
 
-  <div class="chart-box wide">
-    <h3>Per-Service Cumulative Average Table</h3>
-    <table id="svc_table"><thead><tr>
-      <th>Service</th>
-      <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">BL Mean</th>
-      <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">PG Mean</th>
-      <th>Improve</th><th>%</th>
-      <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">BL Avg Epoch P99</th>
-      <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">PG Avg Epoch P99</th>
-      <th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
+    <div class="chart-box">
+      <h3>Per-Service Mean RTT — Cumulative Average (from start to now)</h3>
+      <canvas id="c_svc"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>Per-Service Improvement % — Cumulative Average</h3>
+      <canvas id="c_svc_impr"></canvas>
+    </div>
 
-  <div class="chart-box wide">
-    <h3>All PoPs — Current Load vs Capacity (latest epoch)</h3>
-    <div class="pop-scroll">
-    <table id="pop_table"><thead><tr>
-      <th>PoP</th><th>#GS</th><th>Cap (Gb)</th>
-      <th title="BL load / PG load (Gbps)">Load BL/PG</th>
-      <th title="BL util / PG util (% of capacity)">Util BL/PG</th>
-      <th title="BL %traffic / PG %traffic (share of total demand)">%Traf BL/PG</th>
-      <th title="For PG flows landing here, mean PG E2E vs same flows' BL E2E. Negative = PG faster.">Δ E2E vs BL</th>
-    </tr></thead><tbody></tbody></table>
+    <div class="chart-box wide">
+      <h3>Per-Service Cumulative Average Table</h3>
+      <table id="svc_table"><thead><tr>
+        <th>Service</th>
+        <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">BL Mean</th>
+        <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">PG Mean</th>
+        <th>Improve</th><th>%</th>
+        <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">BL Avg Epoch P99</th>
+        <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">PG Avg Epoch P99</th>
+        <th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
+      </tr></thead><tbody></tbody></table>
     </div>
   </div>
+</section>
 
-  <div class="chart-box wide">
-    <h3>Per-Epoch Reallocation Stats (latest first)</h3>
-    <div class="pop-scroll" style="max-height: 460px;">
-    <table id="epoch_tbl"><thead><tr>
-      <th>Ep</th><th>Time</th>
-      <th title="Number of distinct (src, dst) flows this epoch (BL and PG share identical FlowKey set)">#flow</th>
-      <th title="# flows whose PG PoP ≠ BL PoP (count / % of all flows)">Reroute (#flow / %)</th>
-      <th title="Of rerouted flows, split by E2E outcome vs BL (±0.5 ms tolerance). Values are % of rerouted flows.">Impr / Worse / Neu (% of reroute)</th>
-      <th title="Flow-count mean E2E RTT this epoch — Baseline (ms) / Progressive (ms) / Δ% = (PG − BL)/BL × 100. Negative Δ = PG faster.">Mean E2E (BL ms / PG ms / Δ%)</th>
-      <th title="Flow-count mean ΔSat (PG − BL) / BL_sat × 100">ΔSat (%)</th>
-      <th title="Flow-count mean ΔGnd (PG − BL) / BL_gnd × 100">ΔGnd (%)</th>
-      <th title="Flow-count p95 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δ%">P95 E2E (BL ms / PG ms / Δ%)</th>
-      <th title="Flow-count p99 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δ%">P99 E2E (BL ms / PG ms / Δ%)</th>
-      <th title="Controller plan time (wall) — how long each controller spent computing the cell × destination → PoP routing plan this epoch. Plans refresh every 15 epochs; cached epochs show 'cached'. BL = geographic nearest-PoP (build_cell_to_pop_nearest), PG = full _progressive_filling sweep including GK prime + E2E ranking.">Plan time BL / PG (ms)</th>
-    </tr></thead><tbody></tbody></table>
+<section class="section">
+  <h2>Traffic</h2>
+  <div class="grid">
+    <div class="chart-box wide"><h3>Per-Service Demand Over Time (Gbps)</h3><canvas id="c_svc_demand_t"></canvas></div>
+  </div>
+</section>
+
+<section class="section">
+  <h2>PoP &amp; Routing</h2>
+  <div class="grid">
+    <div class="chart-box wide">
+      <h3>All PoPs — Current Load vs Capacity (latest epoch)</h3>
+      <div class="pop-scroll">
+      <table id="pop_table"><thead><tr>
+        <th>PoP</th><th>#GS</th><th>Cap (Gb)</th>
+        <th title="BL load / PG load (Gbps)">Load BL/PG</th>
+        <th title="BL util / PG util (% of capacity)">Util BL/PG</th>
+        <th title="BL %traffic / PG %traffic (share of total demand)">%Traf BL/PG</th>
+      </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="chart-box">
+      <h3>PG Ground-Knowledge Cache (current RTT ms, PoP × service)</h3>
+      <div style="overflow:auto; max-height:340px;">
+      <table id="cache_tbl" style="font-size:10px; border-collapse:collapse;">
+        <thead><tr id="cache_thead"><th style="position:sticky; left:0; background:#fafafa; z-index:1;">PoP</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+      <div style="font-size:10px; color:#888; margin-top:6px;">
+        Color: bold green = low RTT (best), faint grey = high (per-service min-max scaling).
+        Values are round-trip ms, stored as EWMA (α=0.3) of per-epoch data-plane samples.
+        Only the PG controller maintains this cache (BL ignores it).
+      </div>
+    </div>
+
+    <div class="chart-box">
+      <h3>PG Service → PoP Allocation Heatmap (latest epoch)</h3>
+      <div style="overflow:auto; max-height:360px;">
+      <table id="svc_pop_tbl" style="font-size:10px; border-collapse:collapse; width:100%;">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+      <div style="font-size:10px; color:#888; margin-top:6px;">
+        Each cell = % of that service's total demand routed to that PoP (row-normalized, so each row sums to 100).
+        Columns sorted by PoP total demand across all services. Darker green = higher concentration.
+        Hover a cell for exact Gbps. "+N" column aggregates the long tail.
+      </div>
     </div>
   </div>
+</section>
 
-  <div class="chart-box wide">
-    <h3>PG Ground-Knowledge Cache (current RTT ms, PoP × service)</h3>
-    <div style="overflow:auto; max-height:460px;">
-    <table id="cache_tbl" style="font-size:10px; border-collapse:collapse;">
-      <thead><tr id="cache_thead"><th style="position:sticky; left:0; background:#fafafa; z-index:1;">PoP</th></tr></thead>
-      <tbody></tbody>
-    </table>
+<section class="section" id="sec_timing">
+  <h2>Timing</h2>
+  <div class="grid">
+    <div class="chart-box">
+      <h3 title="Controller wall-clock for the 15 s routing-plane refresh. Cached epochs show null.">Plan Time (ms) — Baseline vs Progressive</h3>
+      <canvas id="c_plan_time"></canvas>
     </div>
-    <div style="font-size:10px; color:#888; margin-top:6px;">
-      Color: bold green = low RTT (best), faint grey = high (per-service min-max scaling).
-      Values are round-trip ms, stored as EWMA (α=0.3) of per-epoch data-plane samples.
-      Only the PG controller maintains this cache (BL ignores it).
+    <div class="chart-box">
+      <h3 title="Forward.realize() wall-clock per epoch.">Forward Time (ms) — Baseline vs Progressive</h3>
+      <canvas id="c_forward_time"></canvas>
     </div>
   </div>
-
-  <div class="chart-box wide">
-    <h3>PG Service → PoP Allocation Heatmap (latest epoch)</h3>
-    <div style="overflow:auto; max-height:520px;">
-    <table id="svc_pop_tbl" style="font-size:10px; border-collapse:collapse; width:100%;">
-      <thead></thead>
-      <tbody></tbody>
-    </table>
-    </div>
-    <div style="font-size:10px; color:#888; margin-top:6px;">
-      Each cell = % of that service's total demand routed to that PoP (row-normalized, so each row sums to 100).
-      Columns sorted by PoP total demand across all services. Darker green = higher concentration.
-      Hover a cell for exact Gbps. "+N" column aggregates the long tail.
-    </div>
-  </div>
-</div>
+</section>
 <div id="status"></div>
 
 <script>
@@ -154,7 +210,10 @@ function mk(id, type, ds, xL, yL, aspect) {
     type, data: { labels: [], datasets: ds },
     options: {
       animation: false, responsive: true, maintainAspectRatio: true,
-      aspectRatio: aspect || (type==="bar"?2.5:3),
+      // Flatter aspect ratios than before (line 3→4.2, bar 2.5→3.5)
+      // so the wide charts render shorter and the dashboard fits more
+      // panels into a scan-friendly viewport without scrolling.
+      aspectRatio: aspect || (type==="bar"?3.5:4.2),
       scales: {
         x: { title: { display:!!xL, text:xL } },
         y: { title: { display:!!yL, text:yL }, beginAtZero: type==="bar" },
@@ -167,15 +226,25 @@ function mk(id, type, ds, xL, yL, aspect) {
 const L = (l,c) => ({label:l,borderColor:c,backgroundColor:c,data:[],fill:false});
 
 function init() {
-  mk("c_rtt","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
-  mk("c_sat","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
-  mk("c_gnd","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
-  mk("c_p95","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
-  mk("c_p99","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms");
-  mk("c_demand","line",[L("Demand",BL)],"Time","Gbps");
+  // The latency overview row packs E2E / P95 / P99 / Sat / Gnd into
+  // five equal tracks (~260 px wide at a 1400 px viewport). Aspect
+  // 2.2 gives each roughly 120 px of height — short enough to scan
+  // all five in one eyeful, tall enough for the trend to be legible.
+  mk("c_rtt","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
+  mk("c_p95","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
+  mk("c_p99","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
+  mk("c_sat","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
+  mk("c_gnd","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
   // c_svc_flows is initialized dynamically when we know service names
   mk("c_svc","bar",[{label:"Baseline",backgroundColor:BL,data:[]},{label:"Progressive",backgroundColor:PG,data:[]}],"","ms");
   mk("c_svc_impr","bar",[{label:"Improvement %",backgroundColor:PG,data:[]}],"","%");
+
+  // Timing: two simple BL-vs-PG line charts. The previous design
+  // combined totals + a click-driven step-breakdown drill-down; the
+  // replacement exposes plan-time and forward-time as separate,
+  // directly-comparable series without any selection state.
+  mk("c_plan_time",    "line", [L("Baseline", BL), L("Progressive", PG)], "Time", "ms", 2.6);
+  mk("c_forward_time", "line", [L("Baseline", BL), L("Progressive", PG)], "Time", "ms", 2.6);
 }
 
 // Render the per-epoch reallocation stats table (latest first).
@@ -416,28 +485,34 @@ function renderEpochTable(compare) {
   // Δ% = (pg − bl) / bl × 100, guarded against bl = 0 (epoch 0 edge).
   const pctOf = (bl, pg) => bl > 0 ? (pg - bl) / bl * 100 : 0;
   const fmtPct = v => (v > 0 ? "+" : "") + v.toFixed(1) + "%";
-  // Combined cell: "BL ms / PG ms / Δ%" with Δ colored by direction.
+  const fmtMs = v => (v > 0 ? "+" : "") + v.toFixed(1);
+  // Combined cell: "BL ms / PG ms / Δms (Δ%)" with Δ colored by direction.
   const triCell = (bl, pg, weight) => {
     if (bl == null || pg == null) return "—";
     const dp = pctOf(bl, pg);
+    const dm = pg - bl;
     const w = weight || "400";
     return `<span style="color:#555;">${bl.toFixed(1)}</span>
       <span style="color:#aaa;"> / </span>
       <span style="color:#555;">${pg.toFixed(1)}</span>
       <span style="color:#aaa;"> / </span>
-      <span style="color:${colorDelta(dp)}; font-weight:${w};">${fmtPct(dp)}</span>`;
+      <span style="color:${colorDelta(dp)}; font-weight:${w};">${fmtMs(dm)} (${fmtPct(dp)})</span>`;
   };
-  const pctCell = (bl, pg) => {
+  // Delta cell: "Δms (Δ%)" with Δ colored by direction.
+  const deltaCell = (bl, pg) => {
     if (bl == null || pg == null) return "—";
     const dp = pctOf(bl, pg);
-    return `<span style="color:${colorDelta(dp)};">${fmtPct(dp)}</span>`;
+    const dm = pg - bl;
+    return `<span style="color:${colorDelta(dp)};">${fmtMs(dm)} (${fmtPct(dp)})</span>`;
   };
 
   tb.innerHTML = rows.map(r => {
     const reColor = r.reroute_pct > 30 ? "#1565c0" : "#333";
-    const split = `<span style="color:#2e7d32;">${r.impr_pct_of_re.toFixed(0)}</span>
-      /<span style="color:#c62828;">${r.worse_pct_of_re.toFixed(0)}</span>
-      /<span style="color:#888;">${(100 - r.impr_pct_of_re - r.worse_pct_of_re).toFixed(0)}</span>`;
+    const neuPct = 100 - r.impr_pct_of_re - r.worse_pct_of_re;
+    const neuFlows = r.neutral_flows ?? Math.max(0, (r.reroute_flows || 0) - (r.impr_flows || 0) - (r.worse_flows || 0));
+    const split = `<span style="color:#2e7d32;">${(r.impr_flows || 0).toLocaleString()} (${r.impr_pct_of_re.toFixed(0)}%)</span>
+      /<span style="color:#c62828;">${(r.worse_flows || 0).toLocaleString()} (${r.worse_pct_of_re.toFixed(0)}%)</span>
+      /<span style="color:#888;">${neuFlows.toLocaleString()} (${neuPct.toFixed(0)}%)</span>`;
     const planMs = (v) =>
       v == null ? `<span style="color:#bbb;">cached</span>`
                 : `<span style="font-variant-numeric:tabular-nums;">${v.toFixed(v < 10 ? 2 : 1)}</span>`;
@@ -448,13 +523,46 @@ function renderEpochTable(compare) {
       <td><span style="color:${reColor}; font-weight:${r.reroute_pct > 20 ? '600' : '400'};">${r.reroute_flows.toLocaleString()} (${r.reroute_pct.toFixed(0)}%)</span></td>
       <td>${split}</td>
       <td>${triCell(r.bl_mean_rtt, r.pg_mean_rtt, "600")}</td>
-      <td>${pctCell(r.bl_sat_rtt, r.pg_sat_rtt)}</td>
-      <td>${pctCell(r.bl_gnd_rtt, r.pg_gnd_rtt)}</td>
+      <td>${deltaCell(r.bl_sat_rtt, r.pg_sat_rtt)}</td>
+      <td>${deltaCell(r.bl_gnd_rtt, r.pg_gnd_rtt)}</td>
       <td>${triCell(r.bl_p95_rtt, r.pg_p95_rtt)}</td>
       <td>${triCell(r.bl_p99_rtt, r.pg_p99_rtt)}</td>
       <td>${planMs(r.bl_plan_ms)} / ${planMs(r.pg_plan_ms)}</td>
     </tr>`;
   }).join("");
+}
+
+// Populate the two Timing charts:
+//   * c_plan_time    — controller plan wall-clock (bl_plan_ms vs pg_plan_ms).
+//   * c_forward_time — forward.realize() wall-clock (bl_forward_ms vs pg_forward_ms).
+// Plan times are recorded only on the 15-epoch refresh cadence, so the
+// plan series is sparse (≤1 non-null sample per 15 epochs). Without
+// ``spanGaps`` Chart.js would refuse to draw anything between the
+// isolated samples, and with the default ``pointRadius: 0`` from
+// ``mk()`` the few real points themselves would be invisible — which
+// is exactly what the "no data" report described. Enable both knobs on
+// these two charts only, so the sparse refresh markers render as a
+// connected line with visible dots while the dense per-epoch charts
+// above stay clean.
+function renderTimingSection(compare, labels) {
+  const planChart = charts["c_plan_time"];
+  const fwdChart = charts["c_forward_time"];
+  if (!planChart || !fwdChart) return;
+
+  const setCurve = (chart, blField, pgField) => {
+    chart.data.labels = labels;
+    chart.options.spanGaps = true;
+    chart.data.datasets[0].data = compare.map(ep => ep?.[blField] ?? null);
+    chart.data.datasets[1].data = compare.map(ep => ep?.[pgField] ?? null);
+    chart.data.datasets.forEach(ds => {
+      ds.spanGaps = true;
+      ds.pointRadius = 3;
+      ds.pointHoverRadius = 5;
+    });
+    chart.update();
+  };
+  setCurve(planChart, "bl_plan_ms", "pg_plan_ms");
+  setCurve(fwdChart, "bl_forward_ms", "pg_forward_ms");
 }
 
 // Render the BL vs PG contributor side-by-side panel for one PoP.
@@ -562,7 +670,6 @@ function update(data) {
   }
   setLine("c_rtt","mean_rtt"); setLine("c_sat","mean_sat"); setLine("c_gnd","mean_gnd");
   setLine("c_p95","p95_rtt"); setLine("c_p99","p99_rtt");
-  const cd=charts["c_demand"]; cd.data.labels=labels; cd.data.datasets[0].data=bl.map(d=>d.demand_gbps); cd.update();
 
   // Cumulative averages
   const blAvg = cumAvgSvc(bl, svcs);
@@ -643,7 +750,7 @@ function update(data) {
       label: s, borderColor: colors[i%colors.length],
       backgroundColor: colors[i%colors.length], data: [], fill: false,
     }));
-    mk("c_svc_demand_t","line", ds, "Time", "Gbps", 3);
+    mk("c_svc_demand_t","line", ds, "Time", "Gbps", 4.2);
   }
   if (charts["c_svc_demand_t"]) {
     const c = charts["c_svc_demand_t"];
@@ -653,6 +760,8 @@ function update(data) {
     });
     c.update();
   }
+
+  renderTimingSection(data.epoch_compare || [], labels);
 
   // Service table — cumulative
   const stb=document.querySelector("#svc_table tbody");
@@ -701,13 +810,6 @@ function update(data) {
     const cmp = (data.latest_pop_compare || {})[code] || {};
     const blTraf = cmp.bl_pct != null ? cmp.bl_pct.toFixed(1) + "%" : "—";
     const pgTraf = cmp.pg_pct != null ? cmp.pg_pct.toFixed(1) + "%" : "—";
-    let deltaCell = "—";
-    if (cmp.delta_pct != null) {
-      const d = cmp.delta_pct;
-      const colour = d < -1 ? "#2e7d32" : d > 1 ? "#c62828" : "#666";
-      const sign = d > 0 ? "+" : "";
-      deltaCell = `<span style="color:${colour}; font-weight:600;">${sign}${d.toFixed(1)}%</span>`;
-    }
     // Combined cells: BL on left, PG on right, with " / " separator.
     // Per-side colour for util so saturation is still glanceable.
     const blColB = bUtil > 100 ? "#c62828" : bUtil > 80 ? "#ef6c00" : "#333";
@@ -729,10 +831,9 @@ function update(data) {
         <td>${loadCell}</td>
         <td>${utilCell}</td>
         <td>${trafCell}</td>
-        <td>${deltaCell}</td>
       </tr>`,
       `<tr class="pop-detail-row" data-pop="${code}-detail" style="display:${expanded?'table-row':'none'};">
-        <td colspan="7">${detail}</td>
+        <td colspan="6">${detail}</td>
       </tr>`,
     ];
   }).join("");
@@ -761,6 +862,9 @@ function update(data) {
 
   // PG service → PoP allocation stacked bar chart.
   renderSvcPopAlloc(data.latest_breakdown, svcs);
+
+  // Timing section — totals over time plus click-driven step drill-down.
+  renderTimingSection(data.epoch_compare || [], labels);
 
   document.getElementById("info").textContent=
     `${(data.config.user_scale)}x users | ${data.config.total_capacity_gbps} Gbps sys cap | ${data.config.refresh_s}s refresh | ${svcs.length} services`;
