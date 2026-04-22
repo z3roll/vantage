@@ -1,145 +1,149 @@
 """Policy-agnostic helpers for assembling a :class:`RoutingPlane`.
 
-Two pure functions, both reused across baseline and future policies:
+Pure functions reused across baseline and future policies:
 
-    * :func:`build_satellite_fibs` — turns a :class:`PerSatRouting`
-      (which already encodes "for each ingress sat, which egress sat
-      and GS minimizes cost to each PoP") into a per-satellite
-      :class:`SatelliteFIB` by looking up the first ISL hop through
-      :func:`vantage.world.satellite.routing.first_hop_on_path`.
+    * :func:`build_sat_path_table` — wraps the snapshot's
+      ``delay_matrix`` / ``predecessor_matrix`` in a controller-owned
+      :class:`SatPathTable`. The data plane reads sat-level routing
+      through this artifact rather than reaching into
+      ``SatelliteState`` directly, matching the PPT's 15 s refresh
+      model.
+    * :func:`build_pop_egress_table` — per PoP, flattens ``gs_pop_edges``
+      × ``gateway_attachments`` into ``(egress_ids, base_cost, gs_ids)``
+      numpy-ready arrays where ``base_cost = 2·downlink + 2·backhaul``.
+      Replaces the former per-flow walk inside
+      :class:`RoutingPlaneForward` with a controller-side precompute.
     * :func:`build_cell_to_pop_nearest` — geographic argmin from every
       :class:`Cell` center to the closest :class:`PoP`. This is the
-      baseline ``cell_to_pop`` assignment; capacity-aware policies will
-      replace it with a TE solver later.
+      baseline ``cell_to_pop`` assignment; capacity-aware policies
+      override it with a TE solver later.
 
-Both functions are stateless and take explicit inputs, so they can be
+Each function is stateless and takes explicit inputs, so they can be
 unit-tested without spinning up a full snapshot.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterable
 from types import MappingProxyType
 
 import numpy as np
+from numpy.typing import NDArray
 
-from vantage.control.policy.common.sat_cost import (
-    PerSatRouting,
-    precompute_per_sat_routing,
-    precompute_sat_cost,
-)
+from vantage.control.policy.common.sat_cost import precompute_sat_cost
 from vantage.domain import (
     CellGrid,
     CellToPopTable,
-    Endpoint,
-    FIBEntry,
     NetworkSnapshot,
     PoP,
+    PopEgressTable,
     RoutingPlane,
-    SatelliteFIB,
+    SatPathTable,
 )
-from vantage.world.satellite.routing import first_hop_on_path
 
 __all__ = [
     "build_cell_to_pop_nearest",
+    "build_pop_egress_table",
     "build_routing_plane_nearest_pop",
-    "build_satellite_fibs",
+    "build_sat_path_table",
     "compute_cell_ingress",
     "compute_cell_sat_cost",
     "rank_pops_by_e2e",
 ]
 
-_log = logging.getLogger(__name__)
-
-
-def build_satellite_fibs(
+def build_sat_path_table(
     snapshot: NetworkSnapshot,
-    per_sat_routing: PerSatRouting,
     *,
     version: int = 0,
-) -> dict[int, SatelliteFIB]:
-    """Assemble one :class:`SatelliteFIB` per satellite.
+) -> SatPathTable:
+    """Wrap the snapshot's ISL shortest-path outputs in a controller artifact.
 
-    For each ``(ingress_sat, pop_code)`` where the PoP is reachable,
-    emit a :class:`FIBEntry`:
+    Assumes the Dijkstra step already ran as part of the snapshot
+    build (``compute_all_pairs`` populated
+    ``SatelliteState.delay_matrix`` / ``predecessor_matrix``). This
+    function just republishes those arrays through
+    :class:`SatPathTable`, which is the view the data plane is
+    allowed to read from.
 
-        * **EGRESS** if ``chosen_egress_sat == ingress_sat`` — the
-          local satellite is itself the egress point (bent-pipe case,
-          or we already are the terminating hop). The entry target is
-          the chosen GS id and the cost is the full RTT.
-        * **FORWARD** otherwise — walk the predecessor matrix once via
-          :func:`first_hop_on_path` to find the first ISL neighbor on
-          the shortest path to the egress, then record that neighbor.
-
-    Unreachable PoPs are silently skipped (no FIB entry) — callers
-    handle the missing key as "no route from here".
-
-    Args:
-        snapshot: Current network state (for ``num_sats``, predecessor
-            matrix, and time stamp).
-        per_sat_routing: Output of
-            :func:`vantage.control.policy.common.sat_cost.precompute_per_sat_routing`
-            for the same snapshot.
-        version: Monotonic version tag attached to every produced FIB
-            so downstream consumers can tell refreshes apart.
-
-    Returns:
-        Mapping from satellite id to its :class:`SatelliteFIB`.
+    Why the indirection? The data plane previously reached into
+    ``snapshot.satellite`` directly on the hot path, so it was
+    effectively recomputing "which neighbour do I hand off to" every
+    realize call. The routing plane now owns the artifact; the data
+    plane consumes a reference, and the control layer is the only
+    place that decides when/how the matrices get rebuilt.
     """
     sat = snapshot.satellite
-    predecessor = sat.predecessor_matrix
-    built_at = snapshot.time_s
-    pop_codes = tuple(per_sat_routing.cost_ms.keys())
+    return SatPathTable(
+        delay_matrix=sat.delay_matrix,
+        predecessor_matrix=sat.predecessor_matrix,
+        version=version,
+        built_at=snapshot.time_s,
+    )
 
-    fibs: dict[int, SatelliteFIB] = {}
-    for ingress in range(sat.num_sats):
-        entries: dict[str, FIBEntry] = {}
-        for pop_code in pop_codes:
-            if not per_sat_routing.is_reachable(pop_code, ingress):
+
+def build_pop_egress_table(
+    snapshot: NetworkSnapshot,
+    *,
+    version: int = 0,
+) -> PopEgressTable:
+    """Precompute per-PoP downlink candidate tables for the data plane.
+
+    For each PoP in ``snapshot.infra``, walk ``pop_gs_edges`` ×
+    ``gateway_attachments`` once and record:
+
+        * ``egress_ids`` — int32 array of candidate egress sat ids.
+        * ``base_cost`` — float64 array of ``2·downlink + 2·backhaul``
+          RTT contributions per candidate. A flow's total sat-segment
+          RTT from ``ingress`` to this PoP is then
+          ``sat_paths.delay_row(ingress)[egress_ids] * 2 + base_cost``
+          in one numpy op — replacing the per-flow walk over
+          infrastructure that used to live in
+          :class:`RoutingPlaneForward`.
+        * ``gs_ids`` — the per-candidate GS id (so the data plane can
+          charge the right GS feeder).
+
+    PoPs with no attached GS, and GS rows with no visible sats in the
+    current snapshot, contribute nothing and the PoP simply does not
+    appear in the resulting table. :meth:`PopEgressTable.for_pop`
+    returns empty arrays in that case so the data plane treats those
+    PoPs as unreachable without special-casing ``None``.
+    """
+    sat = snapshot.satellite
+    infra = snapshot.infra
+    attach = sat.gateway_attachments.attachments
+
+    candidates: dict[
+        str, tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]
+    ] = {}
+
+    for pop in infra.pops:
+        egress_list: list[int] = []
+        base_list: list[float] = []
+        gs_list: list[str] = []
+        for gs_id, backhaul_oneway in infra.pop_gs_edges(pop.code):
+            if infra.gs_by_id(gs_id) is None:
                 continue
-            egress = int(per_sat_routing.egress_sat[pop_code][ingress])
-            cost = float(per_sat_routing.cost_ms[pop_code][ingress])
-            gs_id = per_sat_routing.chosen_gs(pop_code, ingress)
-            # ``is_reachable`` already guarantees a concrete egress/gs. If
-            # the invariant is broken (e.g. gs_index contains -1 but
-            # egress_sat does not), surface it as a hard error rather than
-            # relying on ``assert`` — ``python -O`` would strip the assert.
-            if gs_id is None:
-                raise ValueError(
-                    f"PerSatRouting inconsistency: is_reachable={True} for "
-                    f"({pop_code}, ingress={ingress}) but chosen_gs returned None"
-                )
+            gs_links = attach.get(gs_id)
+            if not gs_links:
+                continue
+            backhaul_rtt = backhaul_oneway * 2.0
+            for link in gs_links:
+                egress_list.append(link.sat_id)
+                base_list.append(link.delay * 2.0 + backhaul_rtt)
+                gs_list.append(gs_id)
+        if not egress_list:
+            continue
+        egress_ids = np.asarray(egress_list, dtype=np.int32)
+        base_cost = np.asarray(base_list, dtype=np.float64)
+        egress_ids.flags.writeable = False
+        base_cost.flags.writeable = False
+        candidates[pop.code] = (egress_ids, base_cost, tuple(gs_list))
 
-            if egress == ingress:
-                entries[pop_code] = FIBEntry.egress(gs_id=gs_id, cost_ms=cost)
-            else:
-                next_hop = first_hop_on_path(predecessor, ingress, egress)
-                if next_hop < 0 or next_hop == ingress:
-                    # Shouldn't happen — is_reachable said there is a path
-                    # and first_hop_on_path should always advance. Prefer a
-                    # partial FIB over a crashed controller, but log the
-                    # anomaly so it surfaces in production runs instead of
-                    # silently dropping routes.
-                    _log.warning(
-                        "build_satellite_fibs: dropping FIB entry for "
-                        "(ingress=%d, pop=%s): first_hop_on_path returned "
-                        "%d (egress=%d). PerSatRouting said reachable but "
-                        "the predecessor matrix disagrees.",
-                        ingress, pop_code, next_hop, egress,
-                    )
-                    continue
-                entries[pop_code] = FIBEntry.forward(
-                    next_hop_sat=next_hop, cost_ms=cost
-                )
-
-        fibs[ingress] = SatelliteFIB(
-            sat_id=ingress,
-            fib=MappingProxyType(entries),
-            version=version,
-            built_at=built_at,
-        )
-    return fibs
+    return PopEgressTable(
+        candidates=MappingProxyType(candidates),
+        version=version,
+        built_at=snapshot.time_s,
+    )
 
 
 def build_cell_to_pop_nearest(
@@ -456,13 +460,19 @@ def build_routing_plane_nearest_pop(
 ) -> RoutingPlane:
     """Assemble a full nearest-PoP baseline :class:`RoutingPlane`.
 
-    Composes :func:`build_cell_to_pop_nearest` (static geographic
-    assignment) with :func:`build_satellite_fibs` (per-sat FIB derived
-    from the Dijkstra output inside ``snapshot.satellite``). Intended
-    to be called by :class:`NearestPoPController.compute_routing_plane`
-    — exposed here so other policies that reuse the baseline as a
-    fallback (e.g., warm-start for Progressive Filling) can call it
-    directly.
+    Composes the three controller-owned artifacts:
+
+        * :func:`build_cell_to_pop_nearest` — static geographic
+          cell → ranked PoP cascade.
+        * :func:`build_sat_path_table` — republishes Dijkstra output
+          as the data plane's ISL shortest-path artifact.
+        * :func:`build_pop_egress_table` — per-PoP precomputed downlink
+          candidates for the data plane to vectorise over.
+
+    Intended to be called by
+    :meth:`NearestPoPController.compute_routing_plane` — exposed here
+    so other policies that reuse the baseline (e.g., warm-start for
+    Progressive Filling) can call it directly.
     """
     cell_to_pop = build_cell_to_pop_nearest(
         cell_grid=cell_grid,
@@ -470,11 +480,12 @@ def build_routing_plane_nearest_pop(
         built_at=snapshot.time_s,
         version=version,
     )
-    per_sat_routing = precompute_per_sat_routing(snapshot)
-    sat_fibs = build_satellite_fibs(snapshot, per_sat_routing, version=version)
+    sat_paths = build_sat_path_table(snapshot, version=version)
+    pop_egress = build_pop_egress_table(snapshot, version=version)
     return RoutingPlane(
         cell_to_pop=cell_to_pop,
-        sat_fibs=MappingProxyType(sat_fibs),
+        sat_paths=sat_paths,
+        pop_egress=pop_egress,
         version=version,
         built_at=snapshot.time_s,
     )

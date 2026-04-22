@@ -1,10 +1,15 @@
 """Data plane: flow-level PoP selection + delay computation.
 
-**RoutingPlaneForward**: controller pre-commits a per-(cell, dest)
-ranked PoP cascade and per-satellite FIBs; the data plane walks
-the cascade × top-K sats per PoP and picks the first feasible
-egress against the per-Ka-feeder capacity tracked in
-:class:`UsageBook`.
+**RoutingPlaneForward**: the controller pre-commits a per-(cell, dest)
+ranked PoP cascade plus two sat-level routing artifacts
+(:class:`SatPathTable` for ISL RTTs / predecessors and
+:class:`PopEgressTable` for per-PoP downlink candidates). The data
+plane reads those artifacts through the routing plane — it no longer
+touches ``snapshot.satellite.delay_matrix`` /
+``predecessor_matrix`` / ``gateway_attachments`` directly on the hot
+path. What it still owns at runtime: ingress resolution from user
+visibility, per-flow load-aware option picking, and the per-hop
+queuing/loss measurement against the current :class:`UsageBook`.
 
 Three-phase :class:`ForwardStrategy` (since the 2026-04-17 audit):
 
@@ -38,8 +43,10 @@ from __future__ import annotations
 import logging
 import math
 import random as _random
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import numpy as np
@@ -133,6 +140,12 @@ def compute_egress_options(
     """Top-K (egress_sat, gs, path) options to reach ``pop_code`` from
     ``ingress``, ranked ascending by sat-segment RTT.
 
+    Controller-side helper. After the routing-plane refactor the data
+    plane consumes :class:`PopEgressTable` + :class:`SatPathTable` from
+    the plane and no longer calls this function; it remains here as
+    the planner's egress-enumeration primitive (used by
+    :class:`ProgressiveController`'s per-(cell, pop) capacity check).
+
     Enumerates every ``(gs, sat)`` pair such that ``gs`` is attached
     to ``pop_code`` and ``sat`` is a visible egress for ``gs``,
     computes the round-trip cost ``ISL + downlink + backhaul``, sorts
@@ -142,12 +155,6 @@ def compute_egress_options(
     ``ground_rtt`` is set to 0 here; the caller fills it from the
     ground-delay estimator (which depends on the destination, not
     the route).
-
-    Used by :meth:`RoutingPlaneForward.decide` to enumerate
-    alternates for the per-sat-feeder reroute path. Cached per
-    ``(ingress, pop)`` inside ``RoutingPlaneForward`` because the
-    work is identical across all flows that share that pair within
-    one epoch.
 
     ``path_walker`` lets the caller supply a memoized ``_walk_isl_path``
     — the same ``(ingress, egress)`` pair is walked by every ``(pop)``
@@ -370,10 +377,16 @@ class ForwardStrategy(Protocol):
 
     def measure(
         self, decision: PathDecision, chosen: EgressOption,
-        snapshot: NetworkSnapshot,
+        snapshot: NetworkSnapshot, *, ground_rtt_truth: float | None,
     ) -> ResolvedFlow:
         """Compute per-link queuing/loss/bottleneck for ``chosen``
         using the *current* :class:`UsageBook` state.
+
+        ``ground_rtt_truth`` is the :class:`GroundTruth` sample for
+        the chosen ``(pop_code, dst, epoch)``. Implementations use it
+        as the realized ground RTT instead of the decide-time prior;
+        when ``None`` (no truth source configured, e.g. in unit
+        tests), fall back to ``chosen.ground_rtt``.
 
         :func:`realize` calls this in pass 2 after every flow has
         been charged, so every measurement reflects the steady-state
@@ -434,6 +447,17 @@ def realize(
 
     pending: list[tuple[FlowKey, float, PathDecision, EgressOption]] = []
 
+    # Cumulative phase timers. ``perf_counter`` is ~50 ns per call; at
+    # ~10⁵ flows/epoch the per-phase bracketing overhead is <10 ms,
+    # well under the per-realize budget. Local aliases keep the inner
+    # loop free of attribute lookups.
+    _perf = time.perf_counter
+    t_total_start = _perf()
+    ingress_s = 0.0
+    decide_s = 0.0
+    charge_s = 0.0
+    measure_s = 0.0
+
     # ── Pass 1: decide + charge ──
     for flow_key, flow_demand in demand.flows.items():
         total_demand += flow_demand
@@ -444,6 +468,7 @@ def realize(
 
         src_name = flow_key.src
         if src_name not in _uplink_cache:
+            t0 = _perf()
             if src_name not in _visible_cache:
                 _visible_cache[src_name] = _access.compute_access(
                     src_ep.lat_deg, src_ep.lon_deg, 0.0, sat.positions,
@@ -457,25 +482,56 @@ def realize(
                 )
                 if visible else None
             )
+            ingress_s += _perf() - t0
         uplink = _uplink_cache[src_name]
         if uplink is None:
             continue
 
+        t0 = _perf()
         decision = strategy.decide(
             flow_key, src_ep, uplink.sat_id, uplink,
             snapshot, context, demand.epoch,
         )
+        decide_s += _perf() - t0
         if decision is None:
             continue
 
+        t0 = _perf()
         chosen = strategy.charge(decision, flow_demand)
+        charge_s += _perf() - t0
         pending.append((flow_key, flow_demand, decision, chosen))
 
     # ── Pass 2: measure with final loads + emit outcomes ──
+    # ``ground_truth`` (when present on the context) is sampled per
+    # chosen (pop, dst) at the current epoch to produce the realized
+    # ground RTT that the data plane reports. When absent (test
+    # fixtures without a truth source) measure falls back to the
+    # decide-time ground RTT. The planner's prior/stats are NEVER
+    # read here — the data plane's output is truth, and feedback is
+    # what ties truth back into the planner's knowledge.
+    truth = getattr(context, "ground_truth", None)
     outcomes: list[FlowOutcome] = []
     routed_demand = 0.0
     for flow_key, flow_demand, decision, chosen in pending:
-        resolved = strategy.measure(decision, chosen, snapshot)
+        t0 = _perf()
+        truth_rtt: float | None
+        if truth is not None:
+            try:
+                # ``flow_key.src`` is the flow identity axis — two
+                # flows with the same ``(pop, dst)`` but different
+                # sources get independent draws; the same flow
+                # reproduces across runs with the same ``seed_base``.
+                truth_rtt = truth.sample(
+                    chosen.pop_code, flow_key.dst, demand.epoch, flow_key.src,
+                )
+            except KeyError:
+                truth_rtt = None
+        else:
+            truth_rtt = None
+        resolved = strategy.measure(
+            decision, chosen, snapshot, ground_rtt_truth=truth_rtt,
+        )
+        measure_s += _perf() - t0
         total_rtt = resolved.satellite_rtt + resolved.ground_rtt
         eff_tput = effective_throughput(
             flow_demand, total_rtt,
@@ -500,12 +556,22 @@ def realize(
         ))
         routed_demand += flow_demand
 
+    total_s = _perf() - t_total_start
+    forward_timing = MappingProxyType({
+        "total_ms": total_s * 1000.0,
+        "ingress_ms": ingress_s * 1000.0,
+        "decide_ms": decide_s * 1000.0,
+        "charge_ms": charge_s * 1000.0,
+        "measure_ms": measure_s * 1000.0,
+    })
+
     return EpochResult(
         epoch=demand.epoch,
         flow_outcomes=tuple(outcomes),
         total_demand_gbps=total_demand,
         routed_demand_gbps=routed_demand,
         unrouted_demand_gbps=total_demand - routed_demand,
+        forward_timing_ms=forward_timing,
     )
 
 
@@ -570,8 +636,8 @@ class RoutingPlaneForward:
         "_book", "_decision_cache", "_gf_perf_cache", "_grid",
         "_ground_rtt_by_dst", "_isl_perf_cache",
         "_k", "_max_cascade_pops", "_options_by_ingress",
-        "_path_cache", "_plane", "_pop_index_cache",
-        "_pred_row_cache", "_sf_perf_cache",
+        "_path_cache", "_plane", "_pop_egress", "_pred_row_cache",
+        "_sat_paths", "_sf_perf_cache",
     )
 
     def __init__(
@@ -585,6 +651,15 @@ class RoutingPlaneForward:
     ) -> None:
         del path_table  # legacy positional arg from the pre-multi-egress API
         self._plane = routing_plane
+        # Hold direct references to the two controller-built routing
+        # artifacts the data plane consumes. The hot path reads ISL
+        # RTTs + hop reconstruction from ``_sat_paths`` and per-PoP
+        # downlink candidate tables from ``_pop_egress``; it never
+        # reaches back into ``snapshot.satellite`` on the forwarding
+        # path. Stored on the instance so inner loops don't pay an
+        # extra ``self._plane.X`` traversal per call.
+        self._sat_paths = routing_plane.sat_paths
+        self._pop_egress = routing_plane.pop_egress
         self._grid = cell_grid
         self._book = usage_book
         self._k = k
@@ -630,20 +705,11 @@ class RoutingPlaneForward:
         self._isl_perf_cache: dict[tuple[int, int], LinkPerformance] = {}
         self._sf_perf_cache: dict[int, LinkPerformance] = {}
         self._gf_perf_cache: dict[str, LinkPerformance] = {}
-        # Per-PoP precomputed candidate arrays for the vectorized fast
-        # path in ``_options_for``. Built once per PoP on first use:
-        # (egress_sat_ids int32[m], base_cost float64[m] = 2·(downlink
-        # + backhaul), gs_ids tuple[str, m]). Reused for every ingress
-        # that targets this PoP — cut the 950 k-per-epoch
-        # ``math.isfinite`` + ``float(delay_matrix[...])`` loop down to
-        # one numpy vector op per (ingress, pop).
-        self._pop_index_cache: dict[
-            str, tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]
-        ] = {}
-        # Per-realize predecessor-row cache: ``pred[ingress].tolist()``
-        # for each unique ingress. Lets ``_walk_isl_path_row`` index
-        # native Python lists instead of numpy scalars (~2× faster per
-        # hop at ~2.5 M hops/epoch).
+        # Per-realize predecessor-row cache: controller hands us the
+        # numpy row via ``sat_paths.pred_row``; we memoise its
+        # ``.tolist()`` form because native Python list indexing is
+        # ~2× faster per hop than numpy-scalar access at 2.5 M
+        # hops/epoch.
         self._pred_row_cache: dict[int, list[int]] = {}
         # Two-level caches keyed on the loop-invariant (``ingress`` /
         # ``dst``). decide()'s 48-PoP cascade runs ~1.4 M times per
@@ -655,9 +721,7 @@ class RoutingPlaneForward:
         ] = {}
         self._ground_rtt_by_dst: dict[str, dict[str, float]] = {}
 
-    def _pred_row_for(
-        self, ingress: int, snapshot: NetworkSnapshot,
-    ) -> list[int]:
+    def _pred_row_for(self, ingress: int) -> list[int]:
         """Return ``pred[ingress]`` as a Python list, cached per realize.
 
         Materialising the row once and sharing it across every walker
@@ -665,52 +729,16 @@ class RoutingPlaneForward:
         (~100 µs for a 4 k-wide row) against 10–100 walks per
         ingress; the alternative — reading ``pred[src, cur]`` as a
         numpy scalar on every hop — is ~2× slower per access and
-        dominates at 2.5 M hops/epoch."""
+        dominates at 2.5 M hops/epoch.
+
+        The source row comes from :attr:`_sat_paths`, the controller's
+        sat-path artifact, so the data plane is never touching
+        ``snapshot.satellite.predecessor_matrix`` directly."""
         row = self._pred_row_cache.get(ingress)
         if row is None:
-            row = snapshot.satellite.predecessor_matrix[ingress].tolist()
+            row = self._sat_paths.pred_row(ingress).tolist()
             self._pred_row_cache[ingress] = row
         return row
-
-    def _pop_candidate_arrays(
-        self, pop_code: str, snapshot: NetworkSnapshot,
-    ) -> tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]:
-        """Per-PoP static candidate table: ``(egress_sat_ids,
-        base_cost, gs_ids)`` flattened across every GS on this PoP.
-
-        ``base_cost`` already includes ``2·downlink + 2·backhaul``
-        for each sat candidate, so computing the full round-trip cost
-        from a given ingress is one vectorised add after the ISL-RTT
-        lookup. Built lazily per PoP and shared across every ingress
-        that touches this PoP — all per-ingress cost differences come
-        from the ISL column only."""
-        cached = self._pop_index_cache.get(pop_code)
-        if cached is not None:
-            return cached
-        sat = snapshot.satellite
-        infra = snapshot.infra
-        attach = sat.gateway_attachments.attachments
-        egress_list: list[int] = []
-        base_list: list[float] = []
-        gs_list: list[str] = []
-        for gs_id, backhaul_oneway in infra.pop_gs_edges(pop_code):
-            if infra.gs_by_id(gs_id) is None:
-                continue
-            gs_links = attach.get(gs_id)
-            if not gs_links:
-                continue
-            backhaul_rtt = backhaul_oneway * 2.0
-            for link in gs_links:
-                egress_list.append(link.sat_id)
-                base_list.append(link.delay * 2.0 + backhaul_rtt)
-                gs_list.append(gs_id)
-        result = (
-            np.asarray(egress_list, dtype=np.int32),
-            np.asarray(base_list, dtype=np.float64),
-            tuple(gs_list),
-        )
-        self._pop_index_cache[pop_code] = result
-        return result
 
     def _options_for(
         self,
@@ -722,16 +750,19 @@ class RoutingPlaneForward:
     ) -> tuple[EgressOption, ...]:
         """Top-K enriched egress options for ``(ingress, pop_code)``.
 
-        Fast path: numpy-vectorises the per-candidate cost over the
-        precomputed PoP candidate table, then only walks ISL paths
-        for the ≤ K survivors. Replaces the former
-        :func:`compute_egress_options` call whose Python-level inner
-        loop dominated decide() profiles at production scale.
+        Pulls the per-PoP downlink candidates from the controller-built
+        :class:`PopEgressTable`, then vectorises the per-candidate
+        ISL RTT against the per-ingress row from :class:`SatPathTable`
+        and takes the top-K survivors. The snapshot parameter is kept
+        only so the ``ForwardStrategy.decide`` signature remains
+        compatible for test subclasses; this method itself no longer
+        touches ``snapshot.satellite``.
 
         ``opts_by_pop`` lets decide() pass the already-resolved
         per-ingress sub-dict so we skip the outer
         ``_options_by_ingress[ingress]`` lookup per call; external
         callers can omit it and we resolve it here."""
+        del snapshot  # routing inputs all come from the plane now
         if opts_by_pop is None:
             opts_by_pop = self._options_by_ingress.get(ingress)
             if opts_by_pop is None:
@@ -740,13 +771,11 @@ class RoutingPlaneForward:
         cached = opts_by_pop.get(pop_code)
         if cached is not None:
             return cached
-        egress_ids, base_cost, gs_ids = self._pop_candidate_arrays(
-            pop_code, snapshot,
-        )
+        egress_ids, base_cost, gs_ids = self._pop_egress.for_pop(pop_code)
         if egress_ids.size == 0:
             opts_by_pop[pop_code] = ()
             return ()
-        delay_row = snapshot.satellite.delay_matrix[ingress]
+        delay_row = self._sat_paths.delay_row(ingress)
         # One-way ISL from ingress to every candidate egress. Numpy
         # fancy-indexes in one pass rather than 950 k scalar reads.
         cost = delay_row[egress_ids] * 2.0 + base_cost
@@ -767,7 +796,7 @@ class RoutingPlaneForward:
             order_local = np.argsort(valid_cost)
         top_idx = valid_idx[order_local]
         path_cache = self._path_cache
-        pred_row = self._pred_row_for(ingress, snapshot)
+        pred_row = self._pred_row_for(ingress)
         options: list[EgressOption] = []
         for pos in top_idx:
             i = int(pos)
@@ -959,8 +988,11 @@ class RoutingPlaneForward:
         decision: PathDecision,
         chosen: EgressOption,
         snapshot: NetworkSnapshot,
+        *,
+        ground_rtt_truth: float | None = None,
     ) -> ResolvedFlow:
-        sat = snapshot.satellite
+        del snapshot  # per-hop propagation comes from the plane's sat-path table
+        sat_paths = self._sat_paths
         book = self._book
         view = book.view
         isl_cache = self._isl_perf_cache
@@ -983,7 +1015,7 @@ class RoutingPlaneForward:
                 isl_cap = view.isl_cap(a, b)
                 isl_load = book.isl_used.get(book.isl_key(a, b), 0.0)
                 perf = link_performance(
-                    float(sat.delay_matrix[a, b]), isl_cap, isl_load,
+                    sat_paths.isl_delay(a, b), isl_cap, isl_load,
                 )
                 isl_cache[key] = perf
             total_queuing_oneway += perf.queuing_ms
@@ -1019,13 +1051,22 @@ class RoutingPlaneForward:
         transmission_rtt = total_tx_oneway * 2
         satellite_rtt = chosen.propagation_rtt + queuing_rtt + transmission_rtt
 
+        # Ground RTT reported back to the outer realize loop is the
+        # truth sample when available, the planner's decide-time
+        # ground_rtt otherwise. Feedback consumes the emitted value
+        # to update learned stats, so handing it truth here is what
+        # closes the "measure-truth, learn-truth-into-knowledge" loop.
+        ground_rtt = (
+            ground_rtt_truth if ground_rtt_truth is not None else chosen.ground_rtt
+        )
+
         return ResolvedFlow(
             pop_code=chosen.pop_code,
             gs_id=gs_id,
             user_sat=decision.user_sat,
             egress_sat=egress_sat,
             satellite_rtt=satellite_rtt,
-            ground_rtt=chosen.ground_rtt,
+            ground_rtt=ground_rtt,
             propagation_rtt=chosen.propagation_rtt,
             queuing_rtt=queuing_rtt,
             transmission_rtt=transmission_rtt,

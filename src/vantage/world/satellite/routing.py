@@ -6,12 +6,10 @@ for on-demand path reconstruction. Default backend uses networkx Dijkstra.
 The RoutingComputer Protocol allows plugging in alternative backends
 (e.g., native C++ Dijkstra, GPU-accelerated Floyd-Warshall).
 
-The :func:`first_hop_on_path` helper reconstructs the first ISL hop
-of a shortest path from ``src`` to ``dst`` by walking *backwards*
-through the predecessor matrix. This is the primitive used by the
-FIB builder in :mod:`vantage.control.policy.common.fib_builder` to
-turn an all-pairs routing result into per-satellite forwarding
-entries.
+The data plane reconstructs ISL hop sequences via
+:func:`vantage.forward._walk_isl_path_row` against the predecessor
+rows exposed through :class:`vantage.domain.SatPathTable` (which the
+controller builds from the snapshot each refresh).
 """
 
 from __future__ import annotations
@@ -68,63 +66,6 @@ class RoutingComputer(Protocol):
     """
 
     def __call__(self, graph: ISLGraph) -> RoutingResult: ...
-
-
-def first_hop_on_path(
-    predecessor_matrix: NDArray[np.int32],
-    src: int,
-    dst: int,
-) -> int:
-    """Return the first ISL hop on the shortest path from ``src`` to ``dst``.
-
-    ``predecessor_matrix[s, t]`` stores the *predecessor of t* on the
-    shortest path from ``s`` — i.e., the second-to-last node. To find
-    the *first* hop out of ``src``, we walk backwards from ``dst``:
-    keep stepping to ``predecessor_matrix[src, current]`` until that
-    predecessor equals ``src`` itself, at which point ``current`` is
-    the first hop we were looking for.
-
-    Special cases:
-
-    * ``src == dst``  → returns ``src`` (the path has length 0, no hop).
-    * ``predecessor == -1`` at any step → returns ``-1`` (unreachable).
-    * ``src`` is its own predecessor in the diagonal entry (by the
-      current :func:`compute_all_pairs` contract), which terminates
-      the walk correctly on the one-hop case.
-
-    Complexity: O(path length), dominated by number of ISL hops.
-    For Starlink-scale routes (≤10 hops end-to-end) this is trivial
-    and does not warrant vectorization.
-
-    Args:
-        predecessor_matrix: All-pairs predecessor matrix (int32) from
-            a :class:`RoutingResult`. Shape ``(n_sats, n_sats)``.
-        src: Source satellite id (row index).
-        dst: Destination satellite id (column index).
-
-    Returns:
-        The id of the next-hop satellite out of ``src`` toward ``dst``,
-        ``src`` itself if ``src == dst``, or ``-1`` if unreachable.
-    """
-    if src == dst:
-        return src
-    current = dst
-    # Walk backwards through predecessors until the predecessor equals src.
-    # Bound the loop by the matrix dimension so a malformed predecessor
-    # matrix can't spin forever.
-    max_hops = predecessor_matrix.shape[0]
-    for _ in range(max_hops):
-        prev = int(predecessor_matrix[src, current])
-        if prev < 0:
-            return -1
-        if prev == src:
-            return current
-        current = prev
-    # Malformed matrix — a cycle that doesn't terminate at src.
-    raise ValueError(
-        f"first_hop_on_path did not terminate for src={src}, dst={dst}; "
-        f"predecessor matrix may contain a cycle"
-    )
 
 
 def compute_all_pairs(graph: ISLGraph) -> RoutingResult:

@@ -5,7 +5,9 @@ All delay/RTT values in ms. Bandwidth values in Gbps.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from vantage.domain.traffic import FlowKey
 
@@ -36,6 +38,9 @@ class FlowOutcome:
     effective_throughput_gbps: float = 0.0  # demand × (1−loss), capped by bottleneck
 
 
+_EMPTY_TIMING: Mapping[str, float] = MappingProxyType({})
+
+
 @dataclass(frozen=True, slots=True)
 class EpochResult:
     """Complete forwarding result for one epoch."""
@@ -45,3 +50,11 @@ class EpochResult:
     total_demand_gbps: float
     routed_demand_gbps: float
     unrouted_demand_gbps: float
+    # Per-phase wall-clock timings (ms) for the forwarding pipeline of
+    # this epoch. Always carries ``total_ms`` + the four realize()
+    # phases ``ingress_ms`` / ``decide_ms`` / ``charge_ms`` /
+    # ``measure_ms``; empty when a caller constructs an
+    # :class:`EpochResult` outside :func:`vantage.forward.realize`.
+    forward_timing_ms: Mapping[str, float] = field(
+        default_factory=lambda: _EMPTY_TIMING,
+    )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+import numpy as np
+
 from vantage.domain import (
     AccessLink,
     CapacityView,
@@ -10,7 +12,9 @@ from vantage.domain import (
     CellToPopTable,
     Endpoint,
     FlowKey,
+    PopEgressTable,
     RoutingPlane,
+    SatPathTable,
     UsageBook,
 )
 from vantage.engine.context import RunContext
@@ -53,6 +57,35 @@ class _FakeRoutingPlaneForward(RoutingPlaneForward):
         )
 
 
+def _empty_sat_paths(n_sats: int = 1) -> SatPathTable:
+    """Minimal valid :class:`SatPathTable` stub for tests.
+
+    ``_FakeRoutingPlaneForward`` overrides ``_options_for`` so the data
+    plane never dereferences these arrays, but ``SatPathTable`` still
+    validates that both matrices are square and same-shape, so we
+    produce a 1×1 pair. ``delay_matrix`` diagonal is 0 and the
+    predecessor diagonal is the identity — the Dijkstra convention.
+    """
+    delay = np.zeros((n_sats, n_sats), dtype=np.float64)
+    pred = np.arange(n_sats, dtype=np.int32).reshape(1, n_sats).repeat(n_sats, axis=0)
+    return SatPathTable(
+        delay_matrix=delay, predecessor_matrix=pred,
+        version=0, built_at=0.0,
+    )
+
+
+def _empty_pop_egress() -> PopEgressTable:
+    """Minimal :class:`PopEgressTable` with no candidates.
+
+    ``_FakeRoutingPlaneForward._options_for`` returns fabricated
+    options, so the table is never queried in the data path. An
+    empty mapping is the simplest valid construction.
+    """
+    return PopEgressTable(
+        candidates=MappingProxyType({}), version=0, built_at=0.0,
+    )
+
+
 def _make_forward() -> RoutingPlaneForward:
     cell_id = 101
     grid = CellGrid(
@@ -65,7 +98,8 @@ def _make_forward() -> RoutingPlaneForward:
             version=0,
             built_at=0.0,
         ),
-        sat_fibs=MappingProxyType({}),
+        sat_paths=_empty_sat_paths(),
+        pop_egress=_empty_pop_egress(),
         version=0,
         built_at=0.0,
     )

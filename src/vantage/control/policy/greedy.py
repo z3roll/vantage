@@ -36,17 +36,19 @@ PoPs); fast enough for the 15 s control-plane refresh budget.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
-    build_satellite_fibs,
+    build_pop_egress_table,
+    build_sat_path_table,
     compute_cell_ingress,
     compute_cell_sat_cost,
     rank_pops_by_e2e,
 )
-from vantage.control.policy.common.sat_cost import precompute_per_sat_routing
 from vantage.domain import (
     CellGrid,
     CellToPopTable,
@@ -65,10 +67,33 @@ _log = logging.getLogger(__name__)
 class ProgressiveController:
     """E2E-aware PoP selection with Progressive Filling."""
 
+    # Defaults for the GK-score composition used at rank time
+    # (``mu + lambda_dev · dev + stale_per_epoch_ms · staleness``).
+    #
+    #   * ``lambda_dev = 1.0`` adds one full within-epoch stddev to
+    #     the cost of a pair. Two PoPs with the same expected mean
+    #     RTT but one with +4 ms stddev shows up as +4 ms worse in
+    #     ranking — enough to push flows toward the steadier route
+    #     when the alternative is equally fast on average.
+    #   * ``stale_per_epoch_ms = 0.05`` adds 0.05 ms per epoch since
+    #     the pair was last observed. At a 15-epoch plan cadence a
+    #     just-stale pair costs +0.75 ms; a pair that's gone 600
+    #     epochs (10 min at 1-epoch-per-second) without any realised
+    #     flow costs +30 ms, which is large enough to deprioritise
+    #     it relative to PoPs the planner keeps validating.
+    #   * Prior-only entries (``last_epoch = -1``) are exempt — the
+    #     planner treats priors as "not stale in the same sense as a
+    #     rotted measurement"; see :meth:`GroundKnowledge.score`.
+    _DEFAULT_LAMBDA_DEV: float = 1.0
+    _DEFAULT_STALE_PER_EPOCH_MS: float = 0.05
+
     def __init__(
         self,
         ground_knowledge: GroundKnowledge | None = None,
         dest_names: tuple[str, ...] = (),
+        *,
+        score_lambda_dev: float = _DEFAULT_LAMBDA_DEV,
+        score_stale_per_epoch_ms: float = _DEFAULT_STALE_PER_EPOCH_MS,
     ) -> None:
         self._gk = ground_knowledge or GroundKnowledge()
         self._dest_names = dest_names
@@ -78,10 +103,22 @@ class ProgressiveController:
         # `resolve_dest_names` and fires once per controller if a
         # `compute_routing_plane` call actually finds no destinations.
         self._warned_no_dests = False
+        self._score_lambda_dev = float(score_lambda_dev)
+        self._score_stale_per_epoch_ms = float(score_stale_per_epoch_ms)
+        # Per-step wall-clock timings (ms) for the most recent
+        # ``compute_routing_plane`` invocation. ``run.py`` reads this
+        # after a refresh to export per-step breakdowns to the
+        # dashboard. Empty until the first call.
+        self._last_timing: Mapping[str, float] = MappingProxyType({})
 
     @property
     def ground_knowledge(self) -> GroundKnowledge:
         return self._gk
+
+    @property
+    def last_timing(self) -> Mapping[str, float]:
+        """Step timings (ms) from the most recent plan build."""
+        return self._last_timing
 
     def resolve_dest_names(self) -> tuple[str, ...]:
         """Pick the destination set to plan against right now.
@@ -107,44 +144,59 @@ class ProgressiveController:
             self._warned_no_dests = True
         return derived
 
-    def _ground_cost(self, pop_code: str, dest: str) -> float | None:
-        """Resolve ground RTT for ``(pop_code, dest)`` from GK cache."""
-        return self._gk.get(pop_code, dest)
+    def _make_ground_cost(
+        self, *, current_epoch: int,
+    ) -> "Callable[[str, str], float | None]":
+        """Build the ``(pop, dest) → cost_ms`` function used for this plan.
 
-    def _prime_ground_knowledge(
-        self, snapshot: NetworkSnapshot, dest_names: Iterable[str],
-    ) -> None:
-        """Populate GK with an estimated RTT for every (pop, dest)
-        pair not already cached.
+        Bound to ``current_epoch`` so the staleness penalty reflects
+        how long ago each pair was last observed, measured against
+        the epoch we're planning *for* (typically the ``version``
+        argument of :meth:`compute_routing_plane`, which is wired to
+        the current epoch in ``run.py``).
 
-        Without this pre-population the cache-only ``_ground_cost``
-        starves the planner during cold-start: feedback only records
-        PoPs that flows actually routed through (= the geographic
-        nearest tier), so remote PoPs never get cache entries and PG
-        can't rank them. A PG plan with only 2–3 rankable PoPs is
-        worse than baseline — it emits a short cascade that strictly
-        shrinks the data plane's fallback chain.
+        Behaviour:
 
-        The bootstrap fills every reachable (pop, dest) pair with an
-        estimator-derived RTT (``GeographicGroundDelay`` = haversine
-        + fiber detour). ``GroundDelayFeedback.observe`` then refines
-        those bootstrap values into real measurements via EWMA as
-        flows route through each pair over time. Already-cached
-        pairs are left untouched — never overwrite a real
-        measurement with an estimate.
+        1. If :meth:`GroundKnowledge.score` returns a value — i.e. a
+           learned stat exists for the pair — that score is used.
+           It composes ``mu_ms + λ·dev_ms + stale_per_epoch·Δepoch``,
+           so noisy/stale pairs cost more than calm/fresh pairs with
+           the same mean.
+        2. Otherwise fall back to the deterministic estimator
+           (``estimator.estimate(pop, dest) * 2`` — one-way → RTT).
+           This keeps PoPs that have never been observed rankable
+           without inflating their score artificially.
+        3. If neither is available return ``None`` so
+           :func:`rank_pops_by_e2e` drops the pair from the ranking.
+
+        Returning a closure (rather than folding ``score`` directly
+        into :func:`rank_pops_by_e2e` / :func:`_progressive_filling`)
+        keeps both helpers' ``(pop, dest) → float | None`` contract
+        unchanged — the scoring knob lives entirely inside the
+        controller.
         """
-        estimator = self._gk.estimator
-        if estimator is None:
-            return
-        for pop in snapshot.infra.pops:
-            for dest in dest_names:
-                if self._gk.get(pop.code, dest) is not None:
-                    continue
-                try:
-                    rtt = estimator.estimate(pop.code, dest) * 2
-                except KeyError:
-                    continue
-                self._gk.put(pop.code, dest, rtt)
+        gk = self._gk
+        estimator = gk.estimator
+        lambda_dev = self._score_lambda_dev
+        stale_per_epoch_ms = self._score_stale_per_epoch_ms
+
+        def cost(pop_code: str, dest: str) -> float | None:
+            scored = gk.score(
+                pop_code, dest,
+                current_epoch=current_epoch,
+                lambda_dev=lambda_dev,
+                stale_per_epoch_ms=stale_per_epoch_ms,
+            )
+            if scored is not None:
+                return scored
+            if estimator is None:
+                return None
+            try:
+                return estimator.estimate(pop_code, dest) * 2
+            except KeyError:
+                return None
+
+        return cost
 
     def compute_routing_plane(
         self,
@@ -157,13 +209,24 @@ class ProgressiveController:
     ) -> RoutingPlane:
         pops = snapshot.infra.pops
         dest_names = self.resolve_dest_names()
+        perf = time.perf_counter
 
-        # 0. Bootstrap GK: ensure every (pop, dest) pair has at least
-        # an estimator-derived RTT so the planner can rank ALL PoPs
-        # from epoch 0, not just the handful feedback has observed.
-        # Real measurements overwrite the estimates via EWMA as
-        # GroundDelayFeedback ticks.
-        self._prime_ground_knowledge(snapshot, dest_names)
+        # Pre-refactor there was a 0-th ``_prime_ground_knowledge``
+        # step here that filled GK with estimator-derived RTTs so the
+        # cache-only ground cost could rank every PoP from epoch 0.
+        # The current ground-cost closure falls back to the estimator
+        # directly on a miss, so the bootstrap is redundant.
+        t0 = perf()
+        t_prime = t0  # retained so the timing report below keeps a
+                       # "prime_gk_ms" field valued at 0.
+
+        # Build a scoring closure bound to ``version`` (= current
+        # epoch at plan build time) so :func:`rank_pops_by_e2e` and
+        # :func:`_progressive_filling` share the same cost accounting
+        # — same mean + noise + staleness penalty on both the
+        # baseline side and the alternates side of the improvement
+        # delta.
+        ground_cost = self._make_ground_cost(current_epoch=int(version))
 
         # 1. Baseline: nearest PoP per cell. Used as both the data-plane
         #    fallback for cells without overrides AND the reference
@@ -172,17 +235,20 @@ class ProgressiveController:
             cell_grid=cell_grid, pops=pops,
             built_at=snapshot.time_s, version=version,
         )
+        t_baseline = perf()
 
         # 2. Rank all reachable PoPs per (cell, dest) by E2E cost.
         cell_sat_cost = compute_cell_sat_cost(snapshot, cell_grid)
+        t_cell_sat = perf()
         rankings = rank_pops_by_e2e(
             cell_grid=cell_grid,
             pops=pops,
             baseline=baseline,
             cell_sat_cost=cell_sat_cost,
-            ground_cost_fn=self._ground_cost,
+            ground_cost_fn=ground_cost,
             dest_names=dest_names,
         )
+        t_rankings = perf()
 
         # 3. Improvement-first greedy assignment with per-sat-feeder
         # capacity tracking. The egress-sat callback tells
@@ -194,16 +260,18 @@ class ProgressiveController:
         # if the controller's plan proves wrong at realize time.
         cell_ingress = compute_cell_ingress(snapshot, cell_grid)
         cell_pop_egress = _build_egress_resolver(snapshot, cell_ingress)
+        t_cell_ingress = perf()
         assignments = _progressive_filling(
             rankings=rankings,
             baseline=baseline,
             cell_grid=cell_grid,
             cell_sat_cost=cell_sat_cost,
-            ground_cost_fn=self._ground_cost,
+            ground_cost_fn=ground_cost,
             cell_pop_egress=cell_pop_egress,
             demand_per_pair=demand_per_pair or {},
             sat_feeder_cap_gbps=sat_feeder_cap_gbps,
         )
+        t_progressive = perf()
 
         # 4. Assemble RoutingPlane. Emit a per_dest cascade for
         # *every* (cell, dest) the controller has rankings for —
@@ -240,11 +308,31 @@ class ProgressiveController:
             built_at=snapshot.time_s,
             per_dest=MappingProxyType(per_dest_overrides),
         )
-        per_sat = precompute_per_sat_routing(snapshot)
-        sat_fibs = build_satellite_fibs(snapshot, per_sat, version=version)
+        t_assemble = perf()
+        sat_paths = build_sat_path_table(snapshot, version=version)
+        t_sat_paths = perf()
+        pop_egress = build_pop_egress_table(snapshot, version=version)
+        t_pop_egress = perf()
+
+        # Cascade-assembly cost (between progressive-fill and
+        # sat_paths) is folded into ``progressive_fill_ms`` since it
+        # is part of finalising PG's PoP assignment, not part of the
+        # sat-path table build.
+        self._last_timing = MappingProxyType({
+            "prime_gk_ms": (t_prime - t0) * 1000.0,
+            "baseline_ms": (t_baseline - t_prime) * 1000.0,
+            "cell_sat_cost_ms": (t_cell_sat - t_baseline) * 1000.0,
+            "rankings_ms": (t_rankings - t_cell_sat) * 1000.0,
+            "cell_ingress_ms": (t_cell_ingress - t_rankings) * 1000.0,
+            "progressive_fill_ms": (t_assemble - t_cell_ingress) * 1000.0,
+            "sat_paths_ms": (t_sat_paths - t_assemble) * 1000.0,
+            "pop_egress_ms": (t_pop_egress - t_sat_paths) * 1000.0,
+        })
+
         return RoutingPlane(
             cell_to_pop=cell_to_pop,
-            sat_fibs=MappingProxyType(sat_fibs),
+            sat_paths=sat_paths,
+            pop_egress=pop_egress,
             version=version,
             built_at=snapshot.time_s,
         )

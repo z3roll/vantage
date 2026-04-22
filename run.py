@@ -36,7 +36,12 @@ from vantage.engine.context import RunContext
 from vantage.engine.feedback import GroundDelayFeedback
 from vantage.forward import RoutingPlaneForward, realize
 from vantage.traffic import EndpointPopulation, FlowLevelGenerator
-from vantage.world.ground import GeographicGroundDelay, GroundInfrastructure, GroundKnowledge
+from vantage.world.ground import (
+    GeographicGroundDelay,
+    GroundInfrastructure,
+    GroundKnowledge,
+    GroundTruth,
+)
 from vantage.world.satellite import SatelliteSegment
 from vantage.world.satellite.constellation import XMLConstellationModel
 from vantage.world.satellite.topology import PlusGridTopology
@@ -70,6 +75,11 @@ def pct(data, p):
 def country_of(src_name: str) -> str:
     parts = src_name.split("_")
     return parts[1] if len(parts) >= 2 and parts[0] == "city" else "??"
+
+
+def _round_ms(d) -> dict:
+    """Round a ``{step → ms}`` mapping for JSON output (2 decimals)."""
+    return {k: round(float(v), 2) for k, v in d.items()}
 
 
 def start_dashboard_server(port: int, directory: Path) -> socketserver.TCPServer:
@@ -225,11 +235,17 @@ def main() -> None:
         LAND_GEOJSON, endpoints=[(e.name, e.lat_deg, e.lon_deg) for e in endpoints.values()],
         cache_path=CELL_CACHE,
     )
+    # Deterministic distance-based prior (one-way RTT, no RNG). Used
+    # only as a cold-start fallback by GroundKnowledge — the realized
+    # truth flows through the separate GroundTruth source below.
     geo_delay = GeographicGroundDelay(
         pop_coords={p.code: (p.lat_deg, p.lon_deg) for p in ground.pops},
         service_locations=dst_locs,
-        seed=ground_seed,
     )
+    # Epoch-varying truth. Centered on the prior, LogNormal jitter
+    # seeded by (run_seed → ground_seed, epoch, pop, dest), so BL and
+    # PG see identical truth for any given epoch within one run.
+    ground_truth = GroundTruth(prior=geo_delay, seed_base=ground_seed)
     gs_by_id = {gs.gs_id: gs for gs in world.ground_stations}
 
     snap0 = world.snapshot_at(0, 0.0)
@@ -488,10 +504,23 @@ def main() -> None:
         update_index(epochs_done=len(bl_data))
 
     # ── Setup both controllers ──────────────────────────────────────
+    # GroundKnowledge is per-controller (so each controller observes
+    # its own routed-flow feedback) but GroundTruth is shared — a
+    # single epoch produces identical truth regardless of which
+    # controller's data plane asked for it. Feedback is run on BOTH
+    # contexts so each controller's GK learns from the same truth
+    # samples its own forward pass produced.
     gk_bl = GroundKnowledge(estimator=geo_delay)
-    ctx_bl = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk_bl)
+    ctx_bl = RunContext(
+        world=world, endpoints=endpoints,
+        ground_knowledge=gk_bl, ground_truth=ground_truth,
+    )
     gk_pg = GroundKnowledge(estimator=geo_delay)
-    ctx_pg = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk_pg)
+    ctx_pg = RunContext(
+        world=world, endpoints=endpoints,
+        ground_knowledge=gk_pg, ground_truth=ground_truth,
+    )
+    feedback_bl = GroundDelayFeedback(gk_bl)
     feedback_pg = GroundDelayFeedback(gk_pg)
     # Single shared traffic generator: one stochastic source per epoch
     # for both BL and PG. Using two independent generators — even with
@@ -502,6 +531,10 @@ def main() -> None:
     traffic = FlowLevelGenerator(population, config_dir=DATA_DIR, epoch_interval_s=EPOCH_S,
                                  dst_weights=dst_weights, dst_locations=dst_locs,
                                  seed=traffic_seed)
+    # Controllers are held per-run (not re-constructed each refresh)
+    # so run.py can read each one's ``last_timing`` after a plan
+    # rebuild and export the per-step breakdown to the dashboard.
+    bl_controller = NearestPoPController()
     pg_controller = ProgressiveController(ground_knowledge=gk_pg, dest_names=tuple(svc_names))
 
     bl_plane = pg_plane = None
@@ -527,10 +560,12 @@ def main() -> None:
             gk_bl.set_clock(t); gk_pg.set_clock(t)
 
             bl_plan_ms: float | None = None
+            bl_plan_timing: dict = {}
             if bl_plane is None or epoch % REFRESH == 0:
                 t_bl_plan = time.perf_counter()
-                bl_plane = NearestPoPController().compute_routing_plane(snap, cell_grid, version=epoch)
+                bl_plane = bl_controller.compute_routing_plane(snap, cell_grid, version=epoch)
                 bl_plan_ms = (time.perf_counter() - t_bl_plan) * 1000
+                bl_plan_timing = dict(bl_controller.last_timing)
 
             view_bl = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_bl = UsageBook(view=view_bl)
@@ -542,10 +577,12 @@ def main() -> None:
                 snap, demand, ctx_bl,
                 ingress_seed_base=ingress_seed_base,
             )
+            feedback_bl.observe(result_bl)
 
             current_demand = {(fk.src, fk.dst): d for fk, d in demand.flows.items()}
 
             pg_plan_ms: float | None = None
+            pg_plan_timing: dict = {}
             if pg_plane is None or epoch % REFRESH == 0:
                 t_pg_plan = time.perf_counter()
                 pg_plane = pg_controller.compute_routing_plane(
@@ -555,6 +592,7 @@ def main() -> None:
                     version=epoch,
                 )
                 pg_plan_ms = (time.perf_counter() - t_pg_plan) * 1000
+                pg_plan_timing = dict(pg_controller.last_timing)
 
             view_pg = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_pg = UsageBook(view=view_pg)
@@ -576,6 +614,36 @@ def main() -> None:
             ep_cmp["time_str"] = bl_data[-1]["time_str"]
             ep_cmp["bl_plan_ms"] = round(bl_plan_ms, 2) if bl_plan_ms is not None else None
             ep_cmp["pg_plan_ms"] = round(pg_plan_ms, 2) if pg_plan_ms is not None else None
+            # Forward timing is always present (realize always runs).
+            # Plan timing breakdowns are empty on cached-plan epochs —
+            # callers reading the dashboard must treat missing keys as
+            # "not measured this epoch" rather than "zero cost".
+            bl_fwd = dict(result_bl.forward_timing_ms)
+            pg_fwd = dict(result_pg.forward_timing_ms)
+            bl_forward_ms = bl_fwd.get("total_ms", 0.0)
+            pg_forward_ms = pg_fwd.get("total_ms", 0.0)
+            bl_total_ms = (bl_plan_ms or 0.0) + bl_forward_ms
+            pg_total_ms = (pg_plan_ms or 0.0) + pg_forward_ms
+            ep_cmp["bl_forward_ms"] = round(bl_forward_ms, 2)
+            ep_cmp["pg_forward_ms"] = round(pg_forward_ms, 2)
+            ep_cmp["bl_total_ms"] = round(bl_total_ms, 2)
+            ep_cmp["pg_total_ms"] = round(pg_total_ms, 2)
+            ep_cmp["forward_total_ms"] = round(bl_forward_ms + pg_forward_ms, 2)
+            # Aggregated forward steps across BL + PG, restricted to
+            # keys present in both — the dashboard uses this for a
+            # combined drill-down chart so users can see where the
+            # realize() pipeline spends time per epoch.
+            forward_steps = {
+                k: bl_fwd[k] + pg_fwd[k]
+                for k in bl_fwd.keys() & pg_fwd.keys()
+            }
+            ep_cmp["timing"] = {
+                "bl_plan_steps": _round_ms(bl_plan_timing),
+                "pg_plan_steps": _round_ms(pg_plan_timing),
+                "bl_forward_steps": _round_ms(bl_fwd),
+                "pg_forward_steps": _round_ms(pg_fwd),
+                "forward_steps": _round_ms(forward_steps),
+            }
             compare_data.append(ep_cmp)
             save_data(bl_data, pg_data, bl_brk, pg_brk, pop_cmp, compare_data,
                       extract_cache_state(gk_pg))

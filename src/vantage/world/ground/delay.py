@@ -1,14 +1,18 @@
-"""Ground delay estimation: geographic (distance-based) model.
+"""Ground delay estimation — deterministic geographic prior.
 
-Single concrete implementation of the :class:`GroundDelay` protocol:
+Two concepts live here:
 
-    * :class:`GeographicGroundDelay` — estimates RTT from each PoP to
-      the nearest service node (loaded from
-      ``config/service_prefixes.json``). Never raises — always has an
-      estimate, falling back to a configurable default for unknown
-      services.
+    * :class:`GroundDelay` — Protocol for a one-way RTT lookup. The
+      contract is now "deterministic, stateless, no per-call jitter";
+      anything that wants realistic epoch-to-epoch variation goes
+      through :class:`vantage.world.ground.truth.GroundTruth` instead.
+    * :class:`GeographicGroundDelay` — the single concrete prior.
+      Returns ``base_ms + haversine_km(pop → nearest service node) ×
+      detour_factor / c_fiber`` as a **one-way RTT (ms)**. Falls
+      back to a configurable default for unknown services.
 
-All values are **one-way** RTT in milliseconds.
+Values do NOT change across runs or across calls. Reproducibility is
+free: the same ``(pop, dest)`` gives the same number forever.
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from pathlib import Path
 from typing import Protocol
 
 from vantage.common import C_FIBER_KM_S, haversine_km
-from vantage.common.seed import mix_seed
 
 __all__ = [
     "GeographicGroundDelay",
@@ -28,30 +31,29 @@ __all__ = [
 
 
 class GroundDelay(Protocol):
-    """Protocol for ground segment delay lookup (PoP → destination).
+    """Protocol for a deterministic one-way RTT lookup (PoP → destination).
 
-    Returns a one-way ground RTT in ms.  Raises :class:`KeyError` if
-    no estimate is available for the pair.
+    Returns a one-way ground RTT in ms. Raises :class:`KeyError` if
+    no estimate is available for the pair. Implementations must be
+    pure — the same input always returns the same output so the
+    planner can treat this as a fixed prior.
     """
 
     def estimate(self, pop_code: str, dest_name: str) -> float: ...
 
 
-# ---------------------------------------------------------------------------
-# GeographicGroundDelay (service location-based)
-# ---------------------------------------------------------------------------
-
-
 class GeographicGroundDelay:
-    """Estimate ground delay from PoP to nearest service node.
+    """Deterministic distance-based one-way RTT prior.
 
-    For each ``(pop, dest)`` pair, finds the closest node of that
-    service and returns ``haversine_distance × detour_factor / c_fiber``.
+    ``one_way_ms(pop, dest) = base_ms + min_distance_km · detour / c_fiber``
 
-    Data loaded from ``config/service_prefixes.json`` (service →
-    locations) and PoP coordinates from :class:`GroundInfrastructure`.
-
-    Falls back to a configurable default RTT for unknown services.
+    Previously this class sampled a LogNormal per ``(pop, dest)`` so
+    it doubled as both the cold-start prior AND the run-level truth.
+    That coupling made it impossible for the planner to learn from
+    observations without looking at the same RNG that produced the
+    "truth" it was trying to predict. The refactor pulls truth out
+    into :class:`vantage.world.ground.truth.GroundTruth`; this class
+    is now just a flat distance model.
     """
 
     def __init__(
@@ -61,73 +63,38 @@ class GeographicGroundDelay:
         *,
         detour_factor: float = 1.4,
         base_ms: float = 5.0,
-        jitter_sigma: float = 0.3,
         default_one_way_ms: float = 20.0,
-        seed: int = 42,
     ) -> None:
         self._pop_coords = pop_coords
         self._service_locs = service_locations
         self._detour = detour_factor
         self._base = base_ms
-        self._sigma = jitter_sigma
         self._default = default_one_way_ms
-        self._seed = int(seed)
-        # Per-(pop, dest) memoized sample. A given key is sampled at
-        # most once per estimator instance; the per-key seed is
-        # derived from ``(self._seed, pop, dest)`` via :func:`mix_seed`
-        # so that two callers (e.g. baseline vs. PG controllers) that
-        # visit the same key in different orders still see the same
-        # value — call-order can no longer perturb fairness. The
-        # sample still varies across runs because ``self._seed`` does.
-        self._samples: dict[tuple[str, str], float] = {}
-        # Pre-compute (pop, dest) → (mu, sigma) for LogNormal sampling
-        self._distributions: dict[tuple[str, str], tuple[float, float]] = {}
+        # Pre-compute one-way RTT for every ``(pop, dest)`` pair.
+        # Everything is a fixed function of the static inputs; no RNG.
+        self._one_way_ms: dict[tuple[str, str], float] = {}
         self._precompute()
 
     def _precompute(self) -> None:
-        """Build LogNormal(μ, σ) for every (pop, dest) pair.
-
-        median = base_ms + distance_delay  (base models routing/processing)
-        σ = jitter_sigma                    (models real-world variance)
-        """
-        import math
         for pop_code, (pop_lat, pop_lon) in self._pop_coords.items():
             for dest_name, locs in self._service_locs.items():
-                min_dist = min(
+                if not locs:
+                    continue
+                min_dist_km = min(
                     haversine_km(pop_lat, pop_lon, loc["lat"], loc["lon"])
                     for loc in locs
                 )
-                distance_ms = min_dist * self._detour / C_FIBER_KM_S * 1000.0
-                median = self._base + distance_ms
-                mu = math.log(max(0.1, median))
-                self._distributions[(pop_code, dest_name)] = (mu, self._sigma)
+                distance_ms = min_dist_km * self._detour / C_FIBER_KM_S * 1000.0
+                self._one_way_ms[(pop_code, dest_name)] = self._base + distance_ms
 
     def estimate(self, pop_code: str, dest_name: str) -> float:
-        """Sample one-way ground delay (ms) from LogNormal distribution.
+        """Return the deterministic one-way RTT (ms) for ``(pop, dest)``.
 
-        Memoized per ``(pop_code, dest_name)``: each key is sampled
-        once per instance using a local RNG seeded by
-        :func:`mix_seed(self._seed, pop_code, dest_name)`. Subsequent
-        calls with the same key — even from a different caller or
-        after many intervening ``estimate`` calls for other keys —
-        return the same value. This removes the call-order coupling
-        that a single shared stream would impose, while still letting
-        a fresh ``seed`` produce a fresh sample across runs.
+        Unknown services fall back to ``default_one_way_ms`` so callers
+        always get a finite number — consistent with the pre-refactor
+        contract.
         """
-        import math
-        import random as _random
-        key = (pop_code, dest_name)
-        cached = self._samples.get(key)
-        if cached is not None:
-            return cached
-        params = self._distributions.get(key)
-        if params is None:
-            return self._default
-        mu, sigma = params
-        rng = _random.Random(mix_seed(self._seed, pop_code, dest_name))
-        value = math.exp(rng.gauss(mu, sigma))
-        self._samples[key] = value
-        return value
+        return self._one_way_ms.get((pop_code, dest_name), self._default)
 
     def has(self, pop_code: str, dest_name: str) -> bool:
         return pop_code in self._pop_coords and dest_name in self._service_locs
@@ -150,13 +117,7 @@ class GeographicGroundDelay:
         detour_factor: float = 1.4,
         default_one_way_ms: float = 20.0,
     ) -> GeographicGroundDelay:
-        """Load from ``config/service_prefixes.json``.
-
-        Args:
-            config_dir: Directory containing ``service_prefixes.json``.
-            pop_coords: ``{pop_code: (lat, lon)}`` mapping from
-                :class:`GroundInfrastructure`.
-        """
+        """Load from ``config/service_prefixes.json``."""
         path = Path(config_dir) / "service_prefixes.json"
         with path.open() as f:
             raw = json.load(f)

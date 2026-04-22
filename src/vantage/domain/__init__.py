@@ -12,10 +12,9 @@ from vantage.domain.cell import (
 from vantage.domain.fib import (
     ROUTING_PLANE_REFRESH_S,
     CellToPopTable,
-    FIBEntry,
-    FIBEntryKind,
+    PopEgressTable,
     RoutingPlane,
-    SatelliteFIB,
+    SatPathTable,
 )
 from vantage.domain.ground import GroundStation, GSPoPEdge, PoP
 from vantage.domain.result import EpochResult, FlowOutcome
@@ -45,8 +44,6 @@ __all__ = [
     "ConstellationConfig",
     "Endpoint",
     "EpochResult",
-    "FIBEntry",
-    "FIBEntryKind",
     "FlowKey",
     "FlowOutcome",
     "GSPoPEdge",
@@ -58,8 +55,9 @@ __all__ = [
     "NetworkSnapshot",
     "PoP",
     "ROUTING_PLANE_REFRESH_S",
+    "PopEgressTable",
     "RoutingPlane",
-    "SatelliteFIB",
+    "SatPathTable",
     "SatelliteState",
     "ShellConfig",
     "TrafficDemand",

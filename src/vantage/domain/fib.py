@@ -1,47 +1,60 @@
-"""Forwarding-plane domain types (FIB = Forwarding Information Base).
+"""Routing-plane domain types.
 
-These types describe the data-plane lookup structures that the PPT's
-control center pushes to every satellite every 15 seconds. They are
-*consumers* of the routing computation owned by
-:mod:`vantage.world.satellite.routing` — the Dijkstra step there
-produces the raw shortest-path predecessors; a FIB builder (to be
-added under ``world/satellite/``) reuses that output to populate each
-satellite's :class:`SatelliteFIB`.
+Historically this module defined a per-satellite FIB (Forwarding
+Information Base). The PPT spec calls for per-satellite FIBs, but in
+Argus the data plane walks controller-pinned PoP cascades rather than
+hop-by-hop FIB entries, so the FIB abstraction ended up unused in the
+hot path while `forward.RoutingPlaneForward` kept re-reading
+`snapshot.satellite.delay_matrix` / `predecessor_matrix` directly. The
+data plane therefore was (de facto) recomputing satellite routing
+every realize call.
 
-Two tables per refresh:
+The types now reflect what the data plane actually consumes from the
+controller at refresh time:
 
-    * :class:`CellToPopTable` — a *global* ``cell_id → pop_code`` map.
-      For the nearest-PoP baseline this is purely geographic and
-      changes only when the PoP set changes.
-    * :class:`SatelliteFIB` — a *per-satellite* ``pop_code → FIBEntry``
-      table. Each entry either terminates at a local GS (``EGRESS``)
-      or forwards to an ISL neighbor (``FORWARD``).
+    * :class:`CellToPopTable` — global ``cell → ranked PoP cascade``
+      map (unchanged). Primary head + cascading fallbacks.
+    * :class:`SatPathTable` — per-snapshot ISL shortest-path artifact:
+      the one-way ``delay_matrix`` and ``predecessor_matrix`` used for
+      ISL-segment RTT lookups and hop reconstruction. These are the
+      shortest-path outputs the controller computes every 15 s; the
+      data plane reads this artifact rather than the raw
+      ``SatelliteState`` matrices.
+    * :class:`PopEgressTable` — per-PoP precomputed candidate arrays
+      ``(egress_sat_ids, base_cost, gs_ids)`` where ``base_cost`` is
+      ``2·downlink + 2·backhaul`` per sat. Built once by the
+      controller from the snapshot's ground infrastructure and
+      gateway attachments, so ``forward.decide`` does one vectorised
+      add over the precomputed arrays instead of walking infrastructure
+      + gateway attachments per flow.
 
-:class:`RoutingPlane` bundles both tables with the timestamp of the
-last refresh so the engine can enforce the 15 s cadence declared in
-:data:`ROUTING_PLANE_REFRESH_S`.
+:class:`RoutingPlane` bundles all three with the refresh timestamp
+and a monotonic version; the engine swaps it atomically when the
+cadence is due. :data:`ROUTING_PLANE_REFRESH_S` is the 15 s
+sync cadence declared in the PPT (Slide 13).
 
-The file is named ``fib.py`` rather than ``routing.py`` to avoid a
-name collision with :mod:`vantage.world.satellite.routing`, which
-owns the Dijkstra computation.
+The file is named ``fib.py`` for backwards-compatibility with
+downstream import paths (``vantage.domain.fib``) — its contents are
+no longer FIB-shaped, and the historical FIB types have been removed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum
 from types import MappingProxyType
+
+import numpy as np
+from numpy.typing import NDArray
 
 from vantage.domain.cell import CellId
 
 __all__ = [
     "ROUTING_PLANE_REFRESH_S",
     "CellToPopTable",
-    "FIBEntry",
-    "FIBEntryKind",
+    "PopEgressTable",
     "RoutingPlane",
-    "SatelliteFIB",
+    "SatPathTable",
 ]
 
 
@@ -51,110 +64,14 @@ __all__ = [
 ROUTING_PLANE_REFRESH_S: float = 15.0
 
 
-class FIBEntryKind(Enum):
-    """Tag for :class:`FIBEntry`."""
-
-    EGRESS = "egress"
-    """This satellite egresses traffic locally to a ground station."""
-
-    FORWARD = "forward"
-    """This satellite forwards traffic over ISL to a neighbor."""
-
-
-@dataclass(frozen=True, slots=True)
-class FIBEntry:
-    """One entry in a :class:`SatelliteFIB`.
-
-    Semantics depend on :attr:`kind`:
-
-    * ``EGRESS``:  :attr:`target` is a :class:`str` ground-station id.
-      :attr:`cost_ms` is the downlink + backhaul cost from this sat
-      all the way to the PoP.
-    * ``FORWARD``: :attr:`target` is an ``int`` next-hop satellite id.
-      :attr:`cost_ms` is the remaining shortest-path cost from this
-      sat to the target PoP (inclusive of the next ISL hop).
-
-    Using an ``int | str`` target lets the two variants share the same
-    storage shape; ``__post_init__`` enforces the kind→target type
-    invariant so direct construction can't build a malformed entry.
-    Consumers should branch on :attr:`kind` (or the :attr:`is_egress` /
-    :attr:`is_forward` predicates) before interpreting :attr:`target`.
-    """
-
-    kind: FIBEntryKind
-    target: int | str
-    cost_ms: float
-
-    def __post_init__(self) -> None:
-        if self.kind is FIBEntryKind.EGRESS and not isinstance(self.target, str):
-            raise TypeError(
-                f"EGRESS FIBEntry must have a str target (gs_id), got {type(self.target).__name__}"
-            )
-        if self.kind is FIBEntryKind.FORWARD and not isinstance(self.target, int):
-            raise TypeError(
-                f"FORWARD FIBEntry must have an int target (sat_id), "
-                f"got {type(self.target).__name__}"
-            )
-
-    @classmethod
-    def egress(cls, gs_id: str, cost_ms: float) -> FIBEntry:
-        """Build an EGRESS entry terminating at ``gs_id``."""
-        return cls(kind=FIBEntryKind.EGRESS, target=gs_id, cost_ms=cost_ms)
-
-    @classmethod
-    def forward(cls, next_hop_sat: int, cost_ms: float) -> FIBEntry:
-        """Build a FORWARD entry handing off to ``next_hop_sat``."""
-        return cls(kind=FIBEntryKind.FORWARD, target=next_hop_sat, cost_ms=cost_ms)
-
-    @property
-    def is_egress(self) -> bool:
-        return self.kind is FIBEntryKind.EGRESS
-
-    @property
-    def is_forward(self) -> bool:
-        return self.kind is FIBEntryKind.FORWARD
-
-    @property
-    def next_hop_sat(self) -> int:
-        """Return the next-hop sat id; raises if this is not a FORWARD entry."""
-        if self.kind is not FIBEntryKind.FORWARD:
-            raise ValueError(f"FIBEntry is {self.kind}, not FORWARD")
-        # Type invariant guaranteed by __post_init__.
-        return self.target  # type: ignore[return-value]
-
-    @property
-    def egress_gs(self) -> str:
-        """Return the egress GS id; raises if this is not an EGRESS entry."""
-        if self.kind is not FIBEntryKind.EGRESS:
-            raise ValueError(f"FIBEntry is {self.kind}, not EGRESS")
-        # Type invariant guaranteed by __post_init__.
-        return self.target  # type: ignore[return-value]
-
-
-@dataclass(frozen=True, slots=True)
-class SatelliteFIB:
-    """One satellite's full forwarding table.
-
-    ``fib`` maps a :class:`str` PoP code to the :class:`FIBEntry` to use
-    for traffic destined to that PoP. Lookups that miss the map mean
-    "no route to that PoP from here" — callers should handle the
-    :class:`KeyError` explicitly. ``__post_init__`` freezes the mapping
-    into a :class:`MappingProxyType` so callers cannot mutate it through
-    a retained dict reference after construction.
-    """
-
-    sat_id: int
-    fib: Mapping[str, FIBEntry]
-    version: int
-    built_at: float  # simulation time (s) when this FIB was computed
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.fib, MappingProxyType):
-            object.__setattr__(self, "fib", MappingProxyType(dict(self.fib)))
-
-    def route(self, pop_code: str) -> FIBEntry:
-        """Return the :class:`FIBEntry` for ``pop_code`` or raise ``KeyError``."""
-        return self.fib[pop_code]
+# Frozen empty arrays used when ``PopEgressTable.for_pop`` is queried
+# for a PoP the controller did not build candidates for (e.g., zero
+# visible GS attachments). Keeping them as module singletons avoids
+# reallocating each miss.
+_EMPTY_INT32: NDArray[np.int32] = np.empty(0, dtype=np.int32)
+_EMPTY_INT32.flags.writeable = False
+_EMPTY_FLOAT64: NDArray[np.float64] = np.empty(0, dtype=np.float64)
+_EMPTY_FLOAT64.flags.writeable = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,26 +124,145 @@ class CellToPopTable:
 
 
 @dataclass(frozen=True, slots=True)
+class SatPathTable:
+    """Per-snapshot ISL shortest-path artifact owned by the controller.
+
+    Wraps the two Dijkstra outputs (``delay_matrix`` and
+    ``predecessor_matrix``) behind the routing-plane interface so the
+    data plane can look up ISL RTTs and reconstruct hop sequences
+    without reaching back into ``SatelliteState``.
+
+    The arrays are treated as immutable — the controller writes them
+    once at refresh time and then hands them out via this table. For
+    forward compatibility they are exposed as read-only views, which
+    lets callers slice and ``tolist()`` without risk of mutating the
+    shared routing state.
+
+    Accessors:
+
+        * :meth:`isl_delay` — scalar one-way ISL delay in ms.
+        * :meth:`delay_row` — the 1-D column of one-way delays from a
+          given ingress to every other sat; consumed by the data
+          plane's vectorised per-PoP cost computation.
+        * :meth:`pred_row` — the 1-D row of shortest-path predecessors
+          from a given ingress; consumed by the data-plane ISL hop
+          reconstruction.
+    """
+
+    delay_matrix: NDArray[np.float64]
+    predecessor_matrix: NDArray[np.int32]
+    version: int
+    built_at: float
+
+    def __post_init__(self) -> None:
+        dm = self.delay_matrix
+        pm = self.predecessor_matrix
+        if dm.ndim != 2 or dm.shape[0] != dm.shape[1]:
+            raise ValueError(
+                f"SatPathTable.delay_matrix must be square (n, n); got {dm.shape}"
+            )
+        if pm.shape != dm.shape:
+            raise ValueError(
+                f"SatPathTable.predecessor_matrix shape {pm.shape} "
+                f"!= delay_matrix shape {dm.shape}"
+            )
+        # Ensure the shared references cannot be mutated through a
+        # retained handle. Arrays that are already non-writable are
+        # left alone.
+        if dm.flags.writeable:
+            dm.flags.writeable = False
+        if pm.flags.writeable:
+            pm.flags.writeable = False
+
+    @property
+    def num_sats(self) -> int:
+        return int(self.delay_matrix.shape[0])
+
+    def isl_delay(self, sat_a: int, sat_b: int) -> float:
+        """One-way ISL propagation delay (ms) between a pair of sats."""
+        return float(self.delay_matrix[sat_a, sat_b])
+
+    def delay_row(self, ingress: int) -> NDArray[np.float64]:
+        """One-way ISL delay from ``ingress`` to every other sat."""
+        return self.delay_matrix[ingress]
+
+    def pred_row(self, ingress: int) -> NDArray[np.int32]:
+        """Shortest-path predecessors rooted at ``ingress``."""
+        return self.predecessor_matrix[ingress]
+
+
+@dataclass(frozen=True, slots=True)
+class PopEgressTable:
+    """Per-PoP controller-built egress candidate table.
+
+    For each PoP, stores a flattened table of viable (sat, gs)
+    downlink pairs: for each candidate, the egress sat id, the
+    ``base_cost`` contributed by the ground segment (=
+    ``2·downlink_rtt + 2·backhaul_rtt``, RTT already doubled), and
+    the GS id hosting the antenna. Built once per refresh from
+    ``snapshot.infra.pop_gs_edges`` + ``snapshot.satellite.gateway_attachments``.
+
+    The data plane adds ``delay_row[egress_ids] * 2`` from the
+    accompanying :class:`SatPathTable` to get the full sat-segment
+    RTT from a specific ingress — one numpy fancy-index + add
+    replaces the per-flow infrastructure walk that used to happen
+    inside ``RoutingPlaneForward``.
+
+    PoPs not present in :attr:`candidates` have no viable egress in
+    this plane — :meth:`for_pop` returns empty arrays so the data
+    plane can skip them without branching on ``None``.
+    """
+
+    candidates: Mapping[
+        str, tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]
+    ]
+    version: int
+    built_at: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidates, MappingProxyType):
+            object.__setattr__(
+                self, "candidates", MappingProxyType(dict(self.candidates)),
+            )
+        # Freeze every per-PoP array so downstream callers cannot
+        # mutate the controller's artifact by side effect.
+        for egress_ids, base_cost, _gs_ids in self.candidates.values():
+            if egress_ids.flags.writeable:
+                egress_ids.flags.writeable = False
+            if base_cost.flags.writeable:
+                base_cost.flags.writeable = False
+
+    def for_pop(
+        self, pop_code: str,
+    ) -> tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]:
+        """Return ``(egress_sat_ids, base_cost, gs_ids)`` for ``pop_code``.
+
+        Empty arrays + empty tuple when the PoP has no viable egress
+        candidates in this plane (no attached GS, or no visible sat
+        on any attached GS at refresh time).
+        """
+        return self.candidates.get(pop_code, (_EMPTY_INT32, _EMPTY_FLOAT64, ()))
+
+    def has_pop(self, pop_code: str) -> bool:
+        return pop_code in self.candidates
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingPlane:
     """The full per-epoch routing state visible to the data plane.
 
-    Bundled as one immutable record so the engine can swap it atomically
-    when the refresh cadence is due. Construction freezes ``sat_fibs``
-    into :class:`MappingProxyType`.
+    Bundled as one immutable record so the engine can swap it
+    atomically when the refresh cadence is due. All three artifacts
+    (``cell_to_pop``, ``sat_paths``, ``pop_egress``) share the same
+    ``version`` and ``built_at`` so the data plane can reason about
+    freshness in one place.
     """
 
     cell_to_pop: CellToPopTable
-    sat_fibs: Mapping[int, SatelliteFIB]
+    sat_paths: SatPathTable
+    pop_egress: PopEgressTable
     version: int
     built_at: float  # simulation time (s) of the most recent refresh
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.sat_fibs, MappingProxyType):
-            object.__setattr__(self, "sat_fibs", MappingProxyType(dict(self.sat_fibs)))
-
-    def fib_of(self, sat_id: int) -> SatelliteFIB:
-        """Return the :class:`SatelliteFIB` for ``sat_id`` or raise ``KeyError``."""
-        return self.sat_fibs[sat_id]
 
     def is_stale(self, now_s: float, cadence_s: float = ROUTING_PLANE_REFRESH_S) -> bool:
         """Return ``True`` if the plane needs a refresh at simulation time ``now_s``."""
