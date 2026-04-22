@@ -72,8 +72,13 @@
   <div class="chart-box wide">
     <h3>Per-Service Cumulative Average Table</h3>
     <table id="svc_table"><thead><tr>
-      <th>Service</th><th>BL Mean</th><th>PG Mean</th><th>Improve</th><th>%</th>
-      <th>BL P99</th><th>PG P99</th><th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
+      <th>Service</th>
+      <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">BL Mean</th>
+      <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">PG Mean</th>
+      <th>Improve</th><th>%</th>
+      <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">BL Avg Epoch P99</th>
+      <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">PG Avg Epoch P99</th>
+      <th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -577,13 +582,27 @@ function update(data) {
   });
   ci.update();
 
-  // Summary cards — cumulative
-  const cumBL = bl.reduce((a,d)=>({rtt:a.rtt+d.mean_rtt,p95:a.p95+d.p95_rtt,p99:a.p99+d.p99_rtt,n:a.n+1}),{rtt:0,p95:0,p99:0,n:0});
-  const cumPG = pg.reduce((a,d)=>({rtt:a.rtt+d.mean_rtt,p95:a.p95+d.p95_rtt,p99:a.p99+d.p99_rtt,n:a.n+1}),{rtt:0,p95:0,p99:0,n:0});
-  const bAvg=cumBL.rtt/cumBL.n, pAvg=cumPG.rtt/cumPG.n;
-  const diff=pAvg-bAvg, diffPct=(diff/bAvg*100).toFixed(1);
-  const bP95=cumBL.p95/cumBL.n, pP95=cumPG.p95/cumPG.n;
-  const bP99=cumBL.p99/cumBL.n, pP99=cumPG.p99/cumPG.n;
+  // Summary cards — cumulative.
+  // Means are flow-count weighted (Σ mean_rtt·n_flows / Σ n_flows) so
+  // epochs with more flows count more — matches the per-epoch
+  // stats-table convention. P95/P99 are averages of per-epoch
+  // percentiles (a true cumulative percentile would need the raw
+  // per-flow RTT pool, which the dashboard doesn't receive); labels
+  // reflect that explicitly below.
+  let blSumRtt=0, pgSumRtt=0, blFlows=0, pgFlows=0;
+  let blSumP95=0, pgSumP95=0, blSumP99=0, pgSumP99=0;
+  for (let i=0;i<bl.length;i++){
+    const b=bl[i], p=pg[i];
+    blSumRtt += (b.mean_rtt||0) * (b.n_flows||0); blFlows += b.n_flows||0;
+    pgSumRtt += (p.mean_rtt||0) * (p.n_flows||0); pgFlows += p.n_flows||0;
+    blSumP95 += b.p95_rtt||0; pgSumP95 += p.p95_rtt||0;
+    blSumP99 += b.p99_rtt||0; pgSumP99 += p.p99_rtt||0;
+  }
+  const bAvg = blFlows>0 ? blSumRtt/blFlows : 0;
+  const pAvg = pgFlows>0 ? pgSumRtt/pgFlows : 0;
+  const diff=pAvg-bAvg, diffPct=bAvg>0?(diff/bAvg*100).toFixed(1):"0";
+  const bP95=N>0?blSumP95/N:0, pP95=N>0?pgSumP95/N:0;
+  const bP99=N>0?blSumP99/N:0, pP99=N>0?pgSumP99/N:0;
 
   const p95Diff = pP95 - bP95, p95Pct = (p95Diff/bP95*100).toFixed(1);
   const p99Diff = pP99 - bP99, p99Pct = (p99Diff/bP99*100).toFixed(1);
@@ -607,13 +626,13 @@ function update(data) {
     <div class="card"><div class="label">Epoch</div><div class="value">${bl[N-1].epoch}</div><div class="sub" style="color:#888">${bl[N-1].time_str}</div></div>
     <div class="card"><div class="label">Flows</div><div class="value">${bl[N-1].n_flows.toLocaleString()}</div></div>
     <div class="card"><div class="label">Demand</div><div class="value">${bl[N-1].demand_gbps.toFixed(0)} Gb</div></div>
-    <div class="card"><div class="label">PG Re-Routed</div><div class="value" style="color:#1565c0">${reroutePctCum.toFixed(1)}%</div><div class="sub" style="color:#888">of demand (cum)</div></div>
-    <div class="card"><div class="label">BL Mean (cum)</div><div class="value">${bAvg.toFixed(1)}ms</div></div>
-    <div class="card"><div class="label">PG Mean (cum)</div><div class="value">${pAvg.toFixed(1)}ms</div><div class="sub ${diff<0?'improve':'worsen'}">${diff.toFixed(1)}ms (${diffPct}%)</div></div>
-    <div class="card"><div class="label">BL P95 (cum)</div><div class="value">${bP95.toFixed(1)}ms</div></div>
-    <div class="card"><div class="label">PG P95 (cum)</div><div class="value">${pP95.toFixed(1)}ms</div><div class="sub ${p95Diff<0?'improve':'worsen'}">${p95Diff.toFixed(1)}ms (${p95Pct}%)</div></div>
-    <div class="card"><div class="label">BL P99 (cum)</div><div class="value">${bP99.toFixed(1)}ms</div></div>
-    <div class="card"><div class="label">PG P99 (cum)</div><div class="value">${pP99.toFixed(1)}ms</div><div class="sub ${p99Diff<0?'improve':'worsen'}">${p99Diff.toFixed(1)}ms (${p99Pct}%)</div></div>
+    <div class="card" title="Σ reroute_flows / Σ total_flows across all epochs loaded."><div class="label">PG Re-Routed</div><div class="value" style="color:#1565c0">${reroutePctCum.toFixed(1)}%</div><div class="sub" style="color:#888">of flows (cum)</div></div>
+    <div class="card" title="Flow-count-weighted cumulative mean E2E RTT: Σ(mean_rtt·n_flows)/Σ n_flows."><div class="label">BL Mean (cum)</div><div class="value">${bAvg.toFixed(1)}ms</div></div>
+    <div class="card" title="Flow-count-weighted cumulative mean E2E RTT: Σ(mean_rtt·n_flows)/Σ n_flows."><div class="label">PG Mean (cum)</div><div class="value">${pAvg.toFixed(1)}ms</div><div class="sub ${diff<0?'improve':'worsen'}">${diff.toFixed(1)}ms (${diffPct}%)</div></div>
+    <div class="card" title="Average of per-epoch P95 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">BL Avg Epoch P95 (cum)</div><div class="value">${bP95.toFixed(1)}ms</div></div>
+    <div class="card" title="Average of per-epoch P95 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">PG Avg Epoch P95 (cum)</div><div class="value">${pP95.toFixed(1)}ms</div><div class="sub ${p95Diff<0?'improve':'worsen'}">${p95Diff.toFixed(1)}ms (${p95Pct}%)</div></div>
+    <div class="card" title="Average of per-epoch P99 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">BL Avg Epoch P99 (cum)</div><div class="value">${bP99.toFixed(1)}ms</div></div>
+    <div class="card" title="Average of per-epoch P99 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">PG Avg Epoch P99 (cum)</div><div class="value">${pP99.toFixed(1)}ms</div><div class="sub ${p99Diff<0?'improve':'worsen'}">${p99Diff.toFixed(1)}ms (${p99Pct}%)</div></div>
   `;
 
   // Per-service demand over time
