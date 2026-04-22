@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from types import MappingProxyType
+
+from vantage.domain import (
+    AccessLink,
+    CapacityView,
+    Cell,
+    CellGrid,
+    CellToPopTable,
+    Endpoint,
+    FlowKey,
+    RoutingPlane,
+    UsageBook,
+)
+from vantage.engine.context import RunContext
+from vantage.forward import EgressOption, RoutingPlaneForward
+from vantage.world.ground import GroundKnowledge
+
+
+class _CountingEstimator:
+    def __init__(self, value: float) -> None:
+        self.value = value
+        self.calls = 0
+
+    def estimate(self, pop_code: str, dest_name: str) -> float:
+        del pop_code, dest_name
+        self.calls += 1
+        return self.value
+
+
+class _FakeRoutingPlaneForward(RoutingPlaneForward):
+    __slots__ = ()
+
+    def _options_for(
+        self,
+        ingress: int,
+        pop_code: str,
+        snapshot: object,
+        *,
+        opts_by_pop: dict[str, tuple[EgressOption, ...]] | None = None,
+    ) -> tuple[EgressOption, ...]:
+        del snapshot, opts_by_pop
+        return (
+            EgressOption(
+                pop_code=pop_code,
+                egress_sat=ingress,
+                gs_id="gs-a",
+                isl_links=(),
+                propagation_rtt=1.0,
+                ground_rtt=0.0,
+            ),
+        )
+
+
+def _make_forward() -> RoutingPlaneForward:
+    cell_id = 101
+    grid = CellGrid(
+        cells=MappingProxyType({cell_id: Cell(cell_id=cell_id, lat_deg=0.0, lon_deg=0.0)}),
+        endpoint_to_cell=MappingProxyType({"src": cell_id}),
+    )
+    plane = RoutingPlane(
+        cell_to_pop=CellToPopTable(
+            mapping=MappingProxyType({cell_id: ("pop-a",)}),
+            version=0,
+            built_at=0.0,
+        ),
+        sat_fibs=MappingProxyType({}),
+        version=0,
+        built_at=0.0,
+    )
+    book = UsageBook(
+        view=CapacityView(
+            isl_cap_index=MappingProxyType({}),
+            sat_feeder_gbps=20.0,
+            gs_by_id=MappingProxyType({}),
+        )
+    )
+    return _FakeRoutingPlaneForward(plane, grid, book)
+
+
+def test_decide_uses_cached_ground_knowledge_without_estimator() -> None:
+    forward = _make_forward()
+    knowledge = GroundKnowledge()
+    knowledge.put("pop-a", "dst", 42.0)
+    context = RunContext(world=object(), endpoints={}, ground_knowledge=knowledge)
+
+    decision = forward.decide(
+        FlowKey(src="src", dst="dst"),
+        Endpoint(name="src", lat_deg=0.0, lon_deg=0.0),
+        ingress=0,
+        uplink=AccessLink(sat_id=0, elevation_deg=45.0, slant_range_km=1000.0, delay=1.0),
+        snapshot=object(),
+        context=context,
+        epoch=0,
+    )
+
+    assert decision is not None
+    assert len(decision.pop_cascade) == 1
+    assert decision.pop_cascade[0][0] == "pop-a"
+    assert decision.pop_cascade[0][2] == 42.0
+
+
+def test_decide_prefers_cached_ground_knowledge_over_estimator_sampling() -> None:
+    forward = _make_forward()
+    estimator = _CountingEstimator(value=99.0)
+    knowledge = GroundKnowledge(estimator=estimator)
+    knowledge.put("pop-a", "dst", 24.0)
+    context = RunContext(world=object(), endpoints={}, ground_knowledge=knowledge)
+
+    decision = forward.decide(
+        FlowKey(src="src", dst="dst"),
+        Endpoint(name="src", lat_deg=0.0, lon_deg=0.0),
+        ingress=0,
+        uplink=AccessLink(sat_id=0, elevation_deg=45.0, slant_range_km=1000.0, delay=1.0),
+        snapshot=object(),
+        context=context,
+        epoch=0,
+    )
+
+    assert decision is not None
+    assert decision.pop_cascade[0][2] == 24.0
+    assert estimator.calls == 0
