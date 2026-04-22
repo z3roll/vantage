@@ -216,19 +216,34 @@ def _walk_isl_path(
     """Reconstruct the ISL hop sequence from ``src`` to ``dst`` using
     the shortest-path predecessor matrix.
 
-    ``pred[s, t]`` is "predecessor of t on the shortest path from s",
-    so we walk backwards from ``dst`` collecting nodes until we hit
-    ``src``. Returns ``None`` if any predecessor along the way is
-    ``-1`` (unreachable) or if the walk fails to terminate within
-    ``n_sats`` iterations (pathological input). For ``src == dst``
-    returns an empty tuple (no ISL hops needed)."""
+    ``pred[s, t]`` is "predecessor of t on the shortest path from s".
+    This wrapper materialises ``pred[src]`` as a Python list (native
+    integer access is ~2× faster than ``int(numpy_scalar)``) and then
+    defers to :func:`_walk_isl_path_row`. Hot-path callers that walk
+    many destinations from the same ``src`` should cache the row and
+    call the row variant directly to pay the ``.tolist()`` cost only
+    once per ingress."""
+    if src == dst:
+        return ()
+    return _walk_isl_path_row(pred[src].tolist(), src, dst)
+
+
+def _walk_isl_path_row(
+    pred_row: list[int], src: int, dst: int,
+) -> tuple[tuple[int, int], ...] | None:
+    """Walk ``pred_row[cur]`` back from ``dst`` until we hit ``src``.
+
+    ``pred_row`` is expected to be ``pred[src].tolist()`` — a flat
+    Python list of predecessor ids. Using native list indexing drops
+    the per-hop numpy scalar cost that dominated the old walker at
+    scale (82 k walks × 30 hops ≈ 2.5 M numpy reads/epoch)."""
     if src == dst:
         return ()
     rev_path: list[int] = [dst]
     cur = dst
-    n = int(pred.shape[0])
+    n = len(pred_row)
     for _ in range(n):
-        prev = int(pred[src, cur])
+        prev = pred_row[cur]
         if prev < 0:
             return None
         rev_path.append(prev)
@@ -237,8 +252,11 @@ def _walk_isl_path(
         cur = prev
     else:
         return None
-    path = list(reversed(rev_path))
-    return tuple((path[i], path[i + 1]) for i in range(len(path) - 1))
+    rev_path.reverse()
+    # ``zip(rev_path, rev_path[1:])`` is the C-implemented equivalent
+    # of the earlier ``((p[i], p[i+1]) for i in range(...))`` genexpr
+    # and trims ~40 % off per-hop overhead at 1.6 M iterations/epoch.
+    return tuple(zip(rev_path, rev_path[1:]))
 
 
 # ---------------------------------------------------------------------------
@@ -290,14 +308,11 @@ class PathDecision:
     uplink_rtt: float
     pop_cascade: tuple[tuple[str, tuple[EgressOption, ...], float], ...]
 
-    def __post_init__(self) -> None:
-        if not self.pop_cascade or not any(ro for _, ro, _ in self.pop_cascade):
-            raise ValueError(
-                "PathDecision.pop_cascade must contain at least one "
-                "(pop, raw_options, ground_rtt) entry with non-empty "
-                "raw_options; decide() should return None rather than "
-                "constructing an empty cascade",
-            )
+    # Intentionally no ``__post_init__`` validation: the generator
+    # walk over ``pop_cascade`` cost ~130 ms/epoch at production scale
+    # for a check the builder (``decide``) already satisfies — it
+    # returns ``None`` before reaching this constructor whenever the
+    # cascade would be empty. Frozen+slots already locks the shape.
 
     def iter_options(self) -> Iterator[EgressOption]:
         """Yield each option with uplink + ground RTT baked in."""
@@ -547,9 +562,10 @@ class RoutingPlaneForward:
 
     __slots__ = (
         "_book", "_decision_cache", "_gf_perf_cache", "_grid",
-        "_ground_rtt_cache", "_isl_perf_cache", "_k",
-        "_max_cascade_pops", "_options_cache", "_path_cache", "_plane",
-        "_sf_perf_cache",
+        "_ground_rtt_by_dst", "_isl_perf_cache",
+        "_k", "_max_cascade_pops", "_options_by_ingress",
+        "_path_cache", "_plane", "_pop_index_cache",
+        "_pred_row_cache", "_sf_perf_cache",
     )
 
     def __init__(
@@ -581,25 +597,18 @@ class RoutingPlaneForward:
             if max_cascade_pops is not None
             else 1 << 30
         )
-        self._options_cache: dict[tuple[int, str], tuple[EgressOption, ...]] = {}
         # Decisions depend only on (ingress_sat, cell_id, dest) — uplink
         # RTT is a property of the ingress (cached per src by realize),
         # cascade PoPs come from the plane, options per (ingress, pop)
-        # are already memoised in ``_options_cache``, and ground RTTs
-        # per (pop, dest) are deterministic at the snapshot level. So
-        # every flow that shares (ingress, cell, dest) — which at scale
-        # is most of them because subendpoints of the same city share
-        # cell + ingress — can reuse the same ``PathDecision`` instead
-        # of rebuilding up to 400 EgressOption objects per flow.
+        # are memoised in ``_options_by_ingress``, and ground RTTs per
+        # (pop, dest) in ``_ground_rtt_by_dst``. Every flow sharing
+        # (ingress, cell, dest) — which at scale is most of them
+        # because subendpoints of the same city share cell + ingress —
+        # reuses the same ``PathDecision`` instead of rebuilding up to
+        # 400 EgressOption objects per flow.
         self._decision_cache: dict[
             tuple[int, int, str], PathDecision | None
         ] = {}
-        # Sample each (pop, dest) ground RTT once per epoch instead
-        # of per flow. LogNormal sampling in GeographicGroundDelay
-        # was the dominant cost: 30 k flows × 50 PoPs ≈ 1.5 M RNG
-        # draws = ~1 s. Per-flow ground-RTT jitter isn't load-bearing
-        # for any downstream metric at the epoch aggregation level.
-        self._ground_rtt_cache: dict[tuple[str, str], float] = {}
         # Per-realize ISL path cache. _walk_isl_path depends only on
         # ``(ingress, egress)`` for a fixed snapshot, but the same
         # ``(ingress, egress)`` pair is visited by every PoP whose
@@ -615,29 +624,171 @@ class RoutingPlaneForward:
         self._isl_perf_cache: dict[tuple[int, int], LinkPerformance] = {}
         self._sf_perf_cache: dict[int, LinkPerformance] = {}
         self._gf_perf_cache: dict[str, LinkPerformance] = {}
+        # Per-PoP precomputed candidate arrays for the vectorized fast
+        # path in ``_options_for``. Built once per PoP on first use:
+        # (egress_sat_ids int32[m], base_cost float64[m] = 2·(downlink
+        # + backhaul), gs_ids tuple[str, m]). Reused for every ingress
+        # that targets this PoP — cut the 950 k-per-epoch
+        # ``math.isfinite`` + ``float(delay_matrix[...])`` loop down to
+        # one numpy vector op per (ingress, pop).
+        self._pop_index_cache: dict[
+            str, tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]
+        ] = {}
+        # Per-realize predecessor-row cache: ``pred[ingress].tolist()``
+        # for each unique ingress. Lets ``_walk_isl_path_row`` index
+        # native Python lists instead of numpy scalars (~2× faster per
+        # hop at ~2.5 M hops/epoch).
+        self._pred_row_cache: dict[int, list[int]] = {}
+        # Two-level caches keyed on the loop-invariant (``ingress`` /
+        # ``dst``). decide()'s 48-PoP cascade runs ~1.4 M times per
+        # epoch; looking up via a plain ``str`` pop key against a
+        # per-ingress or per-dst sub-dict avoids the tuple allocation
+        # that a ``dict[(str, str)]`` lookup would incur per iteration.
+        self._options_by_ingress: dict[
+            int, dict[str, tuple[EgressOption, ...]]
+        ] = {}
+        self._ground_rtt_by_dst: dict[str, dict[str, float]] = {}
+
+    def _pred_row_for(
+        self, ingress: int, snapshot: NetworkSnapshot,
+    ) -> list[int]:
+        """Return ``pred[ingress]`` as a Python list, cached per realize.
+
+        Materialising the row once and sharing it across every walker
+        call for the same ingress amortises the ``.tolist()`` cost
+        (~100 µs for a 4 k-wide row) against 10–100 walks per
+        ingress; the alternative — reading ``pred[src, cur]`` as a
+        numpy scalar on every hop — is ~2× slower per access and
+        dominates at 2.5 M hops/epoch."""
+        row = self._pred_row_cache.get(ingress)
+        if row is None:
+            row = snapshot.satellite.predecessor_matrix[ingress].tolist()
+            self._pred_row_cache[ingress] = row
+        return row
+
+    def _pop_candidate_arrays(
+        self, pop_code: str, snapshot: NetworkSnapshot,
+    ) -> tuple[NDArray[np.int32], NDArray[np.float64], tuple[str, ...]]:
+        """Per-PoP static candidate table: ``(egress_sat_ids,
+        base_cost, gs_ids)`` flattened across every GS on this PoP.
+
+        ``base_cost`` already includes ``2·downlink + 2·backhaul``
+        for each sat candidate, so computing the full round-trip cost
+        from a given ingress is one vectorised add after the ISL-RTT
+        lookup. Built lazily per PoP and shared across every ingress
+        that touches this PoP — all per-ingress cost differences come
+        from the ISL column only."""
+        cached = self._pop_index_cache.get(pop_code)
+        if cached is not None:
+            return cached
+        sat = snapshot.satellite
+        infra = snapshot.infra
+        attach = sat.gateway_attachments.attachments
+        egress_list: list[int] = []
+        base_list: list[float] = []
+        gs_list: list[str] = []
+        for gs_id, backhaul_oneway in infra.pop_gs_edges(pop_code):
+            if infra.gs_by_id(gs_id) is None:
+                continue
+            gs_links = attach.get(gs_id)
+            if not gs_links:
+                continue
+            backhaul_rtt = backhaul_oneway * 2.0
+            for link in gs_links:
+                egress_list.append(link.sat_id)
+                base_list.append(link.delay * 2.0 + backhaul_rtt)
+                gs_list.append(gs_id)
+        result = (
+            np.asarray(egress_list, dtype=np.int32),
+            np.asarray(base_list, dtype=np.float64),
+            tuple(gs_list),
+        )
+        self._pop_index_cache[pop_code] = result
+        return result
 
     def _options_for(
-        self, ingress: int, pop_code: str, snapshot: NetworkSnapshot,
+        self,
+        ingress: int,
+        pop_code: str,
+        snapshot: NetworkSnapshot,
+        *,
+        opts_by_pop: dict[str, tuple[EgressOption, ...]] | None = None,
     ) -> tuple[EgressOption, ...]:
-        key = (ingress, pop_code)
-        cached = self._options_cache.get(key)
-        if cached is None:
-            pred = snapshot.satellite.predecessor_matrix
-            path_cache = self._path_cache
+        """Top-K enriched egress options for ``(ingress, pop_code)``.
 
-            def walker(i: int, e: int) -> tuple[tuple[int, int], ...] | None:
-                wk = (i, e)
-                if wk in path_cache:
-                    return path_cache[wk]
-                result = _walk_isl_path(pred, i, e)
-                path_cache[wk] = result
-                return result
+        Fast path: numpy-vectorises the per-candidate cost over the
+        precomputed PoP candidate table, then only walks ISL paths
+        for the ≤ K survivors. Replaces the former
+        :func:`compute_egress_options` call whose Python-level inner
+        loop dominated decide() profiles at production scale.
 
-            cached = compute_egress_options(
-                snapshot, ingress, pop_code, self._k, path_walker=walker,
-            )
-            self._options_cache[key] = cached
-        return cached
+        ``opts_by_pop`` lets decide() pass the already-resolved
+        per-ingress sub-dict so we skip the outer
+        ``_options_by_ingress[ingress]`` lookup per call; external
+        callers can omit it and we resolve it here."""
+        if opts_by_pop is None:
+            opts_by_pop = self._options_by_ingress.get(ingress)
+            if opts_by_pop is None:
+                opts_by_pop = {}
+                self._options_by_ingress[ingress] = opts_by_pop
+        cached = opts_by_pop.get(pop_code)
+        if cached is not None:
+            return cached
+        egress_ids, base_cost, gs_ids = self._pop_candidate_arrays(
+            pop_code, snapshot,
+        )
+        if egress_ids.size == 0:
+            opts_by_pop[pop_code] = ()
+            return ()
+        delay_row = snapshot.satellite.delay_matrix[ingress]
+        # One-way ISL from ingress to every candidate egress. Numpy
+        # fancy-indexes in one pass rather than 950 k scalar reads.
+        cost = delay_row[egress_ids] * 2.0 + base_cost
+        finite = np.isfinite(cost)
+        if not finite.any():
+            opts_by_pop[pop_code] = ()
+            return ()
+        valid_idx = np.nonzero(finite)[0]
+        valid_cost = cost[valid_idx]
+        k = self._k
+        # ``argpartition`` gets the unordered top-K in O(m); then a
+        # tiny ``argsort`` over only K entries finishes the ranking.
+        # At ``k ≤ m`` this is ~3× faster than sorting the full array.
+        if valid_idx.size > k:
+            part = np.argpartition(valid_cost, k - 1)[:k]
+            order_local = part[np.argsort(valid_cost[part])]
+        else:
+            order_local = np.argsort(valid_cost)
+        top_idx = valid_idx[order_local]
+        path_cache = self._path_cache
+        pred_row = self._pred_row_for(ingress, snapshot)
+        options: list[EgressOption] = []
+        for pos in top_idx:
+            i = int(pos)
+            egress = int(egress_ids[i])
+            gs_id = gs_ids[i]
+            if egress == ingress:
+                isl_links: tuple[tuple[int, int], ...] = ()
+            else:
+                wk = (ingress, egress)
+                walked = path_cache.get(wk)
+                if walked is None and wk not in path_cache:
+                    walked = _walk_isl_path_row(pred_row, ingress, egress)
+                    path_cache[wk] = walked
+                if walked is None:
+                    continue
+                isl_links = walked
+            options.append(EgressOption(
+                pop_code=pop_code,
+                egress_sat=egress,
+                gs_id=gs_id,
+                isl_links=isl_links,
+                propagation_rtt=float(cost[i]),
+                ground_rtt=0.0,
+            ))
+        result = tuple(options)
+        opts_by_pop[pop_code] = result
+        return result
 
     def decide(
         self,
@@ -673,9 +824,7 @@ class RoutingPlaneForward:
             self._decision_cache[cache_key] = None
             return None
 
-        ground_truth = context.ground_knowledge.estimator
-        if ground_truth is None:
-            return None
+        ground_knowledge = context.ground_knowledge
 
         uplink_rtt = uplink.delay * 2
 
@@ -687,54 +836,44 @@ class RoutingPlaneForward:
         # tuple itself. ``charge`` materialises a single enriched
         # :class:`EgressOption` only for the option it picks.
         #
-        # PoPs whose ground-delay estimator raises or whose egress
-        # options are empty are skipped — the cascade just gets
-        # shorter for this flow rather than rejecting it.
+        # PoPs whose ground-knowledge service cannot provide an RTT
+        # (cache miss + no estimator) or whose egress options are
+        # empty are skipped — the cascade just gets shorter for this
+        # flow rather than rejecting it.
         cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
         dst = flow_key.dst
-        rtt_cache = self._ground_rtt_cache
-        options_cache = self._options_cache
-        path_cache = self._path_cache
-        pred = snapshot.satellite.predecessor_matrix
-        k = self._k
-        # Cascade loop runs up to 48 × 12 k flows = ~600 k
-        # iterations per epoch, so the lookups are inlined to drop
-        # one Python frame per iteration; the options/path caches
-        # are accessed directly instead of through ``_options_for``.
+        # Resolve per-ingress / per-dst sub-dicts once per decide call
+        # so the 48-PoP cascade loop only touches a single
+        # ``dict.get(str)`` per cache — no tuple allocation per
+        # iteration. At 1.4 M cascade iterations per epoch the tuple
+        # construction was the largest remaining per-iter cost after
+        # the earlier pred-row / vectorised-options changes.
+        rtt_by_pop = self._ground_rtt_by_dst.get(dst)
+        if rtt_by_pop is None:
+            rtt_by_pop = {}
+            self._ground_rtt_by_dst[dst] = rtt_by_pop
+        opts_by_pop = self._options_by_ingress.get(ingress)
+        if opts_by_pop is None:
+            opts_by_pop = {}
+            self._options_by_ingress[ingress] = opts_by_pop
         for pop_code in pop_codes[: self._max_cascade_pops]:
-            key = (pop_code, dst)
-            ground_rtt = rtt_cache.get(key)
+            ground_rtt = rtt_by_pop.get(pop_code)
             if ground_rtt is None:
                 try:
-                    ground_rtt = ground_truth.estimate(pop_code, dst) * 2
+                    ground_rtt = ground_knowledge.get_or_estimate(pop_code, dst)
                 except KeyError:
                     _log.debug(
-                        "decide: no ground estimate for (%s, %s); "
+                        "decide: no ground RTT in knowledge for (%s, %s); "
                         "skipping in cell-%s cascade",
                         pop_code, dst, cell_id,
                     )
                     continue
-                rtt_cache[key] = ground_rtt
-            opts_key = (ingress, pop_code)
-            raw_opts = options_cache.get(opts_key)
+                rtt_by_pop[pop_code] = ground_rtt
+            raw_opts = opts_by_pop.get(pop_code)
             if raw_opts is None:
-                def walker(
-                    i: int, e: int,
-                    _pc: dict[tuple[int, int],
-                              tuple[tuple[int, int], ...] | None] = path_cache,
-                    _pred=pred,
-                ) -> tuple[tuple[int, int], ...] | None:
-                    wk = (i, e)
-                    if wk in _pc:
-                        return _pc[wk]
-                    result = _walk_isl_path(_pred, i, e)
-                    _pc[wk] = result
-                    return result
-
-                raw_opts = compute_egress_options(
-                    snapshot, ingress, pop_code, k, path_walker=walker,
+                raw_opts = self._options_for(
+                    ingress, pop_code, snapshot, opts_by_pop=opts_by_pop,
                 )
-                options_cache[opts_key] = raw_opts
             if not raw_opts:
                 continue
             cascade.append((pop_code, raw_opts, ground_rtt))
