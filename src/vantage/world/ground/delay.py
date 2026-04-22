@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 
 from vantage.common import C_FIBER_KM_S, haversine_km
+from vantage.common.seed import mix_seed
 
 __all__ = [
     "GeographicGroundDelay",
@@ -70,7 +71,15 @@ class GeographicGroundDelay:
         self._base = base_ms
         self._sigma = jitter_sigma
         self._default = default_one_way_ms
-        self._rng = __import__("random").Random(seed)
+        self._seed = int(seed)
+        # Per-(pop, dest) memoized sample. A given key is sampled at
+        # most once per estimator instance; the per-key seed is
+        # derived from ``(self._seed, pop, dest)`` via :func:`mix_seed`
+        # so that two callers (e.g. baseline vs. PG controllers) that
+        # visit the same key in different orders still see the same
+        # value — call-order can no longer perturb fairness. The
+        # sample still varies across runs because ``self._seed`` does.
+        self._samples: dict[tuple[str, str], float] = {}
         # Pre-compute (pop, dest) → (mu, sigma) for LogNormal sampling
         self._distributions: dict[tuple[str, str], tuple[float, float]] = {}
         self._precompute()
@@ -94,13 +103,31 @@ class GeographicGroundDelay:
                 self._distributions[(pop_code, dest_name)] = (mu, self._sigma)
 
     def estimate(self, pop_code: str, dest_name: str) -> float:
-        """Sample one-way ground delay (ms) from LogNormal distribution."""
+        """Sample one-way ground delay (ms) from LogNormal distribution.
+
+        Memoized per ``(pop_code, dest_name)``: each key is sampled
+        once per instance using a local RNG seeded by
+        :func:`mix_seed(self._seed, pop_code, dest_name)`. Subsequent
+        calls with the same key — even from a different caller or
+        after many intervening ``estimate`` calls for other keys —
+        return the same value. This removes the call-order coupling
+        that a single shared stream would impose, while still letting
+        a fresh ``seed`` produce a fresh sample across runs.
+        """
         import math
-        params = self._distributions.get((pop_code, dest_name))
+        import random as _random
+        key = (pop_code, dest_name)
+        cached = self._samples.get(key)
+        if cached is not None:
+            return cached
+        params = self._distributions.get(key)
         if params is None:
             return self._default
         mu, sigma = params
-        return math.exp(self._rng.gauss(mu, sigma))
+        rng = _random.Random(mix_seed(self._seed, pop_code, dest_name))
+        value = math.exp(rng.gauss(mu, sigma))
+        self._samples[key] = value
+        return value
 
     def has(self, pop_code: str, dest_name: str) -> bool:
         return pop_code in self._pop_coords and dest_name in self._service_locs

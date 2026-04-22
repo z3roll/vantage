@@ -46,6 +46,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
+from vantage.common.seed import mix_seed
 from vantage.common.link_model import (
     LinkPerformance,
     bottleneck_capacity,
@@ -390,6 +391,8 @@ def realize(
     snapshot: NetworkSnapshot,
     demand: TrafficDemand,
     context: RunContext,
+    *,
+    ingress_seed_base: int = 0,
 ) -> EpochResult:
     """Execute one epoch's demand through *strategy* in two passes.
 
@@ -413,10 +416,13 @@ def realize(
     a process-wide RNG) could scatter a single terminal's flows
     across multiple ingress sats within the same epoch.
 
-    The stochastic branch uses a per-realize RNG seeded by the
-    epoch number, so that ingress sat assignment is reproducible
-    across runs with identical demand AND independent of any other
-    module that might be sharing the global utils ``_RNG``.
+    The stochastic branch uses a per-realize RNG seeded from
+    ``(ingress_seed_base, demand.epoch)`` via
+    :func:`vantage.common.seed.mix_seed`. Two controllers called with
+    the same ``ingress_seed_base`` for the same epoch draw the same
+    ingress-sat assignments, while changing ``ingress_seed_base``
+    across runs (derived from the run-level seed) varies the
+    stochastic ingress selection between runs.
     """
     sat = snapshot.satellite
     total_demand = 0.0
@@ -424,7 +430,7 @@ def realize(
     _access = SphericalAccessModel()
     _visible_cache: dict[str, list[AccessLink]] = {}
     _uplink_cache: dict[str, AccessLink | None] = {}
-    _ingress_rng = _random.Random(demand.epoch)
+    _ingress_rng = _random.Random(mix_seed(ingress_seed_base, demand.epoch))
 
     pending: list[tuple[FlowKey, float, PathDecision, EgressOption]] = []
 

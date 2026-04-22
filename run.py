@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from vantage.common.seed import derive_subseed, fresh_run_seed
 from vantage.control.policy.greedy import ProgressiveController
 from vantage.control.policy.nearest_pop import NearestPoPController
 from vantage.domain import CapacityView, CellGrid, Endpoint, UsageBook
@@ -80,7 +81,20 @@ def start_dashboard_server(port: int, directory: Path) -> socketserver.TCPServer
         def log_message(self, *_a, **_k):  # silence per-request spam
             pass
 
-    httpd = socketserver.ThreadingTCPServer(("", port), Handler)
+    class _QuietServer(socketserver.ThreadingTCPServer):
+        # Browsers routinely abort in-flight GETs while the dashboard
+        # polls (tab switch, dropdown change mid-fetch). Suppress the
+        # connection-abort tracebacks ``ThreadingTCPServer`` would
+        # otherwise dump to stderr — they are benign.
+        def handle_error(self, request, client_address):
+            import sys
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                                ConnectionAbortedError)):
+                return
+            super().handle_error(request, client_address)
+
+    httpd = _QuietServer(("", port), Handler)
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -95,7 +109,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", type=int, default=8000,
                    help="HTTP port for the dashboard (default: 8000)")
     p.add_argument("--no-browser", action="store_true",
-                   help="Don't auto-open the browser")
+                   help="Don't auto-open the browser (dashboard server still runs)")
+    p.add_argument("--no-serve", action="store_true",
+                   help="Don't start the dashboard HTTP server at all (benchmark mode)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Run-level seed controlling every stochastic subsystem "
+                        "(traffic AR(1)/Poisson, ground-delay LogNormal sampling, "
+                        "ingress-sat selection). If omitted, a fresh random seed "
+                        "is drawn for this run and printed. Use the same seed to "
+                        "reproduce a run exactly.")
     return p.parse_args()
 
 
@@ -105,23 +127,76 @@ def main() -> None:
     num_epochs: int = args.epochs
     user_scale: float = args.user_scale
 
-    # ── Launch dashboard only when we're going to serve it. With
-    # --no-browser nobody will connect, and spinning up the socket
-    # just leaves the process wedged on `while True: sleep(1)` below
-    # when the run finishes (see end of this function).
+    # ── Run-level seed → per-subsystem sub-seeds ────────────────────
+    # Baseline and PG share exactly these seeds each run, so any
+    # observed delta reflects controller behavior, not a divergent
+    # random draw between them. Each sub-seed is deterministic in
+    # (run_seed, tag) so traffic noise, ground-delay jitter, and
+    # ingress-sat selection can each vary independently across runs
+    # without coupling through a shared RNG stream.
+    run_seed: int = args.seed if args.seed is not None else fresh_run_seed()
+    traffic_seed = derive_subseed(run_seed, "traffic")
+    ground_seed = derive_subseed(run_seed, "ground_delay")
+    ingress_seed_base = derive_subseed(run_seed, "ingress")
+    print(f"Run seed: {run_seed}"
+          + (" (from --seed)" if args.seed is not None else " (auto-generated)"))
+
+    # ── Dashboard: server (optional) and auto-open browser (optional)
+    # are decoupled so headless agents can keep the server running
+    # while the human opens the URL manually.
     httpd = None
     url = f"http://localhost:{args.port}/"
-    if not args.no_browser:
+    if not args.no_serve:
         httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
         print(f"Dashboard: {url}")
-        try:
-            webbrowser.open(url)
-        except Exception:  # noqa: BLE001 — browser-open is best-effort
-            pass
+        if not args.no_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 — browser-open is best-effort
+                pass
 
     start_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = DASHBOARD_DIR / f"sim_data_{start_ts}.json"
     index_file = DASHBOARD_DIR / "index.json"
+
+    # Rebuild index.json from whatever sim_data_*.json files actually
+    # live in dashboard/ right now. This makes the dropdown reflect
+    # the disk at the start of every run — files copied in from other
+    # hosts, runs whose index entry was lost, or renames all show up
+    # without needing a saved index to already list them. Subsequent
+    # ``update_index`` calls during the run keep the current run's
+    # progress counter fresh.
+    def _index_entry_from_file(path: Path) -> dict | None:
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return None
+        cfg = data.get("config", {})
+        bl = data.get("baseline") or []
+        pg = data.get("progressive") or []
+        epochs_done = max(len(bl), len(pg))
+        ts = cfg.get("started_at") or path.stem.removeprefix("sim_data_")
+        return {
+            "filename": path.name,
+            "timestamp": ts,
+            "epochs_done": epochs_done,
+            "epochs_total": cfg.get("num_epochs", epochs_done),
+            "user_scale": cfg.get("user_scale", 1.0),
+            "mtime": path.stat().st_mtime,
+        }
+
+    scanned = [
+        _index_entry_from_file(p)
+        for p in DASHBOARD_DIR.glob("sim_data_*.json")
+    ]
+    entries = [e for e in scanned if e is not None]
+    entries.sort(key=lambda e: e["mtime"], reverse=True)
+    tmp = index_file.with_suffix(".json.tmp")
+    with open(tmp, "w") as f:
+        json.dump({"files": entries}, f)
+    tmp.replace(index_file)
+    print(f"Index: {len(entries)} sim_data files in {DASHBOARD_DIR.name}/")
 
     # ── Build ───────────────────────────────────────────────────────
     print("Building world...", flush=True)
@@ -153,6 +228,7 @@ def main() -> None:
     geo_delay = GeographicGroundDelay(
         pop_coords={p.code: (p.lat_deg, p.lon_deg) for p in ground.pops},
         service_locations=dst_locs,
+        seed=ground_seed,
     )
     gs_by_id = {gs.gs_id: gs for gs in world.ground_stations}
 
@@ -224,6 +300,13 @@ def main() -> None:
 
         gs_over = sum(1 for g in book.gs_feeder_used if book.gs_feeder_utilization(g) > 1.0)
         sf_over = sum(1 for s in book.sat_feeder_used if book.sat_feeder_utilization(s) > 1.0)
+        # Per-epoch ISL congestion. Iterate only the links that carried
+        # any traffic this epoch (``isl_used`` keys are the canonical
+        # ``(min, max)`` form used by :class:`UsageBook``). If no ISL
+        # was used, ``max_isl_util`` is 0.0 by convention.
+        isl_utils = [book.isl_utilization(a, b) for (a, b) in book.isl_used]
+        isl_over = sum(1 for u in isl_utils if u > 1.0)
+        max_isl_util = max(isl_utils) if isl_utils else 0.0
 
         svc_out = {}
         for s in svc_names:
@@ -266,6 +349,7 @@ def main() -> None:
             "mean_queue": round(np.mean([f.queuing_rtt for f in flows]), 2) if flows else 0,
             "mean_tx": round(np.mean([f.transmission_rtt for f in flows]), 2) if flows else 0,
             "gs_overloaded": gs_over, "sf_overloaded": sf_over,
+            "isl_overloaded": isl_over, "max_isl_util": round(max_isl_util, 4),
             "services": svc_out, "pops": all_pops_out,
         }
 
@@ -386,6 +470,13 @@ def main() -> None:
                 "user_scale": user_scale, "services": svc_names,
                 "total_capacity_gbps": 8 * SAT_FEEDER_CAP_GBPS * len(pop_list),
                 "started_at": start_ts,
+                "run_seed": run_seed,
+                "seed_source": "cli" if args.seed is not None else "auto",
+                "sub_seeds": {
+                    "traffic": traffic_seed,
+                    "ground_delay": ground_seed,
+                    "ingress": ingress_seed_base,
+                },
             },
             "baseline": bl_data, "progressive": pg_data,
             "latest_breakdown": {"baseline": bl_brk, "progressive": pg_brk},
@@ -399,13 +490,18 @@ def main() -> None:
     # ── Setup both controllers ──────────────────────────────────────
     gk_bl = GroundKnowledge(estimator=geo_delay)
     ctx_bl = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk_bl)
-    traffic_bl = FlowLevelGenerator(population, config_dir=DATA_DIR, epoch_interval_s=EPOCH_S,
-                                     dst_weights=dst_weights, dst_locations=dst_locs, seed=42)
     gk_pg = GroundKnowledge(estimator=geo_delay)
     ctx_pg = RunContext(world=world, endpoints=endpoints, ground_knowledge=gk_pg)
     feedback_pg = GroundDelayFeedback(gk_pg)
-    traffic_pg = FlowLevelGenerator(population, config_dir=DATA_DIR, epoch_interval_s=EPOCH_S,
-                                     dst_weights=dst_weights, dst_locations=dst_locs, seed=42)
+    # Single shared traffic generator: one stochastic source per epoch
+    # for both BL and PG. Using two independent generators — even with
+    # the same literal seed — still lets their RNG states drift apart
+    # (e.g. if one skipped a city). We generate the demand once and
+    # hand the same immutable :class:`TrafficDemand` to both
+    # controllers so BL and PG are compared on identical inputs.
+    traffic = FlowLevelGenerator(population, config_dir=DATA_DIR, epoch_interval_s=EPOCH_S,
+                                 dst_weights=dst_weights, dst_locations=dst_locs,
+                                 seed=traffic_seed)
     pg_controller = ProgressiveController(ground_knowledge=gk_pg, dest_names=tuple(svc_names))
 
     bl_plane = pg_plane = None
@@ -438,11 +534,16 @@ def main() -> None:
 
             view_bl = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_bl = UsageBook(view=view_bl)
-            demand_bl = traffic_bl.generate(epoch)
-            result_bl = realize(RoutingPlaneForward(bl_plane, cell_grid, book_bl), snap, demand_bl, ctx_bl)
+            # One stochastic draw of traffic per epoch; both controllers
+            # realize against the exact same ``TrafficDemand``.
+            demand = traffic.generate(epoch)
+            result_bl = realize(
+                RoutingPlaneForward(bl_plane, cell_grid, book_bl),
+                snap, demand, ctx_bl,
+                ingress_seed_base=ingress_seed_base,
+            )
 
-            demand_pg = traffic_pg.generate(epoch)
-            current_demand = {(fk.src, fk.dst): d for fk, d in demand_pg.flows.items()}
+            current_demand = {(fk.src, fk.dst): d for fk, d in demand.flows.items()}
 
             pg_plan_ms: float | None = None
             if pg_plane is None or epoch % REFRESH == 0:
@@ -457,7 +558,11 @@ def main() -> None:
 
             view_pg = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_pg = UsageBook(view=view_pg)
-            result_pg = realize(RoutingPlaneForward(pg_plane, cell_grid, book_pg), snap, demand_pg, ctx_pg)
+            result_pg = realize(
+                RoutingPlaneForward(pg_plane, cell_grid, book_pg),
+                snap, demand, ctx_pg,
+                ingress_seed_base=ingress_seed_base,
+            )
             feedback_pg.observe(result_pg)
 
             pop_capacity = dynamic_pop_capacity(snap)
