@@ -52,14 +52,9 @@ import numpy as np
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
 from vantage.common.seed import mix_seed
-from vantage.common.link_model import (
-    LinkPerformance,
-    bottleneck_capacity,
-    link_performance,
-    path_loss,
-    pftk_throughput,
-)
+from vantage.common.link_model import LinkPerformance, pftk_throughput
 from vantage.control.policy.common.utils import find_ingress_satellite
+from vantage.engine.measurement import ResolvedFlow, measure_flow
 from vantage.domain import (
     AccessLink,
     CellGrid,
@@ -161,23 +156,10 @@ def _walk_isl_path_row(
 # ---------------------------------------------------------------------------
 # Strategy protocol + shared result type
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedFlow:
-    """Outcome of resolving a single flow through a forward strategy."""
-
-    pop_code: str
-    gs_id: str
-    user_sat: int
-    egress_sat: int
-    satellite_rtt: float
-    ground_rtt: float
-    propagation_rtt: float = 0.0
-    queuing_rtt: float = 0.0
-    transmission_rtt: float = 0.0
-    loss_probability: float = 0.0
-    bottleneck_gbps: float = 0.0
+# :class:`ResolvedFlow` and the measure-pass logic have moved to
+# :mod:`vantage.engine.measurement`. Re-exported via ``__all__`` so
+# existing ``from vantage.forward import ResolvedFlow`` imports keep
+# working; new callers should prefer the engine module directly.
 
 
 @dataclass(frozen=True, slots=True)
@@ -995,84 +977,15 @@ class RoutingPlaneForward:
         ground_rtt_truth: float | None = None,
     ) -> ResolvedFlow:
         del snapshot  # per-hop propagation comes from the plane's sat-path table
-        sat_paths = self._sat_paths
-        book = self._book
-        view = book.view
-        isl_cache = self._isl_perf_cache
-        sf_cache = self._sf_perf_cache
-        gf_cache = self._gf_perf_cache
-
-        hop_losses: list[float] = []
-        hop_capacities: list[float] = []
-        total_queuing_oneway = 0.0
-        total_tx_oneway = 0.0
-
-        # The usage book is frozen across pass 2 so per-link performance
-        # depends only on the link id. Caching here collapses ~45 k
-        # link_performance calls (mostly ISL hops revisited by many
-        # flows) down to ~1 k unique links per realize.
-        for a, b in chosen.isl_links:
-            key = (a, b)
-            perf = isl_cache.get(key)
-            if perf is None:
-                isl_cap = view.isl_cap(a, b)
-                isl_load = book.isl_used.get(book.isl_key(a, b), 0.0)
-                perf = link_performance(
-                    sat_paths.isl_delay(a, b), isl_cap, isl_load,
-                )
-                isl_cache[key] = perf
-            total_queuing_oneway += perf.queuing_ms
-            total_tx_oneway += perf.transmission_ms
-            hop_losses.append(perf.loss_probability)
-            hop_capacities.append(view.isl_cap(a, b))
-
-        egress_sat = chosen.egress_sat
-        sf_perf = sf_cache.get(egress_sat)
-        if sf_perf is None:
-            sf_cap = view.sat_feeder_cap(egress_sat)
-            sf_load = book.sat_feeder_used.get(egress_sat, 0.0)
-            sf_perf = link_performance(0.0, sf_cap, sf_load)
-            sf_cache[egress_sat] = sf_perf
-        total_queuing_oneway += sf_perf.queuing_ms
-        total_tx_oneway += sf_perf.transmission_ms
-        hop_losses.append(sf_perf.loss_probability)
-        hop_capacities.append(view.sat_feeder_cap(egress_sat))
-
-        gs_id = chosen.gs_id
-        gf_perf = gf_cache.get(gs_id)
-        if gf_perf is None:
-            gf_cap = view.gs_feeder_cap(gs_id)
-            gf_load = book.gs_feeder_used.get(gs_id, 0.0)
-            gf_perf = link_performance(0.0, gf_cap, gf_load)
-            gf_cache[gs_id] = gf_perf
-        total_queuing_oneway += gf_perf.queuing_ms
-        total_tx_oneway += gf_perf.transmission_ms
-        hop_losses.append(gf_perf.loss_probability)
-        hop_capacities.append(view.gs_feeder_cap(gs_id))
-
-        queuing_rtt = total_queuing_oneway * 2
-        transmission_rtt = total_tx_oneway * 2
-        satellite_rtt = chosen.propagation_rtt + queuing_rtt + transmission_rtt
-
-        # Ground RTT reported back to the outer realize loop is the
-        # truth sample when available, the planner's decide-time
-        # ground_rtt otherwise. Feedback consumes the emitted value
-        # to update learned stats, so handing it truth here is what
-        # closes the "measure-truth, learn-truth-into-knowledge" loop.
-        ground_rtt = (
-            ground_rtt_truth if ground_rtt_truth is not None else chosen.ground_rtt
-        )
-
-        return ResolvedFlow(
-            pop_code=chosen.pop_code,
-            gs_id=gs_id,
-            user_sat=decision.user_sat,
-            egress_sat=egress_sat,
-            satellite_rtt=satellite_rtt,
-            ground_rtt=ground_rtt,
-            propagation_rtt=chosen.propagation_rtt,
-            queuing_rtt=queuing_rtt,
-            transmission_rtt=transmission_rtt,
-            loss_probability=path_loss(hop_losses),
-            bottleneck_gbps=bottleneck_capacity(hop_capacities),
+        # Per-link perf caches are owned by the forward (tied to its
+        # UsageBook lifecycle via :meth:`reset_for_epoch`); the actual
+        # measurement lives in :mod:`vantage.engine.measurement`.
+        return measure_flow(
+            decision, chosen,
+            book=self._book,
+            sat_paths=self._sat_paths,
+            isl_cache=self._isl_perf_cache,
+            sf_cache=self._sf_perf_cache,
+            gf_cache=self._gf_perf_cache,
+            ground_rtt_truth=ground_rtt_truth,
         )
