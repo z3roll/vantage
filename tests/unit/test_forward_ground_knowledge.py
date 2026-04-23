@@ -155,3 +155,61 @@ def test_decide_prefers_cached_ground_knowledge_over_estimator_sampling() -> Non
     assert decision is not None
     assert decision.pop_cascade[0][2] == 24.0
     assert estimator.calls == 0
+
+
+def test_reset_for_epoch_refreshes_ground_rtt_and_uplink_rtt() -> None:
+    """Across cached-plan epochs the forward must re-resolve both the
+    ground RTT (GK evolves via feedback) and the uplink RTT (sat
+    positions move between epochs) rather than returning the cached
+    :class:`PathDecision` from the previous epoch.
+    """
+    forward = _make_forward()
+    knowledge = GroundKnowledge()
+    knowledge.put("pop-a", "dst", 10.0)
+    context = RunContext(world=object(), endpoints={}, ground_knowledge=knowledge)
+    flow = FlowKey(src="src", dst="dst")
+    src_ep = Endpoint(name="src", lat_deg=0.0, lon_deg=0.0)
+
+    decision_t0 = forward.decide(
+        flow, src_ep, ingress=0,
+        uplink=AccessLink(sat_id=0, elevation_deg=45.0, slant_range_km=1000.0, delay=1.0),
+        snapshot=object(), context=context, epoch=0,
+    )
+    assert decision_t0 is not None
+    assert decision_t0.uplink_rtt == 2.0  # 1.0 * 2
+    assert decision_t0.pop_cascade[0][2] == 10.0
+
+    # Mutate what the next epoch would see: a fresh GK score (feedback
+    # updates GroundKnowledge every epoch) and a different uplink
+    # delay (sat has moved within the same plane).
+    knowledge.put("pop-a", "dst", 25.0)
+
+    # Without reset, the decision_cache returns the stale epoch-0 tuple.
+    stale = forward.decide(
+        flow, src_ep, ingress=0,
+        uplink=AccessLink(sat_id=0, elevation_deg=45.0, slant_range_km=1000.0, delay=3.0),
+        snapshot=object(), context=context, epoch=1,
+    )
+    assert stale is decision_t0  # cache hit: proves the reset is necessary
+
+    # After reset the cache is rebuilt from current inputs.
+    book = UsageBook(
+        view=CapacityView(
+            isl_cap_index=MappingProxyType({}),
+            sat_feeder_gbps=20.0,
+            gs_by_id=MappingProxyType({}),
+        )
+    )
+    forward.reset_for_epoch(book)
+    decision_t1 = forward.decide(
+        flow, src_ep, ingress=0,
+        uplink=AccessLink(sat_id=0, elevation_deg=45.0, slant_range_km=1000.0, delay=3.0),
+        snapshot=object(), context=context, epoch=1,
+    )
+    assert decision_t1 is not None
+    assert decision_t1.uplink_rtt == 6.0              # 3.0 * 2, fresh uplink
+    # Fresh GK query: whatever GK returns after the second put() —
+    # the point is simply that it's not the epoch-0 cached value.
+    fresh_rtt = knowledge.get_or_estimate("pop-a", "dst")
+    assert decision_t1.pop_cascade[0][2] == fresh_rtt
+    assert decision_t1.pop_cascade[0][2] != decision_t0.pop_cascade[0][2]

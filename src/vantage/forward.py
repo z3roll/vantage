@@ -41,16 +41,14 @@ Produces :class:`EpochResult` output. All delays in ms.
 from __future__ import annotations
 
 import logging
-import math
 import random as _random
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import numpy as np
-from numpy.typing import NDArray
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
 from vantage.common.seed import mix_seed
@@ -85,7 +83,6 @@ __all__ = [
     "PathDecision",
     "ResolvedFlow",
     "RoutingPlaneForward",
-    "compute_egress_options",
     "effective_throughput",
     "realize",
 ]
@@ -128,112 +125,6 @@ class EgressOption(NamedTuple):
     isl_links: tuple[tuple[int, int], ...]
     propagation_rtt: float    # uplink + sat-segment (RTT)
     ground_rtt: float         # PoP→destination (RTT)
-
-
-def compute_egress_options(
-    snapshot: NetworkSnapshot,
-    ingress: int,
-    pop_code: str,
-    k: int,
-    path_walker: "Callable[[int, int], tuple[tuple[int, int], ...] | None] | None" = None,
-) -> tuple[EgressOption, ...]:
-    """Top-K (egress_sat, gs, path) options to reach ``pop_code`` from
-    ``ingress``, ranked ascending by sat-segment RTT.
-
-    Controller-side helper. After the routing-plane refactor the data
-    plane consumes :class:`PopEgressTable` + :class:`SatPathTable` from
-    the plane and no longer calls this function; it remains here as
-    the planner's egress-enumeration primitive (used by
-    :class:`ProgressiveController`'s per-(cell, pop) capacity check).
-
-    Enumerates every ``(gs, sat)`` pair such that ``gs`` is attached
-    to ``pop_code`` and ``sat`` is a visible egress for ``gs``,
-    computes the round-trip cost ``ISL + downlink + backhaul``, sorts
-    ascending, takes the top *K*. Each returned option's
-    ``propagation_rtt`` carries only the *sat segment* — the caller
-    adds the uplink RTT before reporting the user-facing latency.
-    ``ground_rtt`` is set to 0 here; the caller fills it from the
-    ground-delay estimator (which depends on the destination, not
-    the route).
-
-    ``path_walker`` lets the caller supply a memoized ``_walk_isl_path``
-    — the same ``(ingress, egress)`` pair is walked by every ``(pop)``
-    whose attached GSs include that egress sat, so per-realize caching
-    collapses tens of thousands of walk calls into the ~unique-sat
-    count. If ``None``, falls back to calling ``_walk_isl_path``
-    directly (no memoization).
-    """
-    sat = snapshot.satellite
-    infra = snapshot.infra
-    candidates: list[tuple[float, int, str]] = []
-
-    for gs_id, backhaul_oneway in infra.pop_gs_edges(pop_code):
-        if infra.gs_by_id(gs_id) is None:
-            continue
-        gs_links = sat.gateway_attachments.attachments.get(gs_id)
-        if not gs_links:
-            continue
-        backhaul_rtt = backhaul_oneway * 2
-        for link in gs_links:
-            egress = link.sat_id
-            isl_one = float(sat.delay_matrix[ingress, egress])
-            if not math.isfinite(isl_one):
-                continue
-            cost = isl_one * 2 + link.delay * 2 + backhaul_rtt
-            candidates.append((cost, egress, gs_id))
-
-    candidates.sort()
-
-    if path_walker is None:
-        pred = sat.predecessor_matrix
-
-        def _walk(i: int, e: int) -> tuple[tuple[int, int], ...] | None:
-            return _walk_isl_path(pred, i, e)
-
-        walker = _walk
-    else:
-        walker = path_walker
-
-    options: list[EgressOption] = []
-    for cost, egress, gs_id in candidates[:k]:
-        if egress == ingress:
-            isl_links: tuple[tuple[int, int], ...] = ()
-        else:
-            walked = walker(ingress, egress)
-            if walked is None:
-                continue
-            isl_links = walked
-        options.append(EgressOption(
-            pop_code=pop_code,
-            egress_sat=egress,
-            gs_id=gs_id,
-            isl_links=isl_links,
-            # ISL + downlink + backhaul RTT; the caller (decide) adds
-            # the uplink RTT to produce the user-facing propagation
-            # budget. Ground RTT is per-PoP×destination so it lives
-            # outside this helper.
-            propagation_rtt=cost,
-            ground_rtt=0.0,
-        ))
-    return tuple(options)
-
-
-def _walk_isl_path(
-    pred: NDArray[np.int32], src: int, dst: int,
-) -> tuple[tuple[int, int], ...] | None:
-    """Reconstruct the ISL hop sequence from ``src`` to ``dst`` using
-    the shortest-path predecessor matrix.
-
-    ``pred[s, t]`` is "predecessor of t on the shortest path from s".
-    This wrapper materialises ``pred[src]`` as a Python list (native
-    integer access is ~2× faster than ``int(numpy_scalar)``) and then
-    defers to :func:`_walk_isl_path_row`. Hot-path callers that walk
-    many destinations from the same ``src`` should cache the row and
-    call the row variant directly to pay the ``.tolist()`` cost only
-    once per ingress."""
-    if src == dst:
-        return ()
-    return _walk_isl_path_row(pred[src].tolist(), src, dst)
 
 
 def _walk_isl_path_row(
@@ -720,6 +611,118 @@ class RoutingPlaneForward:
             int, dict[str, tuple[EgressOption, ...]]
         ] = {}
         self._ground_rtt_by_dst: dict[str, dict[str, float]] = {}
+
+    # ── Cache-reuse API: hoist RoutingPlaneForward out of the per-epoch
+    # loop and reuse the *plane-static* routing caches across
+    # cached-plan epochs. Only caches whose inputs depend purely on
+    # the bound plane survive a :meth:`reset_for_epoch` call:
+    #
+    #   * ``_options_by_ingress`` — top-K enriched options per
+    #     ``(ingress, pop)``; inputs are ``pop_egress`` + the
+    #     ``delay_row``/``pred_row`` from ``sat_paths``, both owned
+    #     by the plane.
+    #   * ``_path_cache`` — ISL hop sequences per ``(ingress, egress)``;
+    #     driven by the plane's ``pred_row``.
+    #   * ``_pred_row_cache`` — memoised ``.tolist()`` rows from the
+    #     plane's ``sat_paths.pred_row``.
+    #
+    # Caches that bake *per-epoch* inputs must be cleared every epoch,
+    # even when the plane is reused:
+    #
+    #   * ``_decision_cache`` — each :class:`PathDecision` stores
+    #     ``uplink_rtt = uplink.delay * 2`` taken from the epoch's
+    #     :class:`AccessLink` (sat positions move between epochs, so
+    #     ``delay`` differs even when the ingress sat id is the same)
+    #     plus a cascade whose per-PoP ``ground_rtt`` was resolved
+    #     from the current :class:`GroundKnowledge` state (which the
+    #     feedback loop mutates every epoch).
+    #   * ``_ground_rtt_by_dst`` — memoises
+    #     :meth:`GroundKnowledge.get_or_estimate` results, which
+    #     evolve across epochs as learned stats accumulate.
+    #   * ``_isl_perf_cache`` / ``_sf_perf_cache`` / ``_gf_perf_cache``
+    #     — derived from the previous epoch's :class:`UsageBook` state.
+    #
+    # Callers MUST re-construct a new :class:`RoutingPlaneForward`
+    # when the plane changes (identity check via :attr:`plane` or
+    # version check via :attr:`plane_version`).
+
+    @property
+    def plane(self) -> RoutingPlane:
+        """The :class:`RoutingPlane` this forward is bound to."""
+        return self._plane
+
+    @property
+    def plane_version(self) -> int:
+        """Version tag of the bound plane. Callers that want to
+        decide whether to reuse vs. rebuild the forward should
+        compare ``bl_forward.plane is bl_plane`` (identity) or
+        ``bl_forward.plane_version == bl_plane.version`` (value)."""
+        return int(self._plane.version)
+
+    @classmethod
+    def for_epoch(
+        cls,
+        previous: "RoutingPlaneForward | None",
+        routing_plane: RoutingPlane,
+        cell_grid: CellGrid,
+        usage_book: UsageBook,
+        *,
+        k: int = 8,
+        max_cascade_pops: int | None = None,
+    ) -> "RoutingPlaneForward":
+        """Return a forward wired to ``usage_book`` for this epoch.
+
+        Centralises the cache-reuse policy so callers (``run.py`` /
+        the engine) never have to reason about plane identity or
+        cache lifetimes themselves — they just hand in the previous
+        forward (or ``None``) and the plane + book for the epoch
+        they're about to realize.
+
+        * If ``previous`` is still bound to ``routing_plane``
+          (identity check), the plane-static caches carry over and
+          only the per-epoch ones are dropped via
+          :meth:`reset_for_epoch`.
+        * Otherwise a fresh instance is constructed with empty
+          caches.
+        """
+        if previous is not None and previous._plane is routing_plane:
+            previous.reset_for_epoch(usage_book)
+            return previous
+        return cls(
+            routing_plane, cell_grid, usage_book,
+            k=k, max_cascade_pops=max_cascade_pops,
+        )
+
+    def reset_for_epoch(self, usage_book: UsageBook) -> None:
+        """Re-bind the per-epoch :class:`UsageBook` and drop every
+        cache whose contents depend on per-epoch inputs.
+
+        Cleared:
+
+        * ``_decision_cache`` — each :class:`PathDecision` bakes the
+          current epoch's ``uplink_rtt`` and GK-derived per-PoP
+          ``ground_rtt`` into its cascade, so a cached decision from
+          epoch *t* is not a safe decision at epoch *t+1*.
+        * ``_ground_rtt_by_dst`` — memoised GK scores evolve as the
+          feedback loop mutates :class:`GroundKnowledge`.
+        * ``_isl_perf_cache`` / ``_sf_perf_cache`` / ``_gf_perf_cache``
+          — derived from the previous epoch's :class:`UsageBook`.
+
+        Preserved (plane-static):
+
+        * ``_options_by_ingress`` — top-K options per ``(ingress, pop)``
+          come from the plane's ``pop_egress`` + ``sat_paths``.
+        * ``_path_cache`` — ISL hop sequences via the plane's
+          ``pred_row``.
+        * ``_pred_row_cache`` — memoised rows of the plane's
+          ``sat_paths.pred_row``.
+        """
+        self._book = usage_book
+        self._decision_cache.clear()
+        self._ground_rtt_by_dst.clear()
+        self._isl_perf_cache.clear()
+        self._sf_perf_cache.clear()
+        self._gf_perf_cache.clear()
 
     def _pred_row_for(self, ingress: int) -> list[int]:
         """Return ``pred[ingress]`` as a Python list, cached per realize.

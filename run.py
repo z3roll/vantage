@@ -569,6 +569,11 @@ def main() -> None:
     pg_controller = ProgressiveController(ground_knowledge=gk_pg, dest_names=tuple(svc_names))
 
     bl_plane = pg_plane = None
+    # Forward lifecycle (reuse vs. rebuild, cache invalidation) is
+    # owned by RoutingPlaneForward.for_epoch — we just carry the
+    # previous instances so the factory can decide.
+    bl_forward: RoutingPlaneForward | None = None
+    pg_forward: RoutingPlaneForward | None = None
     bl_data: list = []
     pg_data: list = []
     compare_data: list = []
@@ -603,9 +608,11 @@ def main() -> None:
             # One stochastic draw of traffic per epoch; both controllers
             # realize against the exact same ``TrafficDemand``.
             demand = traffic.generate(epoch)
+            bl_forward = RoutingPlaneForward.for_epoch(
+                bl_forward, bl_plane, cell_grid, book_bl,
+            )
             result_bl = realize(
-                RoutingPlaneForward(bl_plane, cell_grid, book_bl),
-                snap, demand, ctx_bl,
+                bl_forward, snap, demand, ctx_bl,
                 ingress_seed_base=ingress_seed_base,
             )
             feedback_bl.observe(result_bl)
@@ -619,7 +626,6 @@ def main() -> None:
                 pg_plane = pg_controller.compute_routing_plane(
                     snapshot=snap, cell_grid=cell_grid,
                     demand_per_pair=current_demand,
-                    sat_feeder_cap_gbps=world.shell.feeder_capacity_gbps,
                     version=epoch,
                 )
                 pg_plan_ms = (time.perf_counter() - t_pg_plan) * 1000
@@ -627,9 +633,11 @@ def main() -> None:
 
             view_pg = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_pg = UsageBook(view=view_pg)
+            pg_forward = RoutingPlaneForward.for_epoch(
+                pg_forward, pg_plane, cell_grid, book_pg,
+            )
             result_pg = realize(
-                RoutingPlaneForward(pg_plane, cell_grid, book_pg),
-                snap, demand, ctx_pg,
+                pg_forward, snap, demand, ctx_pg,
                 ingress_seed_base=ingress_seed_base,
             )
             feedback_pg.observe(result_pg)

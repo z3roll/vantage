@@ -48,8 +48,33 @@ __all__ = [
     "build_sat_path_table",
     "compute_cell_ingress",
     "compute_cell_sat_cost",
+    "compute_pop_capacity",
     "rank_pops_by_e2e",
 ]
+
+
+def compute_pop_capacity(snapshot: NetworkSnapshot) -> dict[str, float]:
+    """Per-PoP aggregate ingress capacity (Gbps) from the ground segment.
+
+    For each :class:`~vantage.domain.PoP`, sums
+    :attr:`~vantage.domain.GroundStation.max_capacity` across every
+    GS attached to the PoP via ``gs_pop_edges``. This is the
+    coarse-grained envelope the planner uses to rank PoPs against
+    aggregate demand — it is **not** a realize-time enforcement
+    knob. Fine-grained per-sat-feeder / per-GS-feeder limits remain
+    the data plane's responsibility (see
+    :class:`~vantage.forward.RoutingPlaneForward`).
+    """
+    infra = snapshot.infra
+    caps: dict[str, float] = {}
+    for pop in infra.pops:
+        total = 0.0
+        for gs_id, _ in infra.pop_gs_edges(pop.code):
+            gs = infra.gs_by_id(gs_id)
+            if gs is not None:
+                total += gs.max_capacity
+        caps[pop.code] = total
+    return caps
 
 def build_sat_path_table(
     snapshot: NetworkSnapshot,

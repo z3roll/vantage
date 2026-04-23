@@ -1,10 +1,13 @@
 """Progressive controller: improvement-first per-destination PoP assignment.
 
-For each (cell, destination), picks the PoP that minimises
-``sat_cost + ground_cost`` while respecting per-PoP capacity. Items
-are processed in *expected RTT-saving* order so limited capacity
-goes to the cells that benefit most — not to those that already
-have low absolute latency.
+Coarse-grained planner. For each (cell, destination), picks the PoP
+that minimises ``sat_cost + ground_cost`` while respecting
+**PoP-aggregate** capacity (sum of attached GS.max_capacity).
+Fine-grained egress-satellite / GS selection — and any future
+ISL-capacity handling — stays in the data plane
+(:class:`~vantage.forward.RoutingPlaneForward`), which still has
+the last word via its multi-egress reroute + baseline fallback at
+realize time.
 
 Algorithm:
 
@@ -16,16 +19,13 @@ Algorithm:
 
        improvement = baseline_E2E_cost - best_alt_E2E_cost
 
-   where ``baseline_pop`` is the cell's geographic nearest PoP. Skip
-   pairs with non-positive improvement or zero demand — the data
-   plane will route them via the baseline default at lookup time.
+   where ``baseline_pop`` is the cell's geographic nearest PoP.
 3. Sort the surviving pairs by ``improvement × demand`` descending
    — biggest aggregate RTT saving first.
 4. Greedy first-fit through each pair's ranking, respecting per-PoP
-   capacity. On overflow (no candidate PoP has remaining capacity),
-   fall back to the cell's nearest PoP. Each cell's nearest differs,
-   so overflow scatters geographically rather than concentrating on
-   the most popular E2E-best PoP.
+   aggregate capacity. On cascade exhaustion, overflow goes to the
+   least-loaded-ratio PoP so contention spreads instead of piling
+   on the single most-popular E2E-best PoP.
 
 This is value-density greedy for a multi-knapsack / generalised
 assignment problem (NP-hard). Empirically within ~10–20% of the
@@ -45,8 +45,8 @@ from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     build_pop_egress_table,
     build_sat_path_table,
-    compute_cell_ingress,
     compute_cell_sat_cost,
+    compute_pop_capacity,
     rank_pops_by_e2e,
 )
 from vantage.domain import (
@@ -55,11 +55,12 @@ from vantage.domain import (
     NetworkSnapshot,
     RoutingPlane,
 )
-from vantage.forward import compute_egress_options
 from vantage.world.ground import GroundKnowledge
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
+
+    from vantage.domain import PoP
 
 _log = logging.getLogger(__name__)
 
@@ -145,7 +146,11 @@ class ProgressiveController:
         return derived
 
     def _make_ground_cost(
-        self, *, current_epoch: int,
+        self,
+        *,
+        current_epoch: int,
+        pops: "Iterable[PoP] | None" = None,
+        dest_names: "Iterable[str] | None" = None,
     ) -> "Callable[[str, str], float | None]":
         """Build the ``(pop, dest) → cost_ms`` function used for this plan.
 
@@ -155,7 +160,7 @@ class ProgressiveController:
         argument of :meth:`compute_routing_plane`, which is wired to
         the current epoch in ``run.py``).
 
-        Behaviour:
+        Behaviour per pair:
 
         1. If :meth:`GroundKnowledge.score` returns a value — i.e. a
            learned stat exists for the pair — that score is used.
@@ -169,18 +174,21 @@ class ProgressiveController:
         3. If neither is available return ``None`` so
            :func:`rank_pops_by_e2e` drops the pair from the ranking.
 
-        Returning a closure (rather than folding ``score`` directly
-        into :func:`rank_pops_by_e2e` / :func:`_progressive_filling`)
-        keeps both helpers' ``(pop, dest) → float | None`` contract
-        unchanged — the scoring knob lives entirely inside the
-        controller.
+        When ``pops`` **and** ``dest_names`` are both supplied the
+        table is **precomputed once per refresh** and the returned
+        lookup is a plain ``dict.get`` — this is the hot path
+        invoked from :meth:`compute_routing_plane`. Otherwise
+        (external callers / tests that probe ad-hoc pairs) the
+        returned callable evaluates on demand so unknown pairs
+        still resolve correctly. Semantics are identical in both
+        modes; only the per-call cost differs.
         """
         gk = self._gk
         estimator = gk.estimator
         lambda_dev = self._score_lambda_dev
         stale_per_epoch_ms = self._score_stale_per_epoch_ms
 
-        def cost(pop_code: str, dest: str) -> float | None:
+        def compute(pop_code: str, dest: str) -> float | None:
             scored = gk.score(
                 pop_code, dest,
                 current_epoch=current_epoch,
@@ -196,7 +204,27 @@ class ProgressiveController:
             except KeyError:
                 return None
 
-        return cost
+        if pops is None or dest_names is None:
+            return compute
+
+        # Precompute hot path: rank_pops_by_e2e + _progressive_filling
+        # together evaluate ground_cost ~ O(n_cells × n_dests × n_pops)
+        # times per refresh (~10⁶ calls at production scale). The
+        # score is cell-independent, so one (pop, dest) entry covers
+        # every cell — drop the call count from 10⁶ to n_pops ×
+        # n_dests (~48 × 14 ≈ 700) and keep the per-lookup work at a
+        # single ``dict.get``.
+        table: dict[tuple[str, str], float | None] = {}
+        dest_tuple = tuple(dest_names)
+        for pop in pops:
+            pop_code = pop.code
+            for dest in dest_tuple:
+                table[(pop_code, dest)] = compute(pop_code, dest)
+
+        def lookup(pop_code: str, dest: str) -> float | None:
+            return table.get((pop_code, dest))
+
+        return lookup
 
     def compute_routing_plane(
         self,
@@ -204,7 +232,6 @@ class ProgressiveController:
         cell_grid: CellGrid,
         *,
         demand_per_pair: dict[tuple[str, str], float] | None = None,
-        sat_feeder_cap_gbps: float = 20.0,
         version: int = 0,
     ) -> RoutingPlane:
         pops = snapshot.infra.pops
@@ -220,13 +247,19 @@ class ProgressiveController:
         t_prime = t0  # retained so the timing report below keeps a
                        # "prime_gk_ms" field valued at 0.
 
-        # Build a scoring closure bound to ``version`` (= current
-        # epoch at plan build time) so :func:`rank_pops_by_e2e` and
-        # :func:`_progressive_filling` share the same cost accounting
-        # — same mean + noise + staleness penalty on both the
-        # baseline side and the alternates side of the improvement
-        # delta.
-        ground_cost = self._make_ground_cost(current_epoch=int(version))
+        # Build a per-refresh scoring table bound to ``version`` (=
+        # current epoch at plan build time) so :func:`rank_pops_by_e2e`
+        # and :func:`_progressive_filling` share the same cost
+        # accounting — same mean + noise + staleness penalty on both
+        # the baseline side and the alternates side of the
+        # improvement delta. Passing ``pops`` + ``dest_names`` forces
+        # the precomputed-table path: ~10⁶ per-call evaluations
+        # collapse to ~700 one-time ones.
+        ground_cost = self._make_ground_cost(
+            current_epoch=int(version),
+            pops=pops,
+            dest_names=dest_names,
+        )
 
         # 1. Baseline: nearest PoP per cell. Used as both the data-plane
         #    fallback for cells without overrides AND the reference
@@ -250,26 +283,23 @@ class ProgressiveController:
         )
         t_rankings = perf()
 
-        # 3. Improvement-first greedy assignment with per-sat-feeder
-        # capacity tracking. The egress-sat callback tells
-        # `_progressive_filling` which sat a given (cell, pop) pair
-        # will contend for so it can sum load against the 20 Gbps
-        # per-Ka-feeder cap rather than the 160 Gbps per-PoP
-        # aggregate. Data plane (RoutingPlaneForward) still has the
-        # last word via its multi-egress reroute + baseline fallback
-        # if the controller's plan proves wrong at realize time.
-        cell_ingress = compute_cell_ingress(snapshot, cell_grid)
-        cell_pop_egress = _build_egress_resolver(snapshot, cell_ingress)
-        t_cell_ingress = perf()
+        # 3. Improvement-first greedy assignment against PoP-aggregate
+        # capacity. PG is coarse-grained: it contends at the PoP
+        # level only. Per-sat-feeder and per-GS-feeder contention is
+        # enforced at realize time by RoutingPlaneForward, which
+        # additionally has multi-egress reroute + baseline fallback
+        # if the planner's choice is suboptimal under the actual
+        # fine-grained load.
+        pop_cap = compute_pop_capacity(snapshot)
+        t_pop_cap = perf()
         assignments = _progressive_filling(
             rankings=rankings,
             baseline=baseline,
             cell_grid=cell_grid,
             cell_sat_cost=cell_sat_cost,
             ground_cost_fn=ground_cost,
-            cell_pop_egress=cell_pop_egress,
+            pop_cap=pop_cap,
             demand_per_pair=demand_per_pair or {},
-            sat_feeder_cap_gbps=sat_feeder_cap_gbps,
         )
         t_progressive = perf()
 
@@ -323,8 +353,8 @@ class ProgressiveController:
             "baseline_ms": (t_baseline - t_prime) * 1000.0,
             "cell_sat_cost_ms": (t_cell_sat - t_baseline) * 1000.0,
             "rankings_ms": (t_rankings - t_cell_sat) * 1000.0,
-            "cell_ingress_ms": (t_cell_ingress - t_rankings) * 1000.0,
-            "progressive_fill_ms": (t_assemble - t_cell_ingress) * 1000.0,
+            "pop_cap_ms": (t_pop_cap - t_rankings) * 1000.0,
+            "progressive_fill_ms": (t_assemble - t_pop_cap) * 1000.0,
             "sat_paths_ms": (t_sat_paths - t_assemble) * 1000.0,
             "pop_egress_ms": (t_pop_egress - t_sat_paths) * 1000.0,
         })
@@ -338,78 +368,42 @@ class ProgressiveController:
         )
 
 
-def _build_egress_resolver(
-    snapshot: NetworkSnapshot,
-    cell_ingress: dict[int, int],
-    *,
-    k: int = 8,
-) -> Callable[[int, str], tuple[int, ...]]:
-    """Build a cached ``(cell, pop) → top-K egress sats`` callback.
-
-    Wraps :func:`compute_egress_options` (the same helper the data
-    plane uses) so the controller's capacity check considers every
-    sat the data plane could route flows through. Cache key is
-    ``(ingress, pop)`` — multiple cells sharing the same ingress
-    reuse the same result.
-
-    Returns a tuple of egress sat IDs ordered ascending by sat-segment
-    RTT (the same order the data plane walks). Empty tuple means no
-    reachable egress for this (cell, pop) — :func:`_progressive_filling`
-    treats that pair as unassignable from this cell.
-    """
-    cache: dict[tuple[int, str], tuple[int, ...]] = {}
-
-    def resolver(cell_id: int, pop_code: str) -> tuple[int, ...]:
-        ingress = cell_ingress.get(cell_id)
-        if ingress is None:
-            return ()
-        key = (ingress, pop_code)
-        if key not in cache:
-            opts = compute_egress_options(snapshot, ingress, pop_code, k=k)
-            cache[key] = tuple(o.egress_sat for o in opts)
-        return cache[key]
-
-    return resolver
-
-
 def _progressive_filling(
     rankings: dict[tuple[int, str], list[tuple[str, float]]],
     baseline: CellToPopTable,
     cell_grid: CellGrid,
     cell_sat_cost: dict[tuple[int, str], float],
     ground_cost_fn: Callable[[str, str], float | None],
-    cell_pop_egress: Callable[[int, str], tuple[int, ...]],
+    pop_cap: Mapping[str, float],
     demand_per_pair: dict[tuple[str, str], float],
-    sat_feeder_cap_gbps: float,
 ) -> dict[tuple[int, str], str]:
-    """Capacity-aware greedy assignment with full-cascade walk.
+    """Capacity-aware greedy assignment at PoP granularity.
+
+    PG plans coarsely: it picks a PoP per (cell, dest) against a
+    **PoP-aggregate** capacity budget (sum of GS.max_capacity on
+    GSs attached to the PoP). Fine-grained egress-sat / GS
+    selection, and any future ISL-capacity handling, remain the
+    data plane's responsibility.
 
     For each (cell, dest) with positive demand:
 
     * Aggregate ``demand`` across every endpoint hosted by this cell
-      that targets ``dest`` (a single cell can host many endpoints).
+      that targets ``dest``.
     * Compute ``improvement`` = ``baseline_cost - best_alt_cost``
       using the cell's geographic-nearest PoP as baseline.
     * Items are processed in descending order of
-      ``improvement × demand`` (negative-improvement items go last
-      so positive-improvement cells claim scarce capacity first).
+      ``improvement × demand`` — so positive-improvement cells
+      claim scarce PoP capacity first; negative-improvement items
+      still enter the queue so the controller emits a cascade for
+      every (cell, dest) with traffic.
 
-    For each item, walk the *full* E2E-sorted ranking and within
-    each PoP walk *all* top-K egress sats: the first
-    ``(pop, sat)`` whose ``sat_load`` plus this cell's aggregate
-    demand stays under ``sat_feeder_cap_gbps`` wins. This matches
-    the data plane's per-sat first-fit so plan-time and realize-time
-    decisions stay aligned. Walking all K sats per PoP (instead of
-    only the primary) lets the controller fill every Ka antenna at
-    a GS before moving to the next-ranked PoP, eliminating the
-    pathology where one PoP's primary sat saturates while its 7
-    siblings sit empty.
-
-    Last-resort fallback (every (pop, sat) in the ranking is full):
-    pick the (pop, sat) with the *lowest current load ratio* and
-    accept the overflow — distributes the unfittable demand evenly
-    rather than always landing on the same hot spot. Mirrors the
-    data plane's defensive ``charge`` tail.
+    For each item, walk the full E2E-sorted ranking and pick the
+    first PoP whose ``pop_load[pop] + demand ≤ pop_cap[pop]``. On
+    cascade exhaustion, overflow goes to the PoP with the lowest
+    current load ratio so contention spreads rather than always
+    stacking on the single most-popular PoP. The data plane's
+    defensive fallback handles any residual overrun at realize
+    time.
 
     Returns ``{(cell, dest) → pop}`` for every (cell, dest) with
     positive demand. ``compute_routing_plane`` consumes this to
@@ -425,12 +419,7 @@ def _progressive_filling(
 
     # ── Build the work queue of (priority, cell, dest, demand) ──
     # ``priority`` = ``improvement × demand``; we negate so a plain
-    # ascending sort orders by priority descending. Negative
-    # improvement items still enter the queue (they go last) so
-    # the controller emits a capacity-aware plan for every (cell,
-    # dest) with traffic — including the ones where baseline is
-    # already E2E-optimal but might still need fallback sat
-    # diversity at realize time.
+    # ascending sort orders by priority descending.
     queue: list[tuple[float, int, str, float]] = []
     for (cell_id, dest), ranked in rankings.items():
         if not ranked:
@@ -461,62 +450,42 @@ def _progressive_filling(
         improvement = baseline_cost - best_alt_cost
         queue.append((-(improvement * demand), cell_id, dest, demand))
 
-    # Tuple sort: primary key is the negated priority. Subsequent
-    # tuple elements (cell_id int, dest str) provide a stable,
-    # deterministic tie-break across runs with identical inputs.
     queue.sort()
 
-    # ── Greedy first-fit across the full PoP × per-PoP-sats grid ──
-    sat_load: dict[int, float] = {}
+    # ── Greedy first-fit at PoP granularity ──
+    pop_load: dict[str, float] = {}
     assignments: dict[tuple[int, str], str] = {}
     for _priority, cell_id, dest, demand in queue:
         ranked = rankings[(cell_id, dest)]
         chosen_pop: str | None = None
-        chosen_sat: int | None = None
-
-        # Track the global best fallback (lowest load ratio across
-        # the entire cascade) in case nothing fits — used as the
-        # least-bad overflow target.
         best_fallback_pop: str | None = None
-        best_fallback_sat: int | None = None
         best_fallback_ratio = float("inf")
 
         for pop_code, _cost in ranked:
-            egress_sats = cell_pop_egress(cell_id, pop_code)
-            if not egress_sats:
+            cap = pop_cap.get(pop_code, 0.0)
+            if cap <= 0.0:
                 continue
-            for egress_sat in egress_sats:
-                current = sat_load.get(egress_sat, 0.0)
-                if current + demand <= sat_feeder_cap_gbps:
-                    chosen_pop = pop_code
-                    chosen_sat = egress_sat
-                    break
-                ratio = current / max(sat_feeder_cap_gbps, 1e-9)
-                if ratio < best_fallback_ratio:
-                    best_fallback_ratio = ratio
-                    best_fallback_pop = pop_code
-                    best_fallback_sat = egress_sat
-            if chosen_pop is not None:
+            current = pop_load.get(pop_code, 0.0)
+            if current + demand <= cap:
+                chosen_pop = pop_code
                 break
+            ratio = current / cap
+            if ratio < best_fallback_ratio:
+                best_fallback_ratio = ratio
+                best_fallback_pop = pop_code
 
         if chosen_pop is None:
-            # Genuine cascade exhaustion: every (pop, sat) we could
-            # find is over capacity. Accept the overflow on the
-            # least-loaded option so the contention spreads instead
-            # of stacking on one sat. ``best_fallback_*`` is None
-            # only when literally no PoP in the cascade had any
-            # reachable egress sat — pathological enough to log.
-            if best_fallback_pop is None or best_fallback_sat is None:
+            if best_fallback_pop is None:
                 _log.warning(
                     "_progressive_filling: cell %d / dest %r has no "
-                    "reachable egress in the cascade; routing this "
-                    "cell will fail at realize time.", cell_id, dest,
+                    "PoP with positive capacity in the cascade; "
+                    "routing this cell will fall back to baseline.",
+                    cell_id, dest,
                 )
                 continue
             chosen_pop = best_fallback_pop
-            chosen_sat = best_fallback_sat
 
         assignments[(cell_id, dest)] = chosen_pop
-        sat_load[chosen_sat] = sat_load.get(chosen_sat, 0.0) + demand
+        pop_load[chosen_pop] = pop_load.get(chosen_pop, 0.0) + demand
 
     return assignments
