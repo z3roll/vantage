@@ -10,6 +10,7 @@ routing: fixed topology built once, only edge weights recomputed per timeslot.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from types import MappingProxyType
 
@@ -44,6 +45,7 @@ class SatelliteSegment:
         gateway_top_k: int = 8,
         routing: RoutingComputer | None = None,
         use_tvg: bool = True,
+        state_cache_slots: int = 2,
     ) -> None:
         self._constellation = constellation
         self._topology = topology_builder
@@ -52,6 +54,11 @@ class SatelliteSegment:
         self._visibility = visibility
         self._gateway_top_k = gateway_top_k
         self._routing: RoutingComputer = routing or compute_all_pairs
+        if state_cache_slots < 1:
+            raise ValueError(
+                f"state_cache_slots must be >= 1, got {state_cache_slots}"
+            )
+        self._state_cache_slots = state_cache_slots
 
         # Validate and cache shell
         self._shell = self._get_shell()
@@ -67,8 +74,11 @@ class SatelliteSegment:
                 )
             self._tvg = TimeVaryingISLGraph(self._shell)
 
-        # Timeslot → SatelliteState cache
-        self._state_cache: dict[int, SatelliteState] = {}
+        # Timeslot → SatelliteState cache. Keep only a tiny LRU window:
+        # the simulator advances at 1 s but constellation timeslots are
+        # ~15 s apart, so retaining the current/adjacent slots preserves
+        # reuse while preventing unbounded growth across a long run.
+        self._state_cache: OrderedDict[int, SatelliteState] = OrderedDict()
 
     @property
     def shell(self) -> ShellConfig:
@@ -91,10 +101,13 @@ class SatelliteSegment:
 
         With TVG enabled: positions → vectorized weight update → scipy Dijkstra.
         Without TVG: positions → topology build → routing backend.
-        Results are cached per timeslot so repeated queries are O(1).
+        Results are cached in a small LRU window so repeated queries for
+        the active timeslot stay O(1) without retaining every historical
+        routing matrix for the whole run.
         """
         cached = self._state_cache.get(timeslot)
         if cached is not None:
+            self._state_cache.move_to_end(timeslot)
             return cached
 
         positions = self._constellation.positions_array_at(timeslot, self._shell_id)
@@ -121,6 +134,9 @@ class SatelliteSegment:
             gateway_attachments=gw,
         )
         self._state_cache[timeslot] = state
+        self._state_cache.move_to_end(timeslot)
+        while len(self._state_cache) > self._state_cache_slots:
+            self._state_cache.popitem(last=False)
         return state
 
     def _compute_gateway_attachments(self, positions):
