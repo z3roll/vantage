@@ -15,12 +15,11 @@ live while the simulation is still running.
 from __future__ import annotations
 
 import argparse
-import errno
-import http.server
+import gc
 import json
-import socketserver
+import socket
+import subprocess
 import sys
-import threading
 import time
 import webbrowser
 from collections import defaultdict
@@ -30,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from vantage.common.seed import derive_subseed, fresh_run_seed
+from vantage.control.policy.dualprice import DualPriceController
 from vantage.control.policy.greedy import ProgressiveController
 from vantage.control.policy.nearest_pop import NearestPoPController
 from vantage.domain import CapacityView, CellGrid, Endpoint, UsageBook
@@ -83,32 +83,26 @@ def _round_ms(d) -> dict:
     return {k: round(float(v), 2) for k, v in d.items()}
 
 
-def start_dashboard_server(port: int, directory: Path) -> socketserver.TCPServer:
-    """Spin up http.server in a daemon thread rooted at ``directory``."""
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *a, **k):
-            super().__init__(*a, directory=str(directory), **k)
+def port_in_use(port: int) -> bool:
+    """Whether some process is already listening on localhost:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
-        def log_message(self, *_a, **_k):  # silence per-request spam
-            pass
 
-    class _QuietServer(socketserver.ThreadingTCPServer):
-        # Browsers routinely abort in-flight GETs while the dashboard
-        # polls (tab switch, dropdown change mid-fetch). Suppress the
-        # connection-abort tracebacks ``ThreadingTCPServer`` would
-        # otherwise dump to stderr — they are benign.
-        def handle_error(self, request, client_address):
-            import sys
-            exc = sys.exc_info()[1]
-            if isinstance(exc, (BrokenPipeError, ConnectionResetError,
-                                ConnectionAbortedError)):
-                return
-            super().handle_error(request, client_address)
-
-    httpd = _QuietServer(("", port), Handler)
-    httpd.daemon_threads = True
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+def start_dashboard_server(port: int, directory: Path) -> subprocess.Popen:
+    """Launch a detached http.server process rooted at ``directory``."""
+    return subprocess.Popen(
+        [
+            sys.executable, "-m", "http.server", str(port),
+            "--bind", "127.0.0.1",
+            "--directory", str(directory),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +117,10 @@ def parse_args() -> argparse.Namespace:
                    help="Don't auto-open the browser (dashboard server still runs)")
     p.add_argument("--no-serve", action="store_true",
                    help="Don't start the dashboard HTTP server at all (benchmark mode)")
+    p.add_argument("--pg-policy", choices=("greedy", "dualprice"), default="greedy",
+                   help="Which policy the 'progressive' column uses: "
+                        "greedy (ProgressiveController, default) or "
+                        "dualprice (DualPriceController with incumbent guard).")
     p.add_argument("--seed", type=int, default=None,
                    help="Run-level seed controlling every stochastic subsystem "
                         "(traffic AR(1)/Poisson, ground-delay LogNormal sampling, "
@@ -130,6 +128,18 @@ def parse_args() -> argparse.Namespace:
                         "is drawn for this run and printed. Use the same seed to "
                         "reproduce a run exactly.")
     return p.parse_args()
+
+
+def collect_refresh_gc() -> None:
+    """Run a full cyclic-GC pass at routing-plane refresh boundaries.
+
+    ``realize()`` allocates heavily enough that letting CPython trigger
+    gen2 collections opportunistically inside BL/PG forward passes shows
+    up as large wall-clock spikes. We keep automatic cyclic GC disabled
+    during the hot loop and explicitly pay that stop-the-world cost only
+    when the routing planes refresh.
+    """
+    gc.collect(2)
 
 
 def main() -> None:
@@ -155,33 +165,23 @@ def main() -> None:
     # ── Dashboard: server (optional) and auto-open browser (optional)
     # are decoupled so headless agents can keep the server running
     # while the human opens the URL manually.
-    httpd = None
     url = f"http://localhost:{args.port}/"
     # Browser auto-open is deferred to after the world-build summary
     # below — opening the tab before the build finishes made it spin
-    # on an empty index for ~30 s. ``should_open_browser`` flips on
-    # whenever the dashboard URL is reachable (either we bound to it
-    # ourselves or a pre-existing server is already serving the same
-    # ``dashboard/`` directory on that port) and the user did not
-    # pass ``--no-browser``.
+    # on an empty index for ~30 s. ``run.py`` is only responsible for
+    # checking whether the dashboard port is already occupied and, if
+    # not, starting a detached HTTP server process. The sim run never
+    # owns the server lifetime, so Ctrl-C stops only the simulation.
     should_open_browser = False
     if not args.no_serve:
-        # A port already in use is a recoverable condition — it's
-        # typically another run.py still serving the same dashboard
-        # directory, so the URL the user sees is still live. We print
-        # it to stdout and auto-open the browser anyway. Other bind
-        # errors are still fatal.
-        try:
-            httpd = start_dashboard_server(args.port, DASHBOARD_DIR)
-        except OSError as exc:
-            if exc.errno != errno.EADDRINUSE:
-                raise
+        if port_in_use(args.port):
             print(f"Port {args.port} already in use — another server is "
                   f"already bound to it. Reusing that server.")
             print(f"Dashboard: {url}")
             if not args.no_browser:
                 should_open_browser = True
         else:
+            start_dashboard_server(args.port, DASHBOARD_DIR)
             print(f"Dashboard: {url}")
             if not args.no_browser:
                 should_open_browser = True
@@ -566,7 +566,15 @@ def main() -> None:
     # so run.py can read each one's ``last_timing`` after a plan
     # rebuild and export the per-step breakdown to the dashboard.
     bl_controller = NearestPoPController()
-    pg_controller = ProgressiveController(ground_knowledge=gk_pg, dest_names=tuple(svc_names))
+    if args.pg_policy == "dualprice":
+        pg_controller = DualPriceController(
+            ground_knowledge=gk_pg, dest_names=tuple(svc_names),
+        )
+    else:
+        pg_controller = ProgressiveController(
+            ground_knowledge=gk_pg, dest_names=tuple(svc_names),
+        )
+    print(f"PG policy: {args.pg_policy}")
 
     bl_plane = pg_plane = None
     # Forward lifecycle (reuse vs. rebuild, cache invalidation) is
@@ -585,6 +593,10 @@ def main() -> None:
           f"{'wall':>5}")
     print("-" * 95)
 
+    gc_was_enabled = gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+
     t_wall_start = time.perf_counter()
 
     try:
@@ -594,34 +606,24 @@ def main() -> None:
 
             snap = world.snapshot_at(epoch, t)
             gk_bl.set_clock(t); gk_pg.set_clock(t)
+            refresh_epoch = bl_plane is None or epoch % REFRESH == 0
 
             bl_plan_ms: float | None = None
             bl_plan_timing: dict = {}
-            if bl_plane is None or epoch % REFRESH == 0:
+            if refresh_epoch:
                 t_bl_plan = time.perf_counter()
                 bl_plane = bl_controller.compute_routing_plane(snap, cell_grid, version=epoch)
                 bl_plan_ms = (time.perf_counter() - t_bl_plan) * 1000
                 bl_plan_timing = dict(bl_controller.last_timing)
 
-            view_bl = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
-            book_bl = UsageBook(view=view_bl)
             # One stochastic draw of traffic per epoch; both controllers
             # realize against the exact same ``TrafficDemand``.
             demand = traffic.generate(epoch)
-            bl_forward = RoutingPlaneForward.for_epoch(
-                bl_forward, bl_plane, cell_grid, book_bl,
-            )
-            result_bl = realize(
-                bl_forward, snap, demand, ctx_bl,
-                ingress_seed_base=ingress_seed_base,
-            )
-            feedback_bl.observe(result_bl)
-
             current_demand = {(fk.src, fk.dst): d for fk, d in demand.flows.items()}
 
             pg_plan_ms: float | None = None
             pg_plan_timing: dict = {}
-            if pg_plane is None or epoch % REFRESH == 0:
+            if refresh_epoch:
                 t_pg_plan = time.perf_counter()
                 pg_plane = pg_controller.compute_routing_plane(
                     snapshot=snap, cell_grid=cell_grid,
@@ -630,6 +632,20 @@ def main() -> None:
                 )
                 pg_plan_ms = (time.perf_counter() - t_pg_plan) * 1000
                 pg_plan_timing = dict(pg_controller.last_timing)
+
+            if refresh_epoch and gc_was_enabled:
+                collect_refresh_gc()
+
+            view_bl = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
+            book_bl = UsageBook(view=view_bl)
+            bl_forward = RoutingPlaneForward.for_epoch(
+                bl_forward, bl_plane, cell_grid, book_bl,
+            )
+            result_bl = realize(
+                bl_forward, snap, demand, ctx_bl,
+                ingress_seed_base=ingress_seed_base,
+            )
+            feedback_bl.observe(result_bl)
 
             view_pg = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
             book_pg = UsageBook(view=view_pg)
@@ -699,16 +715,13 @@ def main() -> None:
                       f"{t_ep:>4.1f}s")
     except KeyboardInterrupt:
         print("\nInterrupted — partial results saved to", out_file)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
     wall_total = time.perf_counter() - t_wall_start
     print(f"\nDone in {wall_total:.0f}s ({wall_total / 60:.1f} min)")
     print(f"Data: {out_file}")
-    # No trailing ``while True: sleep`` keep-alive: the HTTP server
-    # runs in a daemon thread, so returning from ``main`` lets the
-    # interpreter tear it down as the process exits. Users who want
-    # the dashboard up longer can keep a separate instance running
-    # in another terminal — but the sim run itself shouldn't require
-    # a second Ctrl-C to quit.
 
 
 if __name__ == "__main__":
