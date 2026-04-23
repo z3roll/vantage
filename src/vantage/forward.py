@@ -317,6 +317,13 @@ def realize(
     _visible_cache: dict[str, list[AccessLink]] = {}
     _uplink_cache: dict[str, AccessLink | None] = {}
     _ingress_rng = _random.Random(mix_seed(ingress_seed_base, demand.epoch))
+    # Window-scoped ingress pin lives on the strategy (survives
+    # reset_for_epoch, drops on plane refresh). Absent on strategies
+    # that don't opt in — those fall back to per-epoch selection.
+    _get_pin = getattr(strategy, "uplink_sat_pin", None)
+    _uplink_sat_pin: dict[str, int] | None = (
+        _get_pin() if callable(_get_pin) else None
+    )
 
     pending: list[tuple[FlowKey, float, PathDecision, EgressOption]] = []
 
@@ -348,13 +355,33 @@ def realize(
                     DEFAULT_MIN_ELEVATION_DEG,
                 )
             visible = _visible_cache[src_name]
-            _uplink_cache[src_name] = (
-                find_ingress_satellite(
-                    src_ep, sat.positions,
-                    rng=_ingress_rng, _visible=visible,
+            link: AccessLink | None = None
+            if visible:
+                # Prefer the window-pinned sat if it's still visible;
+                # its AccessLink comes from the *current* epoch's
+                # geometry so uplink.delay reflects current sat
+                # position (only the sat *id* is frozen across the
+                # window, not the RTT).
+                pinned_sat = (
+                    None if _uplink_sat_pin is None
+                    else _uplink_sat_pin.get(src_name)
                 )
-                if visible else None
-            )
+                if pinned_sat is not None:
+                    for v in visible:
+                        if v.sat_id == pinned_sat:
+                            link = v
+                            break
+                if link is None:
+                    # No pin, or pinned sat dropped below horizon:
+                    # fresh stochastic pick, then (re-)pin so the
+                    # rest of the window stays stable.
+                    link = find_ingress_satellite(
+                        src_ep, sat.positions,
+                        rng=_ingress_rng, _visible=visible,
+                    )
+                    if link is not None and _uplink_sat_pin is not None:
+                        _uplink_sat_pin[src_name] = link.sat_id
+            _uplink_cache[src_name] = link
             ingress_s += _perf() - t0
         uplink = _uplink_cache[src_name]
         if uplink is None:
@@ -510,7 +537,8 @@ class RoutingPlaneForward:
         "_ground_rtt_by_dst", "_isl_perf_cache",
         "_k", "_max_cascade_pops", "_options_by_ingress",
         "_path_cache", "_plane", "_pop_egress", "_pred_row_cache",
-        "_sat_paths", "_sf_perf_cache",
+        "_sat_paths", "_sf_perf_cache", "_template_cache",
+        "_uplink_sat_pin",
     )
 
     def __init__(
@@ -593,6 +621,42 @@ class RoutingPlaneForward:
             int, dict[str, tuple[EgressOption, ...]]
         ] = {}
         self._ground_rtt_by_dst: dict[str, dict[str, float]] = {}
+        # Per-(ingress, cell, dst) "route template" — the plane-derived
+        # skeleton of a decision: the ordered list of
+        # ``(pop_code, raw_opts)`` pairs that survived the empty-egress
+        # filter at first decide(). ``None`` is an explicit "no route"
+        # marker so we don't re-probe pops_of() every epoch for dead
+        # pairs.
+        #
+        # Survives :meth:`reset_for_epoch` because its inputs are all
+        # plane-bound: the ranked cascade comes from
+        # ``_plane.cell_to_pop.pops_of`` (frozen for the refresh
+        # window), and ``raw_opts`` comes from the plane-static
+        # ``_options_by_ingress``. What the template intentionally
+        # does *not* carry is the per-epoch stuff — uplink RTT and
+        # GK-derived ground RTT are stitched in fresh each epoch so
+        # the feedback-learned GK state still moves decisions and the
+        # measurement pipeline still sees current-epoch truth.
+        self._template_cache: dict[
+            tuple[int, int, str],
+            tuple[tuple[str, tuple[EgressOption, ...]], ...] | None,
+        ] = {}
+        # Per-``src`` pinned ingress sat id, scoped to the refresh
+        # window. :func:`realize` reads/writes this in place so a
+        # terminal's ingress stays fixed across every cached-plan
+        # epoch in the window — the stochastic 80/20 branch of
+        # :func:`find_ingress_satellite` fires only on first sight
+        # (or when the pinned sat drops below horizon). Survives
+        # :meth:`reset_for_epoch` (window-static); drops automatically
+        # when ``for_epoch`` rebuilds the forward on plane refresh,
+        # which is exactly the point where a new window begins.
+        #
+        # Window key: the forward instance's lifetime (= plane
+        # identity via :meth:`for_epoch`). NOT tied to the REFRESH
+        # constant and NOT an injected parameter — it piggybacks on
+        # the existing plane-refresh invalidation point so run.py
+        # stays thin.
+        self._uplink_sat_pin: dict[str, int] = {}
 
     # ── Cache-reuse API: hoist RoutingPlaneForward out of the per-epoch
     # loop and reuse the *plane-static* routing caches across
@@ -607,6 +671,14 @@ class RoutingPlaneForward:
     #     driven by the plane's ``pred_row``.
     #   * ``_pred_row_cache`` — memoised ``.tolist()`` rows from the
     #     plane's ``sat_paths.pred_row``.
+    #   * ``_template_cache`` — the per-``(ingress, cell, dst)`` route
+    #     template (ordered ``(pop, raw_opts)`` list), derived solely
+    #     from ``_plane.cell_to_pop`` + ``_options_by_ingress``. Reused
+    #     across every cached-plan epoch within a refresh window.
+    #   * ``_uplink_sat_pin`` — per-``src`` pinned ingress sat id for
+    #     the window. :func:`realize` reuses the pinned sat if still
+    #     visible; falls back to :func:`find_ingress_satellite` (and
+    #     re-pins) only when the pin drops below horizon.
     #
     # Caches that bake *per-epoch* inputs must be cleared every epoch,
     # even when the plane is reused:
@@ -632,6 +704,12 @@ class RoutingPlaneForward:
     def plane(self) -> RoutingPlane:
         """The :class:`RoutingPlane` this forward is bound to."""
         return self._plane
+
+    def uplink_sat_pin(self) -> dict[str, int]:
+        """Window-scoped ``src_name → pinned_sat_id`` map shared with
+        :func:`realize`. Caller reads/writes in place; the dict's
+        lifetime is the forward instance (i.e. the refresh window)."""
+        return self._uplink_sat_pin
 
     @property
     def plane_version(self) -> int:
@@ -698,6 +776,12 @@ class RoutingPlaneForward:
           ``pred_row``.
         * ``_pred_row_cache`` — memoised rows of the plane's
           ``sat_paths.pred_row``.
+        * ``_template_cache`` — per-``(ingress, cell, dst)`` route
+          template reused across every cached-plan epoch within a
+          refresh window (see the class-level comment for contents).
+        * ``_uplink_sat_pin`` — per-``src`` ingress sat id pinned for
+          the refresh window; keeps the ingress deterministic across
+          cached-plan epochs (see the class-level comment).
         """
         self._book = usage_book
         self._decision_cache.clear()
@@ -833,50 +917,34 @@ class RoutingPlaneForward:
         if cached is not None or cache_key in self._decision_cache:
             return cached
 
-        try:
-            pop_codes = self._plane.cell_to_pop.pops_of(
-                cell_id, dest=flow_key.dst,
-            )
-        except KeyError:
+        # ── Plane-static template: built once, reused across every
+        # cached-plan epoch within the refresh window. Contains only
+        # the plane-derived skeleton — the ordered cascade of PoPs
+        # that have non-empty raw_opts, paired with the raw options
+        # themselves. Uplink RTT and per-PoP ground RTT stay out of
+        # the template so the feedback-learned GK and per-epoch
+        # geometry can still drive each epoch's PathDecision.
+        template = self._build_or_get_template(
+            ingress, cell_id, flow_key.dst, snapshot,
+        )
+        if template is None:
             self._decision_cache[cache_key] = None
             return None
-        if not pop_codes:
-            self._decision_cache[cache_key] = None
-            return None
 
-        ground_knowledge = context.ground_knowledge
-
-        uplink_rtt = uplink.delay * 2
-
-        # Build the cascade lazily: each entry is
-        # ``(pop_code, raw_options_for_this_pop, ground_rtt)``. The
-        # raw options come from the per-``(ingress, pop)`` cache
-        # (shared across every flow originating at this ingress),
-        # so no per-flow allocation happens here beyond the cascade
-        # tuple itself. ``charge`` materialises a single enriched
-        # :class:`EgressOption` only for the option it picks.
-        #
-        # PoPs whose ground-knowledge service cannot provide an RTT
-        # (cache miss + no estimator) or whose egress options are
-        # empty are skipped — the cascade just gets shorter for this
-        # flow rather than rejecting it.
-        cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
+        # ── Per-epoch stitch: uplink RTT (from the epoch's AccessLink)
+        # + per-PoP ground RTT (from the epoch's GroundKnowledge).
+        # ``_ground_rtt_by_dst`` is cleared every reset_for_epoch so
+        # these values track the current GK state.
         dst = flow_key.dst
-        # Resolve per-ingress / per-dst sub-dicts once per decide call
-        # so the 48-PoP cascade loop only touches a single
-        # ``dict.get(str)`` per cache — no tuple allocation per
-        # iteration. At 1.4 M cascade iterations per epoch the tuple
-        # construction was the largest remaining per-iter cost after
-        # the earlier pred-row / vectorised-options changes.
+        ground_knowledge = context.ground_knowledge
+        uplink_rtt = uplink.delay * 2
         rtt_by_pop = self._ground_rtt_by_dst.get(dst)
         if rtt_by_pop is None:
             rtt_by_pop = {}
             self._ground_rtt_by_dst[dst] = rtt_by_pop
-        opts_by_pop = self._options_by_ingress.get(ingress)
-        if opts_by_pop is None:
-            opts_by_pop = {}
-            self._options_by_ingress[ingress] = opts_by_pop
-        for pop_code in pop_codes[: self._max_cascade_pops]:
+
+        cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
+        for pop_code, raw_opts in template:
             ground_rtt = rtt_by_pop.get(pop_code)
             if ground_rtt is None:
                 try:
@@ -889,13 +957,6 @@ class RoutingPlaneForward:
                     )
                     continue
                 rtt_by_pop[pop_code] = ground_rtt
-            raw_opts = opts_by_pop.get(pop_code)
-            if raw_opts is None:
-                raw_opts = self._options_for(
-                    ingress, pop_code, snapshot, opts_by_pop=opts_by_pop,
-                )
-            if not raw_opts:
-                continue
             cascade.append((pop_code, raw_opts, ground_rtt))
 
         if not cascade:
@@ -908,6 +969,59 @@ class RoutingPlaneForward:
         )
         self._decision_cache[cache_key] = decision
         return decision
+
+    def _build_or_get_template(
+        self,
+        ingress: int,
+        cell_id: int,
+        dst: str,
+        snapshot: NetworkSnapshot,
+    ) -> tuple[tuple[str, tuple[EgressOption, ...]], ...] | None:
+        """Return the plane-static route template for
+        ``(ingress, cell_id, dst)`` — ordered ``(pop, raw_opts)`` pairs
+        with empty-egress PoPs already filtered out. Cached across
+        epochs because every input (plane cell_to_pop, plane-derived
+        raw_opts) is frozen for the refresh window; per-epoch state
+        (uplink, GK) is deliberately absent so the caller can stitch
+        those in fresh each epoch.
+
+        ``None`` is an explicit "no route" marker — an empty-cascade
+        pair stays in the cache so we don't re-probe
+        :meth:`CellToPopTable.pops_of` every epoch for dead pairs.
+        """
+        key = (ingress, cell_id, dst)
+        template = self._template_cache.get(key)
+        if template is not None or key in self._template_cache:
+            return template
+
+        try:
+            pop_codes = self._plane.cell_to_pop.pops_of(cell_id, dest=dst)
+        except KeyError:
+            self._template_cache[key] = None
+            return None
+        if not pop_codes:
+            self._template_cache[key] = None
+            return None
+
+        opts_by_pop = self._options_by_ingress.get(ingress)
+        if opts_by_pop is None:
+            opts_by_pop = {}
+            self._options_by_ingress[ingress] = opts_by_pop
+
+        entries: list[tuple[str, tuple[EgressOption, ...]]] = []
+        for pop_code in pop_codes[: self._max_cascade_pops]:
+            raw_opts = opts_by_pop.get(pop_code)
+            if raw_opts is None:
+                raw_opts = self._options_for(
+                    ingress, pop_code, snapshot, opts_by_pop=opts_by_pop,
+                )
+            if not raw_opts:
+                continue
+            entries.append((pop_code, raw_opts))
+
+        template = tuple(entries) if entries else None
+        self._template_cache[key] = template
+        return template
 
     def charge(
         self, decision: PathDecision, flow_demand: float,
