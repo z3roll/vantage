@@ -28,7 +28,6 @@ slides/
 tests/*
 !tests/unit/
 tests/unit/*
-!tests/unit/test_forward_ground_knowledge.py
 scripts/
 
 # Local session journals & ad-hoc experiment scripts
