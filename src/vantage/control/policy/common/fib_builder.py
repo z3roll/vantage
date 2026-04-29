@@ -24,7 +24,7 @@ unit-tested without spinning up a full snapshot.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
 import numpy as np
@@ -43,6 +43,7 @@ from vantage.domain import (
 
 __all__ = [
     "build_cell_to_pop_nearest",
+    "build_demand_items",
     "build_pop_egress_table",
     "build_routing_plane_nearest_pop",
     "build_sat_path_table",
@@ -50,6 +51,7 @@ __all__ = [
     "compute_cell_sat_cost",
     "compute_pop_capacity",
     "rank_pops_by_e2e",
+    "walk_cascade_feasible",
 ]
 
 
@@ -475,6 +477,83 @@ def rank_pops_by_e2e(
                 rankings[(cell_id, dest)] = scored
 
     return rankings
+
+
+def build_demand_items(
+    demand_per_pair: Mapping[tuple[str, str], float],
+    cell_grid: CellGrid,
+) -> list[tuple[int, str, float]]:
+    """Aggregate endpoint-level demand into ``(cell, dst, total_demand)`` triples.
+
+    Drops zero/negative demand and endpoints whose ``cell_grid``
+    mapping is missing. Preserves the caller's ``demand_per_pair``
+    insertion order — greedy cascade walkers downstream consume this
+    list in order, so the caller controls tie-breaking under capacity
+    contention by ordering the dict (seeded traffic generation gives
+    a reproducible order in practice).
+    """
+    agg: dict[tuple[int, str], float] = {}
+    for (ep_name, dst), d in demand_per_pair.items():
+        if d <= 0.0:
+            continue
+        cell_id = cell_grid.endpoint_to_cell.get(ep_name)
+        if cell_id is None:
+            continue
+        key = (cell_id, dst)
+        agg[key] = agg.get(key, 0.0) + d
+    return [(c, d, demand) for (c, d), demand in agg.items()]
+
+
+def walk_cascade_feasible(
+    mapping: Mapping[int, tuple[str, ...]],
+    items: Iterable[tuple[int, str, float]],
+    pop_cap: Mapping[str, float],
+) -> dict[tuple[int, str], str]:
+    """First-fit cascade walk with least-loaded-ratio overflow.
+
+    For each ``(cell_id, dst, demand)`` triple, walks the cell's
+    geographic PoP cascade from ``mapping`` in order and picks the
+    first PoP whose remaining aggregate capacity can absorb
+    ``demand``. If every cascade PoP would overflow, falls back to
+    the cascade PoP whose current load-ratio ``used/cap`` is lowest
+    — matching the data-plane hot-potato behavior at PoP (not
+    per-sat-feeder) granularity.
+
+    Items whose cell is absent from ``mapping`` or whose cascade has
+    no PoP with positive capacity are silently dropped (callers
+    typically fall back to baseline ``mapping`` head at assembly
+    time).
+
+    Iteration order of ``items`` governs greedy tie-breaking under
+    contention: earlier items get first dibs on scarce capacity.
+    """
+    load: dict[str, float] = {}
+    assignments: dict[tuple[int, str], str] = {}
+    for cell_id, dst, demand in items:
+        cascade = mapping.get(cell_id, ())
+        chosen: str | None = None
+        for pop in cascade:
+            cap = pop_cap.get(pop, 0.0)
+            if cap <= 0.0:
+                continue
+            if load.get(pop, 0.0) + demand <= cap:
+                chosen = pop
+                break
+        if chosen is None:
+            best_ratio = float("inf")
+            for pop in cascade:
+                cap = pop_cap.get(pop, 0.0)
+                if cap <= 0.0:
+                    continue
+                ratio = load.get(pop, 0.0) / cap
+                if ratio < best_ratio:
+                    best_ratio = ratio
+                    chosen = pop
+        if chosen is None:
+            continue
+        assignments[(cell_id, dst)] = chosen
+        load[chosen] = load.get(chosen, 0.0) + demand
+    return assignments
 
 
 def build_routing_plane_nearest_pop(
