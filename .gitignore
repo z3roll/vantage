@@ -17,6 +17,8 @@ data/
 refine-logs/
 future.md
 CLAUDE.md
+AGENTS.md
+docs/
 
 # Generated artifacts (large, rebuildable from sim runs).
 # Keep the dashboard page itself tracked; ignore everything else the
