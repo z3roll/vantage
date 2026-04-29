@@ -23,12 +23,13 @@ import sys
 import time
 import webbrowser
 from collections import defaultdict
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 from vantage.common.seed import derive_subseed, fresh_run_seed
+from vantage.control.feedback import GroundDelayFeedback
+from vantage.control.knowledge import GroundKnowledge
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     compute_cell_sat_cost,
@@ -43,22 +44,23 @@ from vantage.control.policy.lpround import (
 )
 from vantage.control.policy.milp import MILPController
 from vantage.control.policy.nearest_pop import NearestPoPController
-from vantage.domain import CapacityView, CellGrid, Endpoint, UsageBook
-from vantage.engine.context import RunContext
-from vantage.engine.feedback import GroundDelayFeedback
 from vantage.forward import RoutingPlaneForward, realize
-from vantage.traffic import EndpointPopulation, FlowLevelGenerator
-from vantage.world.ground import (
+from vantage.forward.execution.context import RunContext
+from vantage.forward.resources.accounting import CapacityView, UsageBook
+from vantage.model import CellGrid
+from vantage.model.ground import (
     GeographicGroundDelay,
     GroundInfrastructure,
-    GroundKnowledge,
     GroundTruth,
 )
-from vantage.world.satellite import SatelliteSegment
-from vantage.world.satellite.constellation import XMLConstellationModel
-from vantage.world.satellite.topology import PlusGridTopology
-from vantage.world.satellite.visibility import SphericalAccessModel
-from vantage.world.world import WorldModel
+from vantage.model.satellite import (
+    PlusGridTopology,
+    SatelliteSegment,
+    SphericalAccessModel,
+    XMLConstellationModel,
+)
+from vantage.model.network import WorldModel
+from vantage.traffic import Endpoint, EndpointPopulation, FlowLevelGenerator
 
 # ── Paths (all relative to this script so cwd doesn't matter) ───────────────
 REPO_ROOT = Path(__file__).resolve().parent
@@ -277,28 +279,25 @@ def main() -> None:
 
     # ── Build ───────────────────────────────────────────────────────
     print("Building world...", flush=True)
-    ground = GroundInfrastructure(DATA_DIR)
+    ground = GroundInfrastructure.from_config(DATA_DIR)
     if args.max_gs_per_pop > 0:
         # Prune each PoP's GS attachments to the N closest (by
         # backhaul_delay) to create capacity pressure. Pure experiment
         # knob — mutates the frozen dataset in memory only.
         from collections import defaultdict as _dd
         _by_pop: dict[str, list] = _dd(list)
-        for e in ground._gs_pop_edges:
+        for e in ground.gs_pop_edges:
             _by_pop[e.pop_code].append(e)
         kept: list = []
-        for pop_code, edges in _by_pop.items():
+        for _pop_code, edges in _by_pop.items():
             edges.sort(key=lambda e: e.backhaul_delay)
             kept.extend(edges[: args.max_gs_per_pop])
-        ground._gs_pop_edges = tuple(kept)
-        ground._gs_to_pops = {}
-        ground._pop_to_gs = {}
-        for e in ground._gs_pop_edges:
-            ground._gs_to_pops.setdefault(e.gs_id, []).append(e)
-            ground._pop_to_gs.setdefault(e.pop_code, []).append(e)
-        _kept_per_pop = {p: len(v) for p, v in ground._pop_to_gs.items()}
+        ground = ground.with_gs_pop_edges(tuple(kept))
+        _kept_per_pop: dict[str, int] = {}
+        for e in ground.gs_pop_edges:
+            _kept_per_pop[e.pop_code] = _kept_per_pop.get(e.pop_code, 0) + 1
         print(f"Pruned GS attachments: max {args.max_gs_per_pop} GS/PoP → "
-              f"{len(ground._gs_pop_edges)} edges; "
+              f"{len(ground.gs_pop_edges)} edges; "
               f"PoPs w/ GSs: {len(_kept_per_pop)}/{len(ground.pops)}")
     satellite = SatelliteSegment(
         constellation=XMLConstellationModel(str(XML), dt_s=15.0),
@@ -358,10 +357,8 @@ def main() -> None:
     # pass ``--no-browser``; a port-busy fallback or a build failure
     # earlier in this function both leave it false, so no tab opens.
     if should_open_browser:
-        try:
+        with suppress(Exception):
             webbrowser.open(url)
-        except Exception:  # noqa: BLE001 — browser-open is best-effort
-            pass
 
     def compute_breakdown(result, top_contrib: int = 12, top_sats: int = 12) -> dict:
         pop_country_svc: dict[str, dict[tuple[str, str], float]] = defaultdict(
@@ -863,7 +860,12 @@ def main() -> None:
                                 out[key] = base[0]
                     return out
 
-                def _plan_stats(assignment):
+                def _compute_plan_stats(
+                    assignment,
+                    items,
+                    cell_sat_cost,
+                    ground_cost,
+                ):
                     """Demand-weighted mean / sat / gnd / p95 / p99 on
                     the assignment's predicted RTT pool. Sat RTT from
                     ``cell_sat_cost``; ground RTT from the planner's
@@ -878,14 +880,14 @@ def main() -> None:
                     sats: list[float] = []
                     gnds: list[float] = []
                     demands: list[float] = []
-                    for cell_id, dst, demand, _ in _items:
+                    for cell_id, dst, demand, _ in items:
                         pop = assignment.get((cell_id, dst))
                         if pop is None:
                             continue
-                        sat = _csc.get((cell_id, pop))
+                        sat = cell_sat_cost.get((cell_id, pop))
                         if sat is None:
                             continue
-                        gnd = _ground_cost(pop, dst) or 0.0
+                        gnd = ground_cost(pop, dst) or 0.0
                         rtts.append(sat + gnd)
                         sats.append(sat)
                         gnds.append(gnd)
@@ -911,7 +913,9 @@ def main() -> None:
                         assign, _items, _pop_cap,
                         overflow_penalty=overflow_penalty,
                     ), 2)
-                    stats = _plan_stats(assign)
+                    stats = _compute_plan_stats(
+                        assign, _items, _csc, _ground_cost,
+                    )
                     plan_stats[label] = {k: round(v, 3) for k, v in stats.items()}
                 # LB comes directly from the LP solver (res.fun) —
                 # LP's own GK may have drifted from PG's by this point,

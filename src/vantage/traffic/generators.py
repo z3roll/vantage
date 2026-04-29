@@ -14,7 +14,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from vantage.common import haversine_km
-from vantage.domain import FlowKey, TrafficDemand
+from vantage.traffic.types import FlowKey, TrafficDemand
 from vantage.traffic.population import EndpointPopulation
 
 
@@ -139,7 +139,7 @@ class FlowLevelGenerator:
 
     def _build_city_gravity(self) -> None:
         dsts = self._population.destinations
-        for ci, cg in enumerate(self._city_groups):
+        for cg in self._city_groups:
             keys: list[str] = []
             raw: list[float] = []
             for dst in dsts:

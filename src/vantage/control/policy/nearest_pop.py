@@ -32,11 +32,10 @@ from vantage.control.policy.common.fib_builder import (
     compute_pop_capacity,
     walk_cascade_feasible,
 )
-from vantage.domain import (
+from vantage.control.plane import CellToPopTable, RoutingPlane
+from vantage.model import (
     CellGrid,
-    CellToPopTable,
     NetworkSnapshot,
-    RoutingPlane,
 )
 
 

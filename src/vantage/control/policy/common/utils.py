@@ -12,8 +12,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
-from vantage.domain import AccessLink, Endpoint
-from vantage.world.satellite.visibility import SphericalAccessModel
+from vantage.model.satellite import SphericalAccessModel
+from vantage.model.satellite.state import AccessLink
+from vantage.traffic.types import Endpoint
 
 _ACCESS_MODEL = SphericalAccessModel()
 _RNG = _random.Random(0)

@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -49,18 +49,12 @@ from vantage.control.policy.common.fib_builder import (
     compute_pop_capacity,
     rank_pops_by_e2e,
 )
-from vantage.domain import (
-    CellGrid,
-    CellToPopTable,
-    NetworkSnapshot,
-    RoutingPlane,
-)
-from vantage.world.ground import GroundKnowledge
+from vantage.control.knowledge import GroundKnowledge
+from vantage.control.plane import CellToPopTable, RoutingPlane
+from vantage.model import CellGrid, NetworkSnapshot
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
-
-    from vantage.domain import PoP
+    from vantage.model import PoP
 
 _log = logging.getLogger(__name__)
 
@@ -149,9 +143,9 @@ class ProgressiveController:
         self,
         *,
         current_epoch: int,
-        pops: "Iterable[PoP] | None" = None,
-        dest_names: "Iterable[str] | None" = None,
-    ) -> "Callable[[str, str], float | None]":
+        pops: Iterable[PoP] | None = None,
+        dest_names: Iterable[str] | None = None,
+    ) -> Callable[[str, str], float | None]:
         """Build the ``(pop, dest) → cost_ms`` function used for this plan.
 
         Bound to ``current_epoch`` so the staleness penalty reflects
@@ -301,7 +295,6 @@ class ProgressiveController:
             pop_cap=pop_cap,
             demand_per_pair=demand_per_pair or {},
         )
-        t_progressive = perf()
 
         # 4. Assemble RoutingPlane. Emit a per_dest cascade for
         # *every* (cell, dest) the controller has rankings for —

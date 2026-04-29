@@ -54,18 +54,14 @@ from vantage.control.policy.common.fib_builder import (
     compute_pop_capacity,
     rank_pops_by_e2e,
 )
-from vantage.domain import (
-    CellGrid,
-    CellToPopTable,
-    NetworkSnapshot,
-    RoutingPlane,
-)
-from vantage.world.ground import GroundKnowledge
+from vantage.control.knowledge import GroundKnowledge
+from vantage.control.plane import CellToPopTable, RoutingPlane
+from vantage.model import CellGrid, NetworkSnapshot
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    from vantage.domain import PoP
+    from vantage.model import PoP
 
 
 _log = logging.getLogger(__name__)

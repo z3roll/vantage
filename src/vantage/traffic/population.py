@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import h3
 
-from vantage.domain import Endpoint
+from vantage.traffic.types import Endpoint
 
 # Target users per sub-endpoint. Big cities (NY ~830k Starlink users at
 # scale=5) split into ~ceil(user_count / TARGET) sub-endpoints, so a

@@ -52,18 +52,14 @@ from vantage.control.policy.lpround import (
     _repair_overflow,
     _solve_lp_and_round,
 )
-from vantage.domain import (
-    CellGrid,
-    CellToPopTable,
-    NetworkSnapshot,
-    RoutingPlane,
-)
-from vantage.world.ground import GroundKnowledge
+from vantage.control.knowledge import GroundKnowledge
+from vantage.control.plane import CellToPopTable, RoutingPlane
+from vantage.model import CellGrid, NetworkSnapshot
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    from vantage.domain import PoP
+    from vantage.model import PoP
 
 
 _log = logging.getLogger(__name__)

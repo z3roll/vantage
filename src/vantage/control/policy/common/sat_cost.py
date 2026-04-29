@@ -34,7 +34,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vantage.common import access_delay
-from vantage.domain import NetworkSnapshot
+from vantage.model import NetworkSnapshot
 
 __all__ = [
     "PerSatRouting",
@@ -116,7 +116,7 @@ def precompute_per_sat_routing(snapshot: NetworkSnapshot) -> PerSatRouting:
     the *first-encountered* ``(egress_sat, gs_id)`` wins. Iteration
     order is fixed because (a) ``snapshot.infra.pops`` is a tuple,
     (b) ``pop_gs_edges`` is built from an insertion-ordered dict in
-    ``InfrastructureView.__post_init__``, and (c) each GS's
+    ``GroundInfrastructure.__post_init__``, and (c) each GS's
     ``gateway_attachments.attachments`` entry is a tuple. As long as
     the snapshot is built the same way across epochs, this function
     is deterministic.

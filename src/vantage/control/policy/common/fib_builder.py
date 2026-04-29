@@ -30,16 +30,14 @@ from types import MappingProxyType
 import numpy as np
 from numpy.typing import NDArray
 
-from vantage.control.policy.common.sat_cost import precompute_sat_cost
-from vantage.domain import (
-    CellGrid,
+from vantage.control.plane import (
     CellToPopTable,
-    NetworkSnapshot,
-    PoP,
     PopEgressTable,
     RoutingPlane,
     SatPathTable,
 )
+from vantage.control.policy.common.sat_cost import precompute_sat_cost
+from vantage.model import CellGrid, NetworkSnapshot, PoP
 
 __all__ = [
     "build_cell_to_pop_nearest",
@@ -58,8 +56,8 @@ __all__ = [
 def compute_pop_capacity(snapshot: NetworkSnapshot) -> dict[str, float]:
     """Per-PoP aggregate ingress capacity (Gbps) from the ground segment.
 
-    For each :class:`~vantage.domain.PoP`, sums
-    :attr:`~vantage.domain.GroundStation.max_capacity` across every
+    For each :class:`~vantage.model.PoP`, sums
+    :attr:`~vantage.model.GroundStation.max_capacity` across every
     GS attached to the PoP via ``gs_pop_edges``. This is the
     coarse-grained envelope the planner uses to rank PoPs against
     aggregate demand — it is **not** a realize-time enforcement
