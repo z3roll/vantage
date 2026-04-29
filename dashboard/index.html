@@ -2,18 +2,46 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Baseline vs Progressive — Live Dashboard</title>
+<title>Baseline · Progressive · LP · MILP — Live Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, Helvetica, Arial, sans-serif; background: #f5f5f5; color: #333; padding: 12px; }
   h1 { text-align: center; margin-bottom: 4px; font-size: 20px; }
   .subtitle { text-align: center; color: #888; margin-bottom: 12px; font-size: 12px; }
-  .summary { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .summary { display: flex; gap: 10px; justify-content: center; align-items: stretch;
+             flex-wrap: wrap; margin-bottom: 12px; }
+  .summary-group { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+                   align-items: stretch; }
+  .summary-group[data-label]::before {
+    content: attr(data-label);
+    align-self: center;
+    font-size: 10px;
+    color: #888;
+    font-weight: 600;
+    padding: 0 6px 0 0;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    min-width: 60px;
+    text-align: right;
+  }
+  .summary-divider { width: 1px; background: #d8d8d8; align-self: stretch;
+                     min-height: 58px; margin: 0 2px; }
   .card { background: #fff; border-radius: 6px; padding: 10px 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 110px; text-align: center; }
   .card .label { font-size: 10px; color: #888; text-transform: uppercase; }
   .card .value { font-size: 18px; font-weight: 600; margin-top: 2px; }
   .card .sub { font-size: 12px; font-weight: 600; }
+  /* Latency-card rows: one row per percentile (mean / p95 / p99).
+     Left = metric name, right = value. Improvement % is appended
+     inline to the value in small text so three rows fit in a card
+     without stretching the dashboard vertically. */
+  .card .row { display: flex; justify-content: space-between; align-items: baseline;
+               gap: 8px; font-size: 12px; margin-top: 3px; }
+  .card .row .k { color: #888; }
+  .card .row .v { font-weight: 600; }
+  .card .row .pct { font-size: 10px; margin-left: 4px; }
+  .card .row .pct.improve { color: #2e7d32; }
+  .card .row .pct.worsen  { color: #c62828; }
   .improve { color: #2e7d32; }
   .worsen { color: #c62828; }
   /* 12-column grid: lets each panel claim a span from 3 (quarter) to
@@ -28,20 +56,21 @@
   .chart-box.two-third { grid-column: span 8; }
   .chart-box.third    { grid-column: span 4; }
   .chart-box.quarter  { grid-column: span 3; }
-  /* Sub-row for exactly 5 equally-sized panels on one line — used for
-     the latency overview (E2E / P95 / P99 / Sat / Gnd). The 12-col
-     parent grid can't split into 5 equal spans, so this nested grid
-     occupies the full row and redistributes into 5 tracks of its own. */
-  .row-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
-           grid-column: 1 / -1; }
-  .row-5 > .chart-box { grid-column: auto; }
+  /* Sub-row for 5 latency panels as 3 + 2:
+     mean / p95 / p99 on the first row, sat / gnd on the second row. */
+  .row-3-2 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+             grid-column: 1 / -1; }
+  .row-3-2 > .chart-box { grid-column: span 2; }
+  .row-3-2 > .chart-box:nth-child(n + 4) { grid-column: span 3; }
   @media (max-width: 900px) {
     .chart-box,
     .chart-box.wide,
     .chart-box.two-third,
     .chart-box.third,
     .chart-box.quarter { grid-column: 1 / -1; }
-    .row-5 { grid-template-columns: 1fr; }
+    .row-3-2 { grid-template-columns: 1fr; }
+    .row-3-2 > .chart-box,
+    .row-3-2 > .chart-box:nth-child(n + 4) { grid-column: auto; }
   }
   .chart-box h3 { font-size: 11px; color: #555; margin-bottom: 4px; }
   /* ``canvas`` is sized by chart.js via its ``aspectRatio`` option; the
@@ -71,7 +100,7 @@
 </style>
 </head>
 <body>
-<h1>Baseline vs Progressive</h1>
+<h1>Baseline · Progressive · LP · MILP</h1>
 <div class="subtitle" id="info">Loading...</div>
 <div style="text-align:center; margin-bottom:12px; font-size:12px;">
   <label for="file_select">Run:&nbsp;</label>
@@ -80,9 +109,22 @@
 <div class="summary" id="summary-cards"></div>
 
 <section class="section">
-  <h2>Latency &amp; Improvement</h2>
+  <h2>Control Latency &amp; Improvement</h2>
   <div class="grid">
-    <div class="row-5">
+    <div class="row-3-2">
+      <div class="chart-box"><h3 title="Flow-count mean of predicted RTT per (cell, dst) at each refresh. No forward/queuing coupling.">E2E RTT — Plan (per-refresh)</h3><canvas id="c_plan_rtt"></canvas></div>
+      <div class="chart-box"><h3 title="Flow-count P95 of predicted RTT at each refresh.">P95 Latency — Plan</h3><canvas id="c_plan_p95"></canvas></div>
+      <div class="chart-box"><h3 title="Flow-count P99 of predicted RTT at each refresh.">P99 Latency — Plan</h3><canvas id="c_plan_p99"></canvas></div>
+      <div class="chart-box"><h3 title="Flow-count mean sat RTT (from cell_sat_cost) at each refresh.">Satellite RTT — Plan</h3><canvas id="c_plan_sat"></canvas></div>
+      <div class="chart-box"><h3 title="Flow-count mean ground RTT (from GK.score) at each refresh.">Ground RTT — Plan</h3><canvas id="c_plan_gnd"></canvas></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <h2>Forward Latency &amp; Improvement</h2>
+  <div class="grid">
+    <div class="row-3-2">
       <div class="chart-box"><h3>E2E RTT Over Time (per-epoch)</h3><canvas id="c_rtt"></canvas></div>
       <div class="chart-box"><h3>P95 Latency (per-epoch)</h3><canvas id="c_p95"></canvas></div>
       <div class="chart-box"><h3>P99 Latency (per-epoch)</h3><canvas id="c_p99"></canvas></div>
@@ -202,7 +244,13 @@
 <div id="status"></div>
 
 <script>
-const BL="rgb(76,114,176)", PG="rgb(221,132,82)";
+// Series colour palette. BL = seaborn blue, PG = seaborn orange,
+// LP = seaborn green, MIP = seaborn purple. Four curves render on
+// every latency / timing chart so all four solvers — nearest-PoP
+// (BL), greedy progressive (PG), LP-relaxation + rounding (LP),
+// MILP (MIP) — are directly comparable.
+const BL="rgb(76,114,176)", PG="rgb(221,132,82)",
+      LP="rgb(85,168,104)", MIP="rgb(129,114,179)";
 const charts = {};
 
 function mk(id, type, ds, xL, yL, aspect) {
@@ -230,21 +278,53 @@ function init() {
   // five equal tracks (~260 px wide at a 1400 px viewport). Aspect
   // 2.2 gives each roughly 120 px of height — short enough to scan
   // all five in one eyeful, tall enough for the trend to be legible.
-  mk("c_rtt","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
-  mk("c_p95","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
-  mk("c_p99","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
-  mk("c_sat","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
-  mk("c_gnd","line",[L("Baseline",BL),L("Progressive",PG)],"Time","ms", 2.2);
+  const FOUR = (metric) => [
+    L("Baseline", BL), L("Progressive", PG),
+    L("LP", LP),       L("MILP", MIP),
+  ];
+  mk("c_rtt","line", FOUR(), "Time","ms", 2.2);
+  mk("c_p95","line", FOUR(), "Time","ms", 2.2);
+  mk("c_p99","line", FOUR(), "Time","ms", 2.2);
+  mk("c_sat","line", FOUR(), "Time","ms", 2.2);
+  mk("c_gnd","line", FOUR(), "Time","ms", 2.2);
+  // Control-layer mirror: same 5 metrics, same 4 controllers,
+  // same colours. Numbers come from the last refresh epoch's
+  // `{bl,pg,lp,mip}_plan_{mean,p95,p99,sat,gnd}` fields.
+  // ``c_plan_rtt`` gets a 5th dashed grey series — the LP
+  // continuous-relaxation lower bound expressed as a
+  // demand-weighted mean RTT, i.e. the theoretical floor no
+  // integer plan can beat on the "mean" axis.
+  mk("c_plan_rtt","line", [
+    L("Baseline", BL), L("Progressive", PG), L("LP", LP), L("MILP", MIP),
+    {label: "Lower Bound", borderColor: "#888", backgroundColor: "#888",
+     data: [], fill: false, borderDash: [6, 4]},
+  ], "Time","ms", 2.2);
+  mk("c_plan_p95","line", FOUR(), "Time","ms", 2.2);
+  mk("c_plan_p99","line", FOUR(), "Time","ms", 2.2);
+  mk("c_plan_sat","line", FOUR(), "Time","ms", 2.2);
+  mk("c_plan_gnd","line", FOUR(), "Time","ms", 2.2);
   // c_svc_flows is initialized dynamically when we know service names
-  mk("c_svc","bar",[{label:"Baseline",backgroundColor:BL,data:[]},{label:"Progressive",backgroundColor:PG,data:[]}],"","ms");
-  mk("c_svc_impr","bar",[{label:"Improvement %",backgroundColor:PG,data:[]}],"","%");
+  mk("c_svc","bar",[
+    {label:"Baseline",backgroundColor:BL,data:[]},
+    {label:"Progressive",backgroundColor:PG,data:[]},
+    {label:"LP",backgroundColor:LP,data:[]},
+    {label:"MILP",backgroundColor:MIP,data:[]},
+  ],"","ms");
+  // Per-service improvement vs baseline — three non-baseline bars
+  // so the user can see which services each solver helps most.
+  mk("c_svc_impr","bar",[
+    {label:"PG vs BL %",backgroundColor:PG,data:[]},
+    {label:"LP vs BL %",backgroundColor:LP,data:[]},
+    {label:"MILP vs BL %",backgroundColor:MIP,data:[]},
+  ],"","%");
 
-  // Timing: two simple BL-vs-PG line charts. The previous design
-  // combined totals + a click-driven step-breakdown drill-down; the
-  // replacement exposes plan-time and forward-time as separate,
-  // directly-comparable series without any selection state.
-  mk("c_plan_time",    "line", [L("Baseline", BL), L("Progressive", PG)], "Time", "ms", 2.6);
-  mk("c_forward_time", "line", [L("Baseline", BL), L("Progressive", PG)], "Time", "ms", 2.6);
+  // Timing: four line charts, one per controller. Plan-time curves
+  // are sparse (only refreshes record a value); forward-time is
+  // dense (every epoch runs realize for every controller).
+  mk("c_plan_time",    "line", FOUR(), "Time", "ms", 2.6);
+  mk("c_forward_time", "line", FOUR(), "Time", "ms", 2.6);
+
+  // Control-layer plan cost: one point per refresh (sparse). Five
 }
 
 // Render the per-epoch reallocation stats table (latest first).
@@ -533,8 +613,8 @@ function renderEpochTable(compare) {
 }
 
 // Populate the two Timing charts:
-//   * c_plan_time    — controller plan wall-clock (bl_plan_ms vs pg_plan_ms).
-//   * c_forward_time — forward.realize() wall-clock (bl_forward_ms vs pg_forward_ms).
+//   * c_plan_time    — controller plan wall-clock (bl / pg / dp).
+//   * c_forward_time — forward.realize() wall-clock (bl / pg / dp).
 // Plan times are recorded only on the 15-epoch refresh cadence, so the
 // plan series is sparse (≤1 non-null sample per 15 epochs). Without
 // ``spanGaps`` Chart.js would refuse to draw anything between the
@@ -549,20 +629,66 @@ function renderTimingSection(compare, labels) {
   const fwdChart = charts["c_forward_time"];
   if (!planChart || !fwdChart) return;
 
-  const setCurve = (chart, blField, pgField) => {
+  const setCurve = (chart, ...fields) => {
     chart.data.labels = labels;
     chart.options.spanGaps = true;
-    chart.data.datasets[0].data = compare.map(ep => ep?.[blField] ?? null);
-    chart.data.datasets[1].data = compare.map(ep => ep?.[pgField] ?? null);
+    fields.forEach((f, i) => {
+      if (chart.data.datasets[i]) {
+        chart.data.datasets[i].data = compare.map(ep => ep?.[f] ?? null);
+      }
+    });
+    // Small point markers — dense per-epoch forward_time curves
+    // were unreadable with the old radius=3; 0.8 keeps markers
+    // faintly visible on hover without cluttering the trend line.
     chart.data.datasets.forEach(ds => {
+      ds.spanGaps = true;
+      ds.pointRadius = 0.8;
+      ds.pointHoverRadius = 4;
+    });
+    chart.update();
+  };
+  setCurve(planChart, "bl_plan_ms", "pg_plan_ms", "lp_plan_ms", "mip_plan_ms");
+  setCurve(fwdChart, "bl_forward_ms", "pg_forward_ms", "lp_forward_ms", "mip_forward_ms");
+}
+
+// Populate the five Control-layer latency curves (mean / p95 / p99 /
+// sat / gnd). Same shape as the Forward-side `setLine` helper but
+// reads `{bl,pg,lp,mip}_plan_{metric}` fields, which only exist on
+// refresh epochs. spanGaps connects the sparse markers; cached-plan
+// epochs stay null so the plot doesn't pretend to have fresh values.
+function renderPlanLatency(compare, labels) {
+  const specs = [
+    ["c_plan_rtt", "mean"],
+    ["c_plan_p95", "p95"],
+    ["c_plan_p99", "p99"],
+    ["c_plan_sat", "sat"],
+    ["c_plan_gnd", "gnd"],
+  ];
+  specs.forEach(([cid, metric]) => {
+    const c = charts[cid];
+    if (!c) return;
+    c.data.labels = labels;
+    c.options.spanGaps = true;
+    const fields = [
+      `bl_plan_${metric}`, `pg_plan_${metric}`,
+      `lp_plan_${metric}`, `mip_plan_${metric}`,
+    ];
+    fields.forEach((f, i) => {
+      if (c.data.datasets[i]) {
+        c.data.datasets[i].data = compare.map(ep => ep?.[f] ?? null);
+      }
+    });
+    // The mean-RTT chart gets the LB line in its 5th slot.
+    if (cid === "c_plan_rtt" && c.data.datasets[4]) {
+      c.data.datasets[4].data = compare.map(ep => ep?.plan_lb_mean ?? null);
+    }
+    c.data.datasets.forEach(ds => {
       ds.spanGaps = true;
       ds.pointRadius = 3;
       ds.pointHoverRadius = 5;
     });
-    chart.update();
-  };
-  setCurve(planChart, "bl_plan_ms", "pg_plan_ms");
-  setCurve(fwdChart, "bl_forward_ms", "pg_forward_ms");
+    c.update();
+  });
 }
 
 // Render the BL vs PG contributor side-by-side panel for one PoP.
@@ -658,6 +784,13 @@ function cumAvgSvc(epochs, svcs) {
 
 function update(data) {
   const bl=data.baseline, pg=data.progressive, svcs=data.config.services;
+  const lp = data.lpround || [];
+  const mip = data.milp || [];
+  // LP / MILP series are present iff run.py was updated to produce
+  // them. Legacy sim_data files without those arrays still render
+  // cleanly — extra datasets just stay empty.
+  const hasLP = Array.isArray(lp) && lp.length === bl.length;
+  const hasMIP = Array.isArray(mip) && mip.length === bl.length;
   if (!bl.length) return;
   const labels = bl.map(d=>d.time_str);
   const N = bl.length;
@@ -666,27 +799,46 @@ function update(data) {
     const c=charts[id]; c.data.labels=labels;
     c.data.datasets[0].data=bl.map(d=>d[k]);
     c.data.datasets[1].data=pg.map(d=>d[k]);
+    if (c.data.datasets[2]) {
+      c.data.datasets[2].data = hasLP ? lp.map(d=>d[k]) : [];
+    }
+    if (c.data.datasets[3]) {
+      c.data.datasets[3].data = hasMIP ? mip.map(d=>d[k]) : [];
+    }
     c.update();
   }
   setLine("c_rtt","mean_rtt"); setLine("c_sat","mean_sat"); setLine("c_gnd","mean_gnd");
   setLine("c_p95","p95_rtt"); setLine("c_p99","p99_rtt");
 
-  // Cumulative averages
+  // Cumulative per-service averages for the service bar charts.
   const blAvg = cumAvgSvc(bl, svcs);
   const pgAvg = cumAvgSvc(pg, svcs);
+  const lpAvg = hasLP ? cumAvgSvc(lp, svcs) : {};
+  const mipAvg = hasMIP ? cumAvgSvc(mip, svcs) : {};
 
   const cs=charts["c_svc"];
   cs.data.labels=svcs;
   cs.data.datasets[0].data=svcs.map(s=>blAvg[s]?.mean||0);
   cs.data.datasets[1].data=svcs.map(s=>pgAvg[s]?.mean||0);
+  if (cs.data.datasets[2]) {
+    cs.data.datasets[2].data = hasLP ? svcs.map(s=>lpAvg[s]?.mean||0) : [];
+  }
+  if (cs.data.datasets[3]) {
+    cs.data.datasets[3].data = hasMIP ? svcs.map(s=>mipAvg[s]?.mean||0) : [];
+  }
   cs.update();
 
+  // Per-service improvement vs BL: three non-baseline bars so the
+  // user sees which services LP / MILP help beyond greedy PG.
   const ci=charts["c_svc_impr"];
   ci.data.labels=svcs;
-  ci.data.datasets[0].data=svcs.map(s=>{
-    const b=blAvg[s]?.mean||0, p=pgAvg[s]?.mean||0;
-    return b>0?+((b-p)/b*100).toFixed(1):0;
+  const imprVs = (avgMap) => svcs.map(s=>{
+    const b=blAvg[s]?.mean||0, x=avgMap[s]?.mean||0;
+    return b>0?+((b-x)/b*100).toFixed(1):0;
   });
+  ci.data.datasets[0].data = imprVs(pgAvg);
+  if (ci.data.datasets[1]) ci.data.datasets[1].data = hasLP ? imprVs(lpAvg) : [];
+  if (ci.data.datasets[2]) ci.data.datasets[2].data = hasMIP ? imprVs(mipAvg) : [];
   ci.update();
 
   // Summary cards — cumulative.
@@ -696,50 +848,119 @@ function update(data) {
   // percentiles (a true cumulative percentile would need the raw
   // per-flow RTT pool, which the dashboard doesn't receive); labels
   // reflect that explicitly below.
-  let blSumRtt=0, pgSumRtt=0, blFlows=0, pgFlows=0;
-  let blSumP95=0, pgSumP95=0, blSumP99=0, pgSumP99=0;
+  // Cumulative per-series stats: flow-count-weighted mean, plus
+  // simple averages of per-epoch p95/p99. Done in one pass across
+  // all four series via ``acc`` keyed by series name.
+  const acc = {
+    bl: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
+    pg: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
+    lp: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
+    mip: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
+  };
+  function _addRow(a, row) {
+    if (!row) return;
+    a.sumRtt += (row.mean_rtt||0) * (row.n_flows||0);
+    a.flows += row.n_flows||0;
+    a.sumP95 += row.p95_rtt||0;
+    a.sumP99 += row.p99_rtt||0;
+  }
   for (let i=0;i<bl.length;i++){
-    const b=bl[i], p=pg[i];
-    blSumRtt += (b.mean_rtt||0) * (b.n_flows||0); blFlows += b.n_flows||0;
-    pgSumRtt += (p.mean_rtt||0) * (p.n_flows||0); pgFlows += p.n_flows||0;
-    blSumP95 += b.p95_rtt||0; pgSumP95 += p.p95_rtt||0;
-    blSumP99 += b.p99_rtt||0; pgSumP99 += p.p99_rtt||0;
+    _addRow(acc.bl, bl[i]);
+    _addRow(acc.pg, pg[i]);
+    if (hasLP) _addRow(acc.lp, lp[i]);
+    if (hasMIP) _addRow(acc.mip, mip[i]);
   }
-  const bAvg = blFlows>0 ? blSumRtt/blFlows : 0;
-  const pAvg = pgFlows>0 ? pgSumRtt/pgFlows : 0;
-  const diff=pAvg-bAvg, diffPct=bAvg>0?(diff/bAvg*100).toFixed(1):"0";
-  const bP95=N>0?blSumP95/N:0, pP95=N>0?pgSumP95/N:0;
-  const bP99=N>0?blSumP99/N:0, pP99=N>0?pgSumP99/N:0;
-
-  const p95Diff = pP95 - bP95, p95Pct = (p95Diff/bP95*100).toFixed(1);
-  const p99Diff = pP99 - bP99, p99Pct = (p99Diff/bP99*100).toFixed(1);
-
-  // Cumulative re-route percentage — flow-count (matches the per-epoch
-  // stats table below and the top "PG Mean" card's flow-count mean
-  // convention). Σ reroute_flows / Σ total_flows across all epochs.
-  //
-  // Earlier implementations used PoP-level |Δload| (undercounted
-  // symmetric swaps) or demand-weighted (biased by heavy-demand
-  // flows that barely change). Flow-count is the simplest consistent
-  // story.
-  let reFlows = 0, allFlows = 0;
-  for (const e of data.epoch_compare || []) {
-    reFlows += e.reroute_flows || 0;
-    allFlows += e.total_flows || 0;
+  function stats(a) {
+    return {
+      mean: a.flows>0 ? a.sumRtt/a.flows : 0,
+      p95: N>0 ? a.sumP95/N : 0,
+      p99: N>0 ? a.sumP99/N : 0,
+    };
   }
-  const reroutePctCum = allFlows > 0 ? (reFlows / allFlows * 100) : 0;
+  const S = {bl: stats(acc.bl), pg: stats(acc.pg), lp: stats(acc.lp), mip: stats(acc.mip)};
+
+  // Per-controller latency card. Three rows: mean / p95 / p99.
+  // Percent Δ shown only when a baseline ref is supplied (BL card
+  // passes ``null``). Negative improvement = green (DP / PG faster
+  // than BL); positive = red.
+  function latencyCard(label, color, mean, p95, p99, ref) {
+    function row(k, v, refV) {
+      let pctHTML = "";
+      if (refV != null && refV > 0) {
+        const pct = ((v - refV) / refV) * 100;
+        const cls = pct < 0 ? "improve" : (pct > 0 ? "worsen" : "");
+        const sign = pct > 0 ? "+" : "";
+        pctHTML = `<span class="pct ${cls}">(${sign}${pct.toFixed(1)}%)</span>`;
+      }
+      return `<div class="row"><span class="k">${k}</span>` +
+             `<span class="v">${v.toFixed(1)}ms${pctHTML}</span></div>`;
+    }
+    const rMean = ref ? ref.mean : null;
+    const rP95  = ref ? ref.p95  : null;
+    const rP99  = ref ? ref.p99  : null;
+    return `<div class="card" style="min-width:150px;" title="Cumulative metrics across all loaded epochs. Mean is flow-count weighted; P95 / P99 are averages of per-epoch percentiles.">
+      <div class="label" style="color:${color};">${label}</div>
+      ${row("Mean", mean, rMean)}
+      ${row("P95",  p95,  rP95)}
+      ${row("P99",  p99,  rP99)}
+    </div>`;
+  }
+
+  const blRef = S.bl;
+  const blCard  = latencyCard("Baseline",    "rgb(76,114,176)", S.bl.mean,  S.bl.p95,  S.bl.p99,  null);
+  const pgCard  = latencyCard("Progressive", "rgb(221,132,82)", S.pg.mean,  S.pg.p95,  S.pg.p99,  blRef);
+  const lpCard  = hasLP
+    ? latencyCard("LP",   "rgb(85,168,104)",  S.lp.mean,  S.lp.p95,  S.lp.p99,  blRef)
+    : "";
+  const mipCard = hasMIP
+    ? latencyCard("MILP", "rgb(129,114,179)", S.mip.mean, S.mip.p95, S.mip.p99, blRef)
+    : "";
+
+  // Control-layer cards — pulled from the most recent refresh
+  // epoch (the only one with fresh `*_plan_*` values; cached-plan
+  // epochs inherit the previous refresh). Mirrors the Forward
+  // layout 1:1 (same latencyCard helper, same 3 rows per card),
+  // just with ``plan_*`` values instead of realized values. Δ%
+  // is vs Baseline.
+  const ec = data.epoch_compare || [];
+  let lastRefresh = null;
+  for (let i = ec.length - 1; i >= 0; i--) {
+    if (ec[i] && ec[i].pg_plan_cost != null) { lastRefresh = ec[i]; break; }
+  }
+  const planBLRef = lastRefresh
+    ? {mean: lastRefresh.bl_plan_mean,
+       p95:  lastRefresh.bl_plan_p95,
+       p99:  lastRefresh.bl_plan_p99}
+    : null;
+  function planCard(label, color, bucket, ref) {
+    if (!lastRefresh) return "";
+    const mean = lastRefresh[`${bucket}_plan_mean`];
+    const p95  = lastRefresh[`${bucket}_plan_p95`];
+    const p99  = lastRefresh[`${bucket}_plan_p99`];
+    if (mean == null) return "";
+    return latencyCard(label, color, mean, p95, p99, ref);
+  }
+  // Lower-bound card removed by request. The LB still renders as a
+  // dashed line on the c_plan_rtt chart for reference.
 
   document.getElementById("summary-cards").innerHTML=`
-    <div class="card"><div class="label">Epoch</div><div class="value">${bl[N-1].epoch}</div><div class="sub" style="color:#888">${bl[N-1].time_str}</div></div>
-    <div class="card"><div class="label">Flows</div><div class="value">${bl[N-1].n_flows.toLocaleString()}</div></div>
-    <div class="card"><div class="label">Demand</div><div class="value">${bl[N-1].demand_gbps.toFixed(0)} Gb</div></div>
-    <div class="card" title="Σ reroute_flows / Σ total_flows across all epochs loaded."><div class="label">PG Re-Routed</div><div class="value" style="color:#1565c0">${reroutePctCum.toFixed(1)}%</div><div class="sub" style="color:#888">of flows (cum)</div></div>
-    <div class="card" title="Flow-count-weighted cumulative mean E2E RTT: Σ(mean_rtt·n_flows)/Σ n_flows."><div class="label">BL Mean (cum)</div><div class="value">${bAvg.toFixed(1)}ms</div></div>
-    <div class="card" title="Flow-count-weighted cumulative mean E2E RTT: Σ(mean_rtt·n_flows)/Σ n_flows."><div class="label">PG Mean (cum)</div><div class="value">${pAvg.toFixed(1)}ms</div><div class="sub ${diff<0?'improve':'worsen'}">${diff.toFixed(1)}ms (${diffPct}%)</div></div>
-    <div class="card" title="Average of per-epoch P95 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">BL Avg Epoch P95 (cum)</div><div class="value">${bP95.toFixed(1)}ms</div></div>
-    <div class="card" title="Average of per-epoch P95 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">PG Avg Epoch P95 (cum)</div><div class="value">${pP95.toFixed(1)}ms</div><div class="sub ${p95Diff<0?'improve':'worsen'}">${p95Diff.toFixed(1)}ms (${p95Pct}%)</div></div>
-    <div class="card" title="Average of per-epoch P99 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">BL Avg Epoch P99 (cum)</div><div class="value">${bP99.toFixed(1)}ms</div></div>
-    <div class="card" title="Average of per-epoch P99 values across all loaded epochs. NOT a true cumulative percentile (would require the raw per-flow RTT pool)."><div class="label">PG Avg Epoch P99 (cum)</div><div class="value">${pP99.toFixed(1)}ms</div><div class="sub ${p99Diff<0?'improve':'worsen'}">${p99Diff.toFixed(1)}ms (${p99Pct}%)</div></div>
+    <div class="summary-group">
+      <div class="card"><div class="label">Epoch</div><div class="value">${bl[N-1].epoch}</div><div class="sub" style="color:#888">${bl[N-1].time_str}</div></div>
+    </div>
+    <div class="summary-divider"></div>
+    <div class="summary-group" data-label="Control">
+      ${planCard("Baseline",    "rgb(76,114,176)",  "bl",  null)}
+      ${planCard("Progressive", "rgb(221,132,82)",  "pg",  planBLRef)}
+      ${planCard("LP",          "rgb(85,168,104)",  "lp",  planBLRef)}
+      ${planCard("MILP",        "rgb(129,114,179)", "mip", planBLRef)}
+    </div>
+    <div class="summary-divider"></div>
+    <div class="summary-group" data-label="Forward">
+      ${blCard}
+      ${pgCard}
+      ${lpCard}
+      ${mipCard}
+    </div>
   `;
 
   // Per-service demand over time
@@ -762,6 +983,7 @@ function update(data) {
   }
 
   renderTimingSection(data.epoch_compare || [], labels);
+  renderPlanLatency(data.epoch_compare || [], labels);
 
   // Service table — cumulative
   const stb=document.querySelector("#svc_table tbody");
@@ -865,6 +1087,7 @@ function update(data) {
 
   // Timing section — totals over time plus click-driven step drill-down.
   renderTimingSection(data.epoch_compare || [], labels);
+  renderPlanLatency(data.epoch_compare || [], labels);
 
   document.getElementById("info").textContent=
     `${(data.config.user_scale)}x users | ${data.config.total_capacity_gbps} Gbps sys cap | ${data.config.refresh_s}s refresh | ${svcs.length} services`;
@@ -885,6 +1108,11 @@ function fmtOption(f) {
   const progress = (f.epochs_done != null && f.epochs_total != null)
     ? ` — ${f.epochs_done}/${f.epochs_total} ep` : "";
   const scale = f.user_scale != null ? `, ${f.user_scale}× users` : "";
+  const gsCap = f.max_gs_per_pop == null
+    ? ""
+    : f.max_gs_per_pop > 0
+      ? `, max ${f.max_gs_per_pop} gs/pop`
+      : ", no gs cap";
   // Status badge:
   //  ● LIVE if mtime updated within the last 30 s (run_1hour.py rewrites
   //    every epoch ≈ once per second, so any longer gap means dead).
@@ -900,7 +1128,7 @@ function fmtOption(f) {
     else if (!stale) status = " 🟢 LIVE";
     else status = " 🔴 INTERRUPTED";
   }
-  return `${pretty}${progress}${scale}${status}`;
+  return `${pretty}${progress}${scale}${gsCap}${status}`;
 }
 
 async function refreshFileList() {
@@ -918,6 +1146,7 @@ async function refreshFileList() {
       files.push({
         filename: "sim_data.json", timestamp: "(legacy)",
         epochs_done: null, epochs_total: null, user_scale: null,
+        max_gs_per_pop: null,
       });
     }
     const sel = document.getElementById("file_select");

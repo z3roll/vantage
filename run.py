@@ -29,8 +29,19 @@ from pathlib import Path
 import numpy as np
 
 from vantage.common.seed import derive_subseed, fresh_run_seed
-from vantage.control.policy.dualprice import DualPriceController
+from vantage.control.policy.common.fib_builder import (
+    build_cell_to_pop_nearest,
+    compute_cell_sat_cost,
+    compute_pop_capacity,
+    rank_pops_by_e2e,
+)
 from vantage.control.policy.greedy import ProgressiveController
+from vantage.control.policy.lpround import (
+    LPRoundingController,
+    _build_items,
+    _weighted_cost,
+)
+from vantage.control.policy.milp import MILPController
 from vantage.control.policy.nearest_pop import NearestPoPController
 from vantage.domain import CapacityView, CellGrid, Endpoint, UsageBook
 from vantage.engine.context import RunContext
@@ -71,6 +82,39 @@ def pct(data, p):
         return 0.0
     d = sorted(data); k = (len(d) - 1) * p / 100; f = int(k); c = min(f + 1, len(d) - 1)
     return d[f] * (c - k) + d[c] * (k - f)
+
+
+def w_pct(pairs, p):
+    """Demand-weighted percentile.
+
+    ``pairs`` = ``[(value, weight), ...]``. Sorts by value ascending
+    and returns the value at which cumulative weight first reaches
+    ``p``% of total weight. Semantic: "the RTT above which the top
+    ``100 - p``% of traffic (measured in Gbps demand) sits".
+    """
+    if not pairs:
+        return 0.0
+    s = sorted(pairs, key=lambda t: t[0])
+    total = sum(w for _, w in s)
+    if total <= 0:
+        return 0.0
+    threshold = total * p / 100.0
+    cum = 0.0
+    for v, w in s:
+        cum += w
+        if cum >= threshold:
+            return v
+    return s[-1][0]
+
+
+def w_mean(values, weights):
+    """Demand-weighted arithmetic mean: ``Σ(v·w) / Σw``."""
+    if not values or not weights:
+        return 0.0
+    total = sum(weights)
+    if total <= 0:
+        return 0.0
+    return sum(v * w for v, w in zip(values, weights, strict=True)) / total
 
 
 def country_of(src_name: str) -> str:
@@ -117,10 +161,11 @@ def parse_args() -> argparse.Namespace:
                    help="Don't auto-open the browser (dashboard server still runs)")
     p.add_argument("--no-serve", action="store_true",
                    help="Don't start the dashboard HTTP server at all (benchmark mode)")
-    p.add_argument("--pg-policy", choices=("greedy", "dualprice"), default="greedy",
-                   help="Which policy the 'progressive' column uses: "
-                        "greedy (ProgressiveController, default) or "
-                        "dualprice (DualPriceController with incumbent guard).")
+    p.add_argument("--max-gs-per-pop", type=int, default=0,
+                   help="Experimental: cap each PoP at N attached GSs "
+                        "(0 = no cap). Keeps the N closest by backhaul "
+                        "delay so popular PoPs hit capacity earlier, "
+                        "exposing PG / DP differences under pressure.")
     p.add_argument("--seed", type=int, default=None,
                    help="Run-level seed controlling every stochastic subsystem "
                         "(traffic AR(1)/Poisson, ground-delay LogNormal sampling, "
@@ -214,6 +259,7 @@ def main() -> None:
             "epochs_done": epochs_done,
             "epochs_total": cfg.get("num_epochs", epochs_done),
             "user_scale": cfg.get("user_scale", 1.0),
+            "max_gs_per_pop": cfg.get("max_gs_per_pop"),
             "mtime": path.stat().st_mtime,
         }
 
@@ -232,6 +278,28 @@ def main() -> None:
     # ── Build ───────────────────────────────────────────────────────
     print("Building world...", flush=True)
     ground = GroundInfrastructure(DATA_DIR)
+    if args.max_gs_per_pop > 0:
+        # Prune each PoP's GS attachments to the N closest (by
+        # backhaul_delay) to create capacity pressure. Pure experiment
+        # knob — mutates the frozen dataset in memory only.
+        from collections import defaultdict as _dd
+        _by_pop: dict[str, list] = _dd(list)
+        for e in ground._gs_pop_edges:
+            _by_pop[e.pop_code].append(e)
+        kept: list = []
+        for pop_code, edges in _by_pop.items():
+            edges.sort(key=lambda e: e.backhaul_delay)
+            kept.extend(edges[: args.max_gs_per_pop])
+        ground._gs_pop_edges = tuple(kept)
+        ground._gs_to_pops = {}
+        ground._pop_to_gs = {}
+        for e in ground._gs_pop_edges:
+            ground._gs_to_pops.setdefault(e.gs_id, []).append(e)
+            ground._pop_to_gs.setdefault(e.pop_code, []).append(e)
+        _kept_per_pop = {p: len(v) for p, v in ground._pop_to_gs.items()}
+        print(f"Pruned GS attachments: max {args.max_gs_per_pop} GS/PoP → "
+              f"{len(ground._gs_pop_edges)} edges; "
+              f"PoPs w/ GSs: {len(_kept_per_pop)}/{len(ground.pops)}")
     satellite = SatelliteSegment(
         constellation=XMLConstellationModel(str(XML), dt_s=15.0),
         topology_builder=PlusGridTopology(), shell_id=1,
@@ -334,14 +402,25 @@ def main() -> None:
         return out
 
     def collect(epoch, result, book, pop_capacity):
+        """Aggregate per-flow outcomes into dashboard-shaped stats.
+
+        Mean / p95 / p99 / sat / gnd are **demand-weighted** (each
+        flow contributes in proportion to its demand Gbps, not one
+        sample per flow). This matches the Control-layer convention
+        so the two sections' curves are directly comparable.
+        """
         flows = result.flow_outcomes
         rtts = [f.total_rtt for f in flows]
-        svc = defaultdict(lambda: {"rtts": [], "sat": [], "gnd": [], "demand": 0.0})
+        demands = [f.demand_gbps for f in flows]
+        rtt_pairs = list(zip(rtts, demands, strict=True))
+        svc = defaultdict(lambda: {"rtts": [], "sat": [], "gnd": [],
+                                   "demands": [], "demand": 0.0})
         pop_load = defaultdict(float)
         for f in flows:
             svc[f.flow_key.dst]["rtts"].append(f.total_rtt)
             svc[f.flow_key.dst]["sat"].append(f.satellite_rtt)
             svc[f.flow_key.dst]["gnd"].append(f.ground_rtt)
+            svc[f.flow_key.dst]["demands"].append(f.demand_gbps)
             svc[f.flow_key.dst]["demand"] += f.demand_gbps
             pop_load[f.pop_code] += f.demand_gbps
 
@@ -359,12 +438,13 @@ def main() -> None:
         for s in svc_names:
             d = svc[s]
             if d["rtts"]:
+                pairs = list(zip(d["rtts"], d["demands"], strict=True))
                 svc_out[s] = {
-                    "mean": round(np.mean(d["rtts"]), 2),
-                    "p95": round(pct(d["rtts"], 95), 2),
-                    "p99": round(pct(d["rtts"], 99), 2),
-                    "sat": round(np.mean(d["sat"]), 2),
-                    "gnd": round(np.mean(d["gnd"]), 2),
+                    "mean": round(w_mean(d["rtts"], d["demands"]), 2),
+                    "p95": round(w_pct(pairs, 95), 2),
+                    "p99": round(w_pct(pairs, 99), 2),
+                    "sat": round(w_mean(d["sat"], d["demands"]), 2),
+                    "gnd": round(w_mean(d["gnd"], d["demands"]), 2),
                     "n": len(d["rtts"]),
                     "demand_gbps": round(d["demand"], 2),
                 }
@@ -381,20 +461,24 @@ def main() -> None:
         all_pops_out.sort(key=lambda x: -x["load"])
 
         hh, mm, ss = int(epoch * EPOCH_S) // 3600, int(epoch * EPOCH_S) % 3600 // 60, int(epoch * EPOCH_S) % 60
+        sat_rtts = [f.satellite_rtt for f in flows]
+        gnd_rtts = [f.ground_rtt for f in flows]
         return {
             "epoch": epoch, "time_s": epoch * EPOCH_S,
             "time_str": f"{hh:02d}:{mm:02d}:{ss:02d}",
             "n_flows": len(flows),
-            "demand_gbps": round(sum(f.demand_gbps for f in flows), 1),
-            "mean_rtt": round(np.mean(rtts), 2) if rtts else 0,
-            "p50_rtt": round(pct(rtts, 50), 2),
-            "p95_rtt": round(pct(rtts, 95), 2),
-            "p99_rtt": round(pct(rtts, 99), 2),
-            "mean_sat": round(np.mean([f.satellite_rtt for f in flows]), 2) if flows else 0,
-            "mean_gnd": round(np.mean([f.ground_rtt for f in flows]), 2) if flows else 0,
-            "mean_prop": round(np.mean([f.propagation_rtt for f in flows]), 2) if flows else 0,
-            "mean_queue": round(np.mean([f.queuing_rtt for f in flows]), 2) if flows else 0,
-            "mean_tx": round(np.mean([f.transmission_rtt for f in flows]), 2) if flows else 0,
+            "demand_gbps": round(sum(demands), 1),
+            # Demand-weighted mean/p95/p99 over total RTT.
+            "mean_rtt": round(w_mean(rtts, demands), 2) if rtts else 0,
+            "p50_rtt": round(w_pct(rtt_pairs, 50), 2),
+            "p95_rtt": round(w_pct(rtt_pairs, 95), 2),
+            "p99_rtt": round(w_pct(rtt_pairs, 99), 2),
+            # Demand-weighted per-segment means.
+            "mean_sat": round(w_mean(sat_rtts, demands), 2) if flows else 0,
+            "mean_gnd": round(w_mean(gnd_rtts, demands), 2) if flows else 0,
+            "mean_prop": round(w_mean([f.propagation_rtt for f in flows], demands), 2) if flows else 0,
+            "mean_queue": round(w_mean([f.queuing_rtt for f in flows], demands), 2) if flows else 0,
+            "mean_tx": round(w_mean([f.transmission_rtt for f in flows], demands), 2) if flows else 0,
             "gs_overloaded": gs_over, "sf_overloaded": sf_over,
             "isl_overloaded": isl_over, "max_isl_util": round(max_isl_util, 4),
             "services": svc_out, "pops": all_pops_out,
@@ -438,47 +522,77 @@ def main() -> None:
             }
         return out
 
-    def compute_epoch_compare(result_bl, result_pg) -> dict:
+    def compute_epoch_compare(result_bl, result_pg, result_lp, result_mip) -> dict:
+        """Per-epoch cross-controller metrics. All mean / sat / gnd /
+        p95 / p99 are **demand-weighted** (per-flow contribution
+        proportional to demand Gbps)."""
         bl_by = {f.flow_key: f for f in result_bl.flow_outcomes}
         pg_by = {f.flow_key: f for f in result_pg.flow_outcomes}
-        common = set(bl_by) & set(pg_by)
-        TOL = 0.5
-        total_n = re_n = impr_n = worse_n = neutral_n = 0
-        sum_bl_sat = sum_pg_sat = 0.0
-        sum_bl_gnd = sum_pg_gnd = 0.0
-        bl_rtts: list[float] = []
-        pg_rtts: list[float] = []
-        for fk in common:
-            fb, fp = bl_by[fk], pg_by[fk]
-            total_n += 1
-            bl_rtts.append(fb.total_rtt); pg_rtts.append(fp.total_rtt)
-            sum_bl_sat += fb.satellite_rtt; sum_pg_sat += fp.satellite_rtt
-            sum_bl_gnd += fb.ground_rtt; sum_pg_gnd += fp.ground_rtt
-            d_total = fp.total_rtt - fb.total_rtt
-            if fb.pop_code != fp.pop_code:
-                re_n += 1
-                if d_total < -TOL: impr_n += 1
-                elif d_total > TOL: worse_n += 1
-                else: neutral_n += 1
+        lp_by = {f.flow_key: f for f in result_lp.flow_outcomes}
+        mip_by = {f.flow_key: f for f in result_mip.flow_outcomes}
+        common = set(bl_by) & set(pg_by) & set(lp_by) & set(mip_by)
+        TOL = 0.5  # noqa: N806 — small local tolerance constant.
 
-        def _avg(s): return s / total_n if total_n else 0.0
-        return {
-            "total_flows": total_n, "reroute_flows": re_n,
-            "reroute_pct": round(re_n / total_n * 100, 2) if total_n else 0,
-            "impr_flows": impr_n, "worse_flows": worse_n, "neutral_flows": neutral_n,
-            "impr_pct_of_re": round(impr_n / re_n * 100, 1) if re_n else 0,
-            "worse_pct_of_re": round(worse_n / re_n * 100, 1) if re_n else 0,
-            "bl_mean_rtt": round(_avg(sum(bl_rtts)), 2),
-            "pg_mean_rtt": round(_avg(sum(pg_rtts)), 2),
-            "bl_sat_rtt": round(_avg(sum_bl_sat), 2),
-            "pg_sat_rtt": round(_avg(sum_pg_sat), 2),
-            "bl_gnd_rtt": round(_avg(sum_bl_gnd), 2),
-            "pg_gnd_rtt": round(_avg(sum_pg_gnd), 2),
-            "bl_p95_rtt": round(pct(bl_rtts, 95), 2),
-            "pg_p95_rtt": round(pct(pg_rtts, 95), 2),
-            "bl_p99_rtt": round(pct(bl_rtts, 99), 2),
-            "pg_p99_rtt": round(pct(pg_rtts, 99), 2),
+        total_n = 0
+        total_demand = 0.0
+        rr = {"pg": [0, 0, 0, 0], "lp": [0, 0, 0, 0], "mip": [0, 0, 0, 0]}
+        # rr[key] = [reroute, impr, worse, neutral]
+        sums = {
+            "bl": [0.0, 0.0], "pg": [0.0, 0.0],
+            "lp": [0.0, 0.0], "mip": [0.0, 0.0],
+        }  # [sat·d, gnd·d]
+        rtt_pairs = {"bl": [], "pg": [], "lp": [], "mip": []}  # (rtt, d) pairs
+        rtt_wsum = {"bl": 0.0, "pg": 0.0, "lp": 0.0, "mip": 0.0}
+
+        series_by = {"bl": bl_by, "pg": pg_by, "lp": lp_by, "mip": mip_by}
+        for fk in common:
+            fb = bl_by[fk]
+            d = fb.demand_gbps
+            total_n += 1
+            total_demand += d
+            for key, by in series_by.items():
+                f = by[fk]
+                rtt_pairs[key].append((f.total_rtt, d))
+                rtt_wsum[key] += f.total_rtt * d
+                sums[key][0] += f.satellite_rtt * d
+                sums[key][1] += f.ground_rtt * d
+            for key in ("pg", "lp", "mip"):
+                fx = series_by[key][fk]
+                if fb.pop_code != fx.pop_code:
+                    rr[key][0] += 1
+                    d_total = fx.total_rtt - fb.total_rtt
+                    if d_total < -TOL: rr[key][1] += 1
+                    elif d_total > TOL: rr[key][2] += 1
+                    else: rr[key][3] += 1
+
+        def _wavg(s):
+            return s / total_demand if total_demand > 0 else 0.0
+
+        out = {
+            "total_flows": total_n,
+            "total_demand_gbps": round(total_demand, 2),
+            "reroute_flows": rr["pg"][0],
+            "reroute_pct": round(rr["pg"][0] / total_n * 100, 2) if total_n else 0,
+            "impr_flows": rr["pg"][1], "worse_flows": rr["pg"][2], "neutral_flows": rr["pg"][3],
+            "impr_pct_of_re": round(rr["pg"][1] / rr["pg"][0] * 100, 1) if rr["pg"][0] else 0,
+            "worse_pct_of_re": round(rr["pg"][2] / rr["pg"][0] * 100, 1) if rr["pg"][0] else 0,
         }
+        for key, prefix in (("bl", "bl"), ("pg", "pg"), ("lp", "lp"), ("mip", "mip")):
+            out[f"{prefix}_mean_rtt"] = round(_wavg(rtt_wsum[key]), 2)
+            out[f"{prefix}_sat_rtt"] = round(_wavg(sums[key][0]), 2)
+            out[f"{prefix}_gnd_rtt"] = round(_wavg(sums[key][1]), 2)
+            out[f"{prefix}_p95_rtt"] = round(w_pct(rtt_pairs[key], 95), 2)
+            out[f"{prefix}_p99_rtt"] = round(w_pct(rtt_pairs[key], 99), 2)
+        for key, prefix in (("lp", "lp"), ("mip", "mip")):
+            re_n, im, wo, ne = rr[key]
+            out[f"{prefix}_reroute_flows"] = re_n
+            out[f"{prefix}_reroute_pct"] = round(re_n / total_n * 100, 2) if total_n else 0
+            out[f"{prefix}_impr_flows"] = im
+            out[f"{prefix}_worse_flows"] = wo
+            out[f"{prefix}_neutral_flows"] = ne
+            out[f"{prefix}_impr_pct_of_re"] = round(im / re_n * 100, 1) if re_n else 0
+            out[f"{prefix}_worse_pct_of_re"] = round(wo / re_n * 100, 1) if re_n else 0
+        return out
 
     def extract_cache_state(gk) -> dict[str, dict[str, float]]:
         out: dict[str, dict[str, float]] = {}
@@ -500,7 +614,9 @@ def main() -> None:
         by_name[out_file.name] = {
             "filename": out_file.name, "timestamp": start_ts,
             "epochs_done": epochs_done, "epochs_total": num_epochs,
-            "user_scale": user_scale, "mtime": time.time(),
+            "user_scale": user_scale,
+            "max_gs_per_pop": args.max_gs_per_pop,
+            "mtime": time.time(),
         }
         existing = {p.name for p in DASHBOARD_DIR.glob("sim_data_*.json")}
         entries = [e for e in by_name.values() if e["filename"] in existing]
@@ -510,11 +626,15 @@ def main() -> None:
             json.dump({"files": entries}, f)
         tmp.replace(index_file)
 
-    def save_data(bl_data, pg_data, bl_brk, pg_brk, pop_cmp, ep_cmp, cache_state):
+    def save_data(bl_data, pg_data, lp_data, mip_data,
+                  bl_brk, pg_brk, lp_brk, mip_brk,
+                  pop_cmp, ep_cmp, cache_state):
         out = {
             "config": {
                 "num_epochs": num_epochs, "epoch_s": EPOCH_S, "refresh_s": REFRESH,
-                "user_scale": user_scale, "services": svc_names,
+                "user_scale": user_scale,
+                "max_gs_per_pop": args.max_gs_per_pop,
+                "services": svc_names,
                 "total_capacity_gbps": 8 * SAT_FEEDER_CAP_GBPS * len(pop_list),
                 "started_at": start_ts,
                 "run_seed": run_seed,
@@ -524,9 +644,18 @@ def main() -> None:
                     "ground_delay": ground_seed,
                     "ingress": ingress_seed_base,
                 },
+                # Series labels for the dashboard. Four-way display:
+                # BL (nearest PoP) / PG (greedy) / LP (LP-relaxation
+                # + argmax rounding) / MILP (HiGHS integer optimum
+                # with time budget).
+                "series": ["baseline", "progressive", "lpround", "milp"],
             },
             "baseline": bl_data, "progressive": pg_data,
-            "latest_breakdown": {"baseline": bl_brk, "progressive": pg_brk},
+            "lpround": lp_data, "milp": mip_data,
+            "latest_breakdown": {
+                "baseline": bl_brk, "progressive": pg_brk,
+                "lpround": lp_brk, "milp": mip_brk,
+            },
             "latest_pop_compare": pop_cmp, "epoch_compare": ep_cmp,
             "cache_state": cache_state,
         }
@@ -551,8 +680,20 @@ def main() -> None:
         world=world, endpoints=endpoints,
         ground_knowledge=gk_pg, ground_truth=ground_truth,
     )
+    gk_lp = GroundKnowledge(estimator=geo_delay)
+    ctx_lp = RunContext(
+        world=world, endpoints=endpoints,
+        ground_knowledge=gk_lp, ground_truth=ground_truth,
+    )
+    gk_mip = GroundKnowledge(estimator=geo_delay)
+    ctx_mip = RunContext(
+        world=world, endpoints=endpoints,
+        ground_knowledge=gk_mip, ground_truth=ground_truth,
+    )
     feedback_bl = GroundDelayFeedback(gk_bl)
     feedback_pg = GroundDelayFeedback(gk_pg)
+    feedback_lp = GroundDelayFeedback(gk_lp)
+    feedback_mip = GroundDelayFeedback(gk_mip)
     # Single shared traffic generator: one stochastic source per epoch
     # for both BL and PG. Using two independent generators — even with
     # the same literal seed — still lets their RNG states drift apart
@@ -566,32 +707,35 @@ def main() -> None:
     # so run.py can read each one's ``last_timing`` after a plan
     # rebuild and export the per-step breakdown to the dashboard.
     bl_controller = NearestPoPController()
-    if args.pg_policy == "dualprice":
-        pg_controller = DualPriceController(
-            ground_knowledge=gk_pg, dest_names=tuple(svc_names),
-        )
-    else:
-        pg_controller = ProgressiveController(
-            ground_knowledge=gk_pg, dest_names=tuple(svc_names),
-        )
-    print(f"PG policy: {args.pg_policy}")
+    pg_controller = ProgressiveController(
+        ground_knowledge=gk_pg, dest_names=tuple(svc_names),
+    )
+    lp_controller = LPRoundingController(
+        ground_knowledge=gk_lp, dest_names=tuple(svc_names),
+    )
+    mip_controller = MILPController(
+        ground_knowledge=gk_mip, dest_names=tuple(svc_names),
+    )
 
-    bl_plane = pg_plane = None
+    bl_plane = pg_plane = lp_plane = mip_plane = None
     # Forward lifecycle (reuse vs. rebuild, cache invalidation) is
     # owned by RoutingPlaneForward.for_epoch — we just carry the
     # previous instances so the factory can decide.
     bl_forward: RoutingPlaneForward | None = None
     pg_forward: RoutingPlaneForward | None = None
+    lp_forward: RoutingPlaneForward | None = None
+    mip_forward: RoutingPlaneForward | None = None
     bl_data: list = []
     pg_data: list = []
+    lp_data: list = []
+    mip_data: list = []
     compare_data: list = []
 
-    print(f"{'ep':>5} {'time':>8} {'flows':>6} {'demand':>7}  "
-          f"{'BL_rtt':>7} {'PG_rtt':>7} {'diff':>6}  "
-          f"{'BL_p95':>7} {'PG_p95':>7}  "
-          f"{'BL_p99':>7} {'PG_p99':>7}  "
+    print(f"{'ep':>4} {'time':>8} {'flows':>6} {'dem':>6}  "
+          f"{'BL':>6} {'PG':>6} {'LP':>6} {'MIP':>6}  "
+          f"{'BL95':>6} {'PG95':>6} {'LP95':>6} {'MIP95':>6}  "
           f"{'wall':>5}")
-    print("-" * 95)
+    print("-" * 110)
 
     gc_was_enabled = gc.isenabled()
     if gc_was_enabled:
@@ -606,20 +750,27 @@ def main() -> None:
 
             snap = world.snapshot_at(epoch, t)
             gk_bl.set_clock(t); gk_pg.set_clock(t)
+            gk_lp.set_clock(t); gk_mip.set_clock(t)
             refresh_epoch = bl_plane is None or epoch % REFRESH == 0
+
+            # One stochastic draw of traffic per epoch; all controllers
+            # realize against the exact same ``TrafficDemand``. Baseline
+            # now consumes demand too so its cascade-walk can respect
+            # PoP aggregate capacity (apples-to-apples with PG/LP/MIP).
+            demand = traffic.generate(epoch)
+            current_demand = {(fk.src, fk.dst): d for fk, d in demand.flows.items()}
 
             bl_plan_ms: float | None = None
             bl_plan_timing: dict = {}
             if refresh_epoch:
                 t_bl_plan = time.perf_counter()
-                bl_plane = bl_controller.compute_routing_plane(snap, cell_grid, version=epoch)
+                bl_plane = bl_controller.compute_routing_plane(
+                    snap, cell_grid,
+                    demand_per_pair=current_demand,
+                    version=epoch,
+                )
                 bl_plan_ms = (time.perf_counter() - t_bl_plan) * 1000
                 bl_plan_timing = dict(bl_controller.last_timing)
-
-            # One stochastic draw of traffic per epoch; both controllers
-            # realize against the exact same ``TrafficDemand``.
-            demand = traffic.generate(epoch)
-            current_demand = {(fk.src, fk.dst): d for fk, d in demand.flows.items()}
 
             pg_plan_ms: float | None = None
             pg_plan_timing: dict = {}
@@ -632,6 +783,145 @@ def main() -> None:
                 )
                 pg_plan_ms = (time.perf_counter() - t_pg_plan) * 1000
                 pg_plan_timing = dict(pg_controller.last_timing)
+
+            lp_plan_ms: float | None = None
+            lp_plan_timing: dict = {}
+            if refresh_epoch:
+                t_lp_plan = time.perf_counter()
+                lp_plane = lp_controller.compute_routing_plane(
+                    snapshot=snap, cell_grid=cell_grid,
+                    demand_per_pair=current_demand,
+                    version=epoch,
+                )
+                lp_plan_ms = (time.perf_counter() - t_lp_plan) * 1000
+                lp_plan_timing = dict(lp_controller.last_timing)
+
+            mip_plan_ms: float | None = None
+            mip_plan_timing: dict = {}
+            mip_solve_meta: dict = {}
+            if refresh_epoch:
+                t_mip_plan = time.perf_counter()
+                mip_plane = mip_controller.compute_routing_plane(
+                    snapshot=snap, cell_grid=cell_grid,
+                    demand_per_pair=current_demand,
+                    version=epoch,
+                )
+                mip_plan_ms = (time.perf_counter() - t_mip_plan) * 1000
+                mip_plan_timing = dict(mip_controller.last_timing)
+                mip_solve_meta = dict(mip_controller.last_solve_meta)
+
+            # ── Score each refresh-plan on a common control-layer
+            # objective Σ d·c(i,p) + 1e4·overflow. All four assignments
+            # are evaluated under the SAME rankings + pop_cap (built
+            # from PG's GK state, the incumbent reference), so the
+            # numbers are apples-to-apples — this is the "theoretical
+            # plan cost" you'd get *before* forward/realize perturbs
+            # anything. ``plan_lb`` is the LP continuous-relaxation
+            # optimum, a provable floor on any integer assignment.
+            #
+            # In addition to the scalar plan cost, we also compute
+            # per-controller demand-weighted mean / sat / gnd / p95 /
+            # p99 from the same (assignment, cell_sat_cost,
+            # ground_cost) inputs. These are the planner's predicted
+            # RTT stats *before* forward-layer queuing, sat-feeder
+            # contention, or ISL congestion perturb them — the
+            # "idealised" version of the dashboard's Forward curves.
+            plan_costs: dict[str, float | None] = {}
+            plan_stats: dict[str, dict[str, float] | None] = {}
+            plan_lb: float | None = None
+            if refresh_epoch:
+                overflow_penalty = 1.0e4
+                _ground_cost = pg_controller._make_ground_cost(
+                    current_epoch=epoch,
+                    pops=snap.infra.pops,
+                    dest_names=svc_names,
+                )
+                _baseline = build_cell_to_pop_nearest(
+                    cell_grid=cell_grid, pops=snap.infra.pops,
+                    built_at=snap.time_s, version=epoch,
+                )
+                _csc = compute_cell_sat_cost(snap, cell_grid)
+                _rankings = rank_pops_by_e2e(
+                    cell_grid=cell_grid, pops=snap.infra.pops,
+                    baseline=_baseline, cell_sat_cost=_csc,
+                    ground_cost_fn=_ground_cost, dest_names=svc_names,
+                )
+                _pop_cap = compute_pop_capacity(snap)
+                _items = _build_items(_rankings, cell_grid, current_demand)
+
+                def _assignment_from_plane(plane, _r=_rankings):
+                    per_dest = plane.cell_to_pop.per_dest
+                    mapping = plane.cell_to_pop.mapping
+                    out: dict[tuple[int, str], str] = {}
+                    for key in _r:
+                        override = per_dest.get(key)
+                        if override:
+                            out[key] = override[0]
+                        else:
+                            base = mapping.get(key[0])
+                            if base:
+                                out[key] = base[0]
+                    return out
+
+                def _plan_stats(assignment):
+                    """Demand-weighted mean / sat / gnd / p95 / p99 on
+                    the assignment's predicted RTT pool. Sat RTT from
+                    ``cell_sat_cost``; ground RTT from the planner's
+                    scored ``ground_cost_fn``. No forward coupling
+                    modelled — this is the planner's idealised view.
+
+                    Same demand-weighted convention as :func:`collect`
+                    so Control and Forward curves are plotted on the
+                    same axes.
+                    """
+                    rtts: list[float] = []
+                    sats: list[float] = []
+                    gnds: list[float] = []
+                    demands: list[float] = []
+                    for cell_id, dst, demand, _ in _items:
+                        pop = assignment.get((cell_id, dst))
+                        if pop is None:
+                            continue
+                        sat = _csc.get((cell_id, pop))
+                        if sat is None:
+                            continue
+                        gnd = _ground_cost(pop, dst) or 0.0
+                        rtts.append(sat + gnd)
+                        sats.append(sat)
+                        gnds.append(gnd)
+                        demands.append(demand)
+                    if not rtts:
+                        return {"mean": 0.0, "sat": 0.0, "gnd": 0.0,
+                                "p95": 0.0, "p99": 0.0}
+                    pairs = list(zip(rtts, demands, strict=True))
+                    return {
+                        "mean": w_mean(rtts, demands),
+                        "sat": w_mean(sats, demands),
+                        "gnd": w_mean(gnds, demands),
+                        "p95": w_pct(pairs, 95),
+                        "p99": w_pct(pairs, 99),
+                    }
+
+                for label, plane in (
+                    ("bl", bl_plane), ("pg", pg_plane),
+                    ("lp", lp_plane), ("mip", mip_plane),
+                ):
+                    assign = _assignment_from_plane(plane)
+                    plan_costs[label] = round(_weighted_cost(
+                        assign, _items, _pop_cap,
+                        overflow_penalty=overflow_penalty,
+                    ), 2)
+                    stats = _plan_stats(assign)
+                    plan_stats[label] = {k: round(v, 3) for k, v in stats.items()}
+                # LB comes directly from the LP solver (res.fun) —
+                # LP's own GK may have drifted from PG's by this point,
+                # but at refresh cadence the drift is tiny. For a
+                # fully airtight LB under PG's GK we'd need another
+                # LP solve here; we intentionally don't pay that cost.
+                plan_lb = (
+                    round(lp_controller.last_lp_opt, 2)
+                    if lp_controller.last_lp_opt is not None else None
+                )
 
             if refresh_epoch and gc_was_enabled:
                 collect_refresh_gc()
@@ -658,60 +948,146 @@ def main() -> None:
             )
             feedback_pg.observe(result_pg)
 
+            view_lp = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
+            book_lp = UsageBook(view=view_lp)
+            lp_forward = RoutingPlaneForward.for_epoch(
+                lp_forward, lp_plane, cell_grid, book_lp,
+            )
+            result_lp = realize(
+                lp_forward, snap, demand, ctx_lp,
+                ingress_seed_base=ingress_seed_base,
+            )
+            feedback_lp.observe(result_lp)
+
+            view_mip = CapacityView.from_snapshot(sat_state=snap.satellite, shell=world.shell, ground_stations=gs_by_id)
+            book_mip = UsageBook(view=view_mip)
+            mip_forward = RoutingPlaneForward.for_epoch(
+                mip_forward, mip_plane, cell_grid, book_mip,
+            )
+            result_mip = realize(
+                mip_forward, snap, demand, ctx_mip,
+                ingress_seed_base=ingress_seed_base,
+            )
+            feedback_mip.observe(result_mip)
+
             pop_capacity = dynamic_pop_capacity(snap)
             bl_data.append(collect(epoch, result_bl, book_bl, pop_capacity))
             pg_data.append(collect(epoch, result_pg, book_pg, pop_capacity))
+            lp_data.append(collect(epoch, result_lp, book_lp, pop_capacity))
+            mip_data.append(collect(epoch, result_mip, book_mip, pop_capacity))
             bl_brk = compute_breakdown(result_bl)
             pg_brk = compute_breakdown(result_pg)
+            lp_brk = compute_breakdown(result_lp)
+            mip_brk = compute_breakdown(result_mip)
             pop_cmp = compute_pop_compare(result_bl, result_pg)
-            ep_cmp = compute_epoch_compare(result_bl, result_pg)
+            ep_cmp = compute_epoch_compare(result_bl, result_pg, result_lp, result_mip)
             ep_cmp["epoch"] = epoch
             ep_cmp["time_str"] = bl_data[-1]["time_str"]
             ep_cmp["bl_plan_ms"] = round(bl_plan_ms, 2) if bl_plan_ms is not None else None
             ep_cmp["pg_plan_ms"] = round(pg_plan_ms, 2) if pg_plan_ms is not None else None
+            ep_cmp["lp_plan_ms"] = round(lp_plan_ms, 2) if lp_plan_ms is not None else None
+            ep_cmp["mip_plan_ms"] = round(mip_plan_ms, 2) if mip_plan_ms is not None else None
             # Forward timing is always present (realize always runs).
-            # Plan timing breakdowns are empty on cached-plan epochs —
-            # callers reading the dashboard must treat missing keys as
-            # "not measured this epoch" rather than "zero cost".
+            # Plan timing breakdowns are empty on cached-plan epochs.
             bl_fwd = dict(result_bl.forward_timing_ms)
             pg_fwd = dict(result_pg.forward_timing_ms)
+            lp_fwd = dict(result_lp.forward_timing_ms)
+            mip_fwd = dict(result_mip.forward_timing_ms)
             bl_forward_ms = bl_fwd.get("total_ms", 0.0)
             pg_forward_ms = pg_fwd.get("total_ms", 0.0)
-            bl_total_ms = (bl_plan_ms or 0.0) + bl_forward_ms
-            pg_total_ms = (pg_plan_ms or 0.0) + pg_forward_ms
+            lp_forward_ms = lp_fwd.get("total_ms", 0.0)
+            mip_forward_ms = mip_fwd.get("total_ms", 0.0)
             ep_cmp["bl_forward_ms"] = round(bl_forward_ms, 2)
             ep_cmp["pg_forward_ms"] = round(pg_forward_ms, 2)
-            ep_cmp["bl_total_ms"] = round(bl_total_ms, 2)
-            ep_cmp["pg_total_ms"] = round(pg_total_ms, 2)
-            ep_cmp["forward_total_ms"] = round(bl_forward_ms + pg_forward_ms, 2)
-            # Aggregated forward steps across BL + PG, restricted to
-            # keys present in both — the dashboard uses this for a
-            # combined drill-down chart so users can see where the
-            # realize() pipeline spends time per epoch.
+            ep_cmp["lp_forward_ms"] = round(lp_forward_ms, 2)
+            ep_cmp["mip_forward_ms"] = round(mip_forward_ms, 2)
+            ep_cmp["bl_total_ms"] = round((bl_plan_ms or 0.0) + bl_forward_ms, 2)
+            ep_cmp["pg_total_ms"] = round((pg_plan_ms or 0.0) + pg_forward_ms, 2)
+            ep_cmp["lp_total_ms"] = round((lp_plan_ms or 0.0) + lp_forward_ms, 2)
+            ep_cmp["mip_total_ms"] = round((mip_plan_ms or 0.0) + mip_forward_ms, 2)
+            ep_cmp["forward_total_ms"] = round(
+                bl_forward_ms + pg_forward_ms + lp_forward_ms + mip_forward_ms, 2,
+            )
+            # Optimality references: LP optimum is a **lower bound**
+            # on any integer solution's weighted cost. MILP (if it
+            # converges) is the integer optimum of the pruned
+            # problem. Both are ``None`` on cached-plan epochs or
+            # solver failure.
+            ep_cmp["lp_opt"] = (
+                round(lp_controller.last_lp_opt, 2)
+                if lp_controller.last_lp_opt is not None and refresh_epoch
+                else None
+            )
+            ep_cmp["mip_opt"] = (
+                round(mip_controller.last_milp_opt, 2)
+                if mip_controller.last_milp_opt is not None and refresh_epoch
+                else None
+            )
+            # Control-layer plan cost per controller (Σ d·c on a common
+            # ground-cost surface) + theoretical LP lower bound. Only
+            # populated on refresh epochs; cached-plan epochs repeat
+            # the previous refresh's plan so repeating the numbers is
+            # misleading.
+            ep_cmp["bl_plan_cost"] = plan_costs.get("bl")
+            ep_cmp["pg_plan_cost"] = plan_costs.get("pg")
+            ep_cmp["lp_plan_cost"] = plan_costs.get("lp")
+            ep_cmp["mip_plan_cost"] = plan_costs.get("mip")
+            ep_cmp["plan_lb"] = plan_lb
+            # LB as a demand-weighted mean RTT: divide the LP
+            # continuous optimum by the total demand it covers. The
+            # LP's objective is Σ d·c evaluated on a fractional
+            # assignment, so res.fun / Σd is the expected per-bit
+            # RTT at that fractional solution. No integer plan can
+            # get strictly below this on the demand-weighted mean
+            # axis — it's the single-number RTT floor we plot as a
+            # dashed line on c_plan_rtt.
+            if plan_lb is not None and _items:
+                _total_d = sum(d for _, _, d, _ in _items)
+                ep_cmp["plan_lb_mean"] = (
+                    round(plan_lb / _total_d, 3) if _total_d > 0 else None
+                )
+            else:
+                ep_cmp["plan_lb_mean"] = None
+            # Demand-weighted mean / sat / gnd / p95 / p99 for each
+            # controller's plan — parallel to the Forward-side
+            # collect() stats, but computed at the control layer
+            # (no queuing / no feeder contention / no GroundTruth
+            # sampling).
+            for label in ("bl", "pg", "lp", "mip"):
+                s = plan_stats.get(label) or {}
+                for metric in ("mean", "sat", "gnd", "p95", "p99"):
+                    ep_cmp[f"{label}_plan_{metric}"] = s.get(metric)
+            ep_cmp["mip_solve_status"] = (
+                mip_solve_meta.get("status") if refresh_epoch else None
+            )
             forward_steps = {
-                k: bl_fwd[k] + pg_fwd[k]
-                for k in bl_fwd.keys() & pg_fwd.keys()
+                k: bl_fwd[k] + pg_fwd[k] + lp_fwd[k] + mip_fwd[k]
+                for k in bl_fwd.keys() & pg_fwd.keys() & lp_fwd.keys() & mip_fwd.keys()
             }
             ep_cmp["timing"] = {
                 "bl_plan_steps": _round_ms(bl_plan_timing),
                 "pg_plan_steps": _round_ms(pg_plan_timing),
+                "lp_plan_steps": _round_ms(lp_plan_timing),
+                "mip_plan_steps": _round_ms(mip_plan_timing),
                 "bl_forward_steps": _round_ms(bl_fwd),
                 "pg_forward_steps": _round_ms(pg_fwd),
+                "lp_forward_steps": _round_ms(lp_fwd),
+                "mip_forward_steps": _round_ms(mip_fwd),
                 "forward_steps": _round_ms(forward_steps),
             }
             compare_data.append(ep_cmp)
-            save_data(bl_data, pg_data, bl_brk, pg_brk, pop_cmp, compare_data,
-                      extract_cache_state(gk_pg))
+            save_data(bl_data, pg_data, lp_data, mip_data,
+                      bl_brk, pg_brk, lp_brk, mip_brk,
+                      pop_cmp, compare_data, extract_cache_state(gk_pg))
 
             t_ep = time.perf_counter() - t_ep_start
 
             if epoch % 10 == 0 or epoch == num_epochs - 1:
                 b = bl_data[-1]; p = pg_data[-1]
-                diff = p["mean_rtt"] - b["mean_rtt"]
-                print(f"{epoch:>5} {b['time_str']:>8} {b['n_flows']:>6} {b['demand_gbps']:>6.0f}Gb  "
-                      f"{b['mean_rtt']:>6.1f}ms {p['mean_rtt']:>6.1f}ms {diff:>+5.1f}ms  "
-                      f"{b['p95_rtt']:>6.1f}ms {p['p95_rtt']:>6.1f}ms  "
-                      f"{b['p99_rtt']:>6.1f}ms {p['p99_rtt']:>6.1f}ms  "
+                lp = lp_data[-1]; mp = mip_data[-1]
+                print(f"{epoch:>4} {b['time_str']:>8} {b['n_flows']:>6} {b['demand_gbps']:>5.0f}G  "
+                      f"{b['mean_rtt']:>5.1f} {p['mean_rtt']:>5.1f} {lp['mean_rtt']:>5.1f} {mp['mean_rtt']:>5.1f}  "
+                      f"{b['p95_rtt']:>5.1f} {p['p95_rtt']:>5.1f} {lp['p95_rtt']:>5.1f} {mp['p95_rtt']:>5.1f}  "
                       f"{t_ep:>4.1f}s")
     except KeyboardInterrupt:
         print("\nInterrupted — partial results saved to", out_file)
