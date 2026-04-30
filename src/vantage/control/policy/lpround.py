@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from scipy.optimize import linprog
 
+from vantage.control.costing import build_ground_cost_lookup
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     build_pop_egress_table,
@@ -141,41 +142,14 @@ class LPRoundingController:
         pops: Iterable[PoP] | None = None,
         dest_names: Iterable[str] | None = None,
     ) -> Callable[[str, str], float | None]:
-        gk = self._gk
-        estimator = gk.estimator
-        lambda_dev = self._score_lambda_dev
-        stale_per_epoch_ms = self._score_stale_per_epoch_ms
-
-        def compute(pop_code: str, dest: str) -> float | None:
-            scored = gk.score(
-                pop_code, dest,
-                current_epoch=current_epoch,
-                lambda_dev=lambda_dev,
-                stale_per_epoch_ms=stale_per_epoch_ms,
-            )
-            if scored is not None:
-                return scored
-            if estimator is None:
-                return None
-            try:
-                return estimator.estimate(pop_code, dest) * 2
-            except KeyError:
-                return None
-
-        if pops is None or dest_names is None:
-            return compute
-
-        table: dict[tuple[str, str], float | None] = {}
-        dest_tuple = tuple(dest_names)
-        for pop in pops:
-            pop_code = pop.code
-            for dest in dest_tuple:
-                table[(pop_code, dest)] = compute(pop_code, dest)
-
-        def lookup(pop_code: str, dest: str) -> float | None:
-            return table.get((pop_code, dest))
-
-        return lookup
+        return build_ground_cost_lookup(
+            self._gk,
+            current_epoch=current_epoch,
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
+            pops=pops,
+            dest_names=dest_names,
+        )
 
     def compute_routing_plane(
         self,
@@ -191,8 +165,11 @@ class LPRoundingController:
 
         t0 = perf()
 
-        ground_cost = self._make_ground_cost(
+        ground_cost = build_ground_cost_lookup(
+            self._gk,
             current_epoch=int(version),
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
             pops=pops,
             dest_names=dest_names,
         )
@@ -220,7 +197,9 @@ class LPRoundingController:
         t_pop_cap = perf()
 
         demand_per_pair = demand_per_pair or {}
-        items = _build_items(rankings, cell_grid, demand_per_pair)
+        from vantage.control.evaluation import build_ranked_demand_items
+
+        items = build_ranked_demand_items(rankings, cell_grid, demand_per_pair)
 
         # Solve LP + round. On LP failure the controller falls back
         # to an empty assignment (every item defaults to baseline at
@@ -291,28 +270,10 @@ def _build_items(
     cell_grid: CellGrid,
     demand_per_pair: dict[tuple[str, str], float],
 ) -> list[_Item]:
-    """Aggregate per-endpoint demand into per-(cell, dest) items.
+    """Compatibility wrapper around the public evaluation item builder."""
+    from vantage.control.evaluation import build_ranked_demand_items
 
-    Zero-demand / empty-ranking pairs are dropped — they are
-    un-solvable for the LP (no variable to set) and will fall back
-    to baseline at assembly time.
-    """
-    cell_to_eps: dict[int, list[str]] = {}
-    for ep_name, ep_cell in cell_grid.endpoint_to_cell.items():
-        cell_to_eps.setdefault(ep_cell, []).append(ep_name)
-
-    items: list[_Item] = []
-    for (cell_id, dest), ranked in rankings.items():
-        if not ranked:
-            continue
-        demand = sum(
-            demand_per_pair.get((ep_name, dest), 0.0)
-            for ep_name in cell_to_eps.get(cell_id, ())
-        )
-        if demand <= 0.0:
-            continue
-        items.append((cell_id, dest, demand, ranked))
-    return items
+    return build_ranked_demand_items(rankings, cell_grid, demand_per_pair)
 
 
 def _build_lp_arrays(
@@ -590,38 +551,15 @@ def _weighted_cost(
     *,
     overflow_penalty: float,
 ) -> float:
-    """Weighted surrogate objective — helper for tests / experiments.
+    """Compatibility wrapper around the public assignment objective."""
+    from vantage.control.evaluation import compute_assignment_objective
 
-    ``Σ d_i · c(i, p_i)  +  overflow_penalty · Σ_p max(0, load_p − cap_p)``
-
-    Items without an assignment contribute 0 on the cost side. The
-    controller itself does **not** use this to decide what to ship —
-    it always ships the LP/MILP solver output — but the helper is
-    kept public-ish for apples-to-apples comparison between two
-    integer assignments on the same objective.
-    """
-    if not items:
-        return 0.0
-    idx: dict[tuple[int, str], tuple[float, list[tuple[str, float]]]] = {
-        (c, d): (demand, ranked) for c, d, demand, ranked in items
-    }
-    cost = 0.0
-    pop_load: dict[str, float] = {}
-    for key, pop in assignments.items():
-        item = idx.get(key)
-        if item is None:
-            continue
-        demand, ranked = item
-        for p, c in ranked:
-            if p == pop:
-                cost += demand * c
-                break
-        pop_load[pop] = pop_load.get(pop, 0.0) + demand
-    for p, load in pop_load.items():
-        cap = pop_cap.get(p, 0.0)
-        if cap > 0.0 and load > cap:
-            cost += overflow_penalty * (load - cap)
-    return cost
+    return compute_assignment_objective(
+        assignments,
+        items,
+        pop_cap,
+        overflow_penalty=overflow_penalty,
+    )
 
 
 def _solve_sub_milp(

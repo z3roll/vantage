@@ -41,6 +41,7 @@ from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from vantage.control.costing import build_ground_cost_lookup
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     build_pop_egress_table,
@@ -146,79 +147,15 @@ class ProgressiveController:
         pops: Iterable[PoP] | None = None,
         dest_names: Iterable[str] | None = None,
     ) -> Callable[[str, str], float | None]:
-        """Build the ``(pop, dest) → cost_ms`` function used for this plan.
-
-        Bound to ``current_epoch`` so the staleness penalty reflects
-        how long ago each pair was last observed, measured against
-        the epoch we're planning *for* (typically the ``version``
-        argument of :meth:`compute_routing_plane`, which is wired to
-        the current epoch in ``run.py``).
-
-        Behaviour per pair:
-
-        1. If :meth:`GroundKnowledge.score` returns a value — i.e. a
-           learned stat exists for the pair — that score is used.
-           It composes ``mu_ms + λ·dev_ms + stale_per_epoch·Δepoch``,
-           so noisy/stale pairs cost more than calm/fresh pairs with
-           the same mean.
-        2. Otherwise fall back to the deterministic estimator
-           (``estimator.estimate(pop, dest) * 2`` — one-way → RTT).
-           This keeps PoPs that have never been observed rankable
-           without inflating their score artificially.
-        3. If neither is available return ``None`` so
-           :func:`rank_pops_by_e2e` drops the pair from the ranking.
-
-        When ``pops`` **and** ``dest_names`` are both supplied the
-        table is **precomputed once per refresh** and the returned
-        lookup is a plain ``dict.get`` — this is the hot path
-        invoked from :meth:`compute_routing_plane`. Otherwise
-        (external callers / tests that probe ad-hoc pairs) the
-        returned callable evaluates on demand so unknown pairs
-        still resolve correctly. Semantics are identical in both
-        modes; only the per-call cost differs.
-        """
-        gk = self._gk
-        estimator = gk.estimator
-        lambda_dev = self._score_lambda_dev
-        stale_per_epoch_ms = self._score_stale_per_epoch_ms
-
-        def compute(pop_code: str, dest: str) -> float | None:
-            scored = gk.score(
-                pop_code, dest,
-                current_epoch=current_epoch,
-                lambda_dev=lambda_dev,
-                stale_per_epoch_ms=stale_per_epoch_ms,
-            )
-            if scored is not None:
-                return scored
-            if estimator is None:
-                return None
-            try:
-                return estimator.estimate(pop_code, dest) * 2
-            except KeyError:
-                return None
-
-        if pops is None or dest_names is None:
-            return compute
-
-        # Precompute hot path: rank_pops_by_e2e + _progressive_filling
-        # together evaluate ground_cost ~ O(n_cells × n_dests × n_pops)
-        # times per refresh (~10⁶ calls at production scale). The
-        # score is cell-independent, so one (pop, dest) entry covers
-        # every cell — drop the call count from 10⁶ to n_pops ×
-        # n_dests (~48 × 14 ≈ 700) and keep the per-lookup work at a
-        # single ``dict.get``.
-        table: dict[tuple[str, str], float | None] = {}
-        dest_tuple = tuple(dest_names)
-        for pop in pops:
-            pop_code = pop.code
-            for dest in dest_tuple:
-                table[(pop_code, dest)] = compute(pop_code, dest)
-
-        def lookup(pop_code: str, dest: str) -> float | None:
-            return table.get((pop_code, dest))
-
-        return lookup
+        """Compatibility shim for callers that still probe controller internals."""
+        return build_ground_cost_lookup(
+            self._gk,
+            current_epoch=current_epoch,
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
+            pops=pops,
+            dest_names=dest_names,
+        )
 
     def compute_routing_plane(
         self,
@@ -249,8 +186,11 @@ class ProgressiveController:
         # improvement delta. Passing ``pops`` + ``dest_names`` forces
         # the precomputed-table path: ~10⁶ per-call evaluations
         # collapse to ~700 one-time ones.
-        ground_cost = self._make_ground_cost(
+        ground_cost = build_ground_cost_lookup(
+            self._gk,
             current_epoch=int(version),
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
             pops=pops,
             dest_names=dest_names,
         )

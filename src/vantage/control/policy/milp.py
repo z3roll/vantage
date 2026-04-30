@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
+from vantage.control.costing import build_ground_cost_lookup
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
     build_pop_egress_table,
@@ -47,7 +48,6 @@ from vantage.control.policy.common.fib_builder import (
 )
 from vantage.control.policy.lpround import (
     _as_sparse,
-    _build_items,
     _build_lp_arrays,
     _repair_overflow,
     _solve_lp_and_round,
@@ -135,41 +135,14 @@ class MILPController:
         pops: Iterable[PoP] | None = None,
         dest_names: Iterable[str] | None = None,
     ) -> Callable[[str, str], float | None]:
-        gk = self._gk
-        estimator = gk.estimator
-        lambda_dev = self._score_lambda_dev
-        stale_per_epoch_ms = self._score_stale_per_epoch_ms
-
-        def compute(pop_code: str, dest: str) -> float | None:
-            scored = gk.score(
-                pop_code, dest,
-                current_epoch=current_epoch,
-                lambda_dev=lambda_dev,
-                stale_per_epoch_ms=stale_per_epoch_ms,
-            )
-            if scored is not None:
-                return scored
-            if estimator is None:
-                return None
-            try:
-                return estimator.estimate(pop_code, dest) * 2
-            except KeyError:
-                return None
-
-        if pops is None or dest_names is None:
-            return compute
-
-        table: dict[tuple[str, str], float | None] = {}
-        dest_tuple = tuple(dest_names)
-        for pop in pops:
-            pop_code = pop.code
-            for dest in dest_tuple:
-                table[(pop_code, dest)] = compute(pop_code, dest)
-
-        def lookup(pop_code: str, dest: str) -> float | None:
-            return table.get((pop_code, dest))
-
-        return lookup
+        return build_ground_cost_lookup(
+            self._gk,
+            current_epoch=current_epoch,
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
+            pops=pops,
+            dest_names=dest_names,
+        )
 
     def compute_routing_plane(
         self,
@@ -185,8 +158,11 @@ class MILPController:
 
         t0 = perf()
 
-        ground_cost = self._make_ground_cost(
+        ground_cost = build_ground_cost_lookup(
+            self._gk,
             current_epoch=int(version),
+            lambda_dev=self._score_lambda_dev,
+            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
             pops=pops,
             dest_names=dest_names,
         )
@@ -214,7 +190,9 @@ class MILPController:
         t_pop_cap = perf()
 
         demand_per_pair = demand_per_pair or {}
-        items = _build_items(rankings, cell_grid, demand_per_pair)
+        from vantage.control.evaluation import build_ranked_demand_items
+
+        items = build_ranked_demand_items(rankings, cell_grid, demand_per_pair)
 
         assignments, obj, meta = _solve_milp(
             items=items,
