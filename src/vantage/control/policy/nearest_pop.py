@@ -8,7 +8,7 @@ aggregate ingress capacity can still absorb the (cell, dst) demand;
 if every cascade PoP would overflow, it spills to the least-loaded
 cascade PoP. This mirrors the data plane's hot-potato behaviour but
 at PoP granularity (not per-sat-feeder), giving an apples-to-apples
-control-layer comparison against PG / LP / MILP without pretending
+control-layer comparison against Greedy / LP / MILP without pretending
 baseline is capacity-blind.
 
 The satellite path is represented by the refresh-time

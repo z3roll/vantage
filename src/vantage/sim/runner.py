@@ -12,7 +12,7 @@ from pathlib import Path
 from vantage.control.evaluation import ControlPlanEvaluation, evaluate_control_plans
 from vantage.control.feedback import GroundDelayFeedback
 from vantage.control.knowledge import GroundKnowledge
-from vantage.control.policy.greedy import ProgressiveController
+from vantage.control.policy.greedy import GreedyController
 from vantage.control.policy.lpround import LPRoundingController
 from vantage.control.policy.milp import MILPController
 from vantage.control.policy.nearest_pop import NearestPoPController
@@ -141,11 +141,11 @@ def _run_epoch_loop(
         ground_knowledge=gk_bl,
         ground_truth=runtime.ground_truth,
     )
-    gk_pg = GroundKnowledge(estimator=runtime.geo_delay)
-    ctx_pg = RunContext(
+    gk_greedy = GroundKnowledge(estimator=runtime.geo_delay)
+    ctx_greedy = RunContext(
         world=world,
         endpoints=runtime.endpoints,
-        ground_knowledge=gk_pg,
+        ground_knowledge=gk_greedy,
         ground_truth=runtime.ground_truth,
     )
     gk_lp = GroundKnowledge(estimator=runtime.geo_delay)
@@ -163,13 +163,13 @@ def _run_epoch_loop(
         ground_truth=runtime.ground_truth,
     )
     feedback_bl = GroundDelayFeedback(gk_bl)
-    feedback_pg = GroundDelayFeedback(gk_pg)
+    feedback_greedy = GroundDelayFeedback(gk_greedy)
     feedback_lp = GroundDelayFeedback(gk_lp)
     feedback_mip = GroundDelayFeedback(gk_mip)
 
     bl_controller = NearestPoPController()
-    pg_controller = ProgressiveController(
-        ground_knowledge=gk_pg,
+    greedy_controller = GreedyController(
+        ground_knowledge=gk_greedy,
         dest_names=tuple(runtime.svc_names),
     )
     lp_controller = LPRoundingController(
@@ -182,24 +182,24 @@ def _run_epoch_loop(
     )
 
     bl_plane: RoutingPlane | None = None
-    pg_plane: RoutingPlane | None = None
+    greedy_plane: RoutingPlane | None = None
     lp_plane: RoutingPlane | None = None
     mip_plane: RoutingPlane | None = None
     bl_forward: RoutingPlaneForward | None = None
-    pg_forward: RoutingPlaneForward | None = None
+    greedy_forward: RoutingPlaneForward | None = None
     lp_forward: RoutingPlaneForward | None = None
     mip_forward: RoutingPlaneForward | None = None
 
     bl_data: list = []
-    pg_data: list = []
+    greedy_data: list = []
     lp_data: list = []
     mip_data: list = []
     compare_data: list = []
 
     print(
         f"{'ep':>4} {'time':>8} {'flows':>6} {'dem':>6}  "
-        f"{'BL':>6} {'PG':>6} {'LP':>6} {'MIP':>6}  "
-        f"{'BL95':>6} {'PG95':>6} {'LP95':>6} {'MIP95':>6}  "
+        f"{'BL':>6} {'Greedy':>6} {'LP':>6} {'MIP':>6}  "
+        f"{'BL95':>6} {'Gre95':>6} {'LP95':>6} {'MIP95':>6}  "
         f"{'wall':>5}"
     )
     print("-" * 110)
@@ -217,7 +217,7 @@ def _run_epoch_loop(
 
             snap = world.snapshot_at(epoch, t)
             gk_bl.set_clock(t)
-            gk_pg.set_clock(t)
+            gk_greedy.set_clock(t)
             gk_lp.set_clock(t)
             gk_mip.set_clock(t)
             refresh_epoch = bl_plane is None or epoch % REFRESH == 0
@@ -241,18 +241,18 @@ def _run_epoch_loop(
                 bl_plan_ms = (time.perf_counter() - t_bl_plan) * 1000
                 bl_plan_timing = dict(bl_controller.last_timing)
 
-            pg_plan_ms: float | None = None
-            pg_plan_timing: dict = {}
+            greedy_plan_ms: float | None = None
+            greedy_plan_timing: dict = {}
             if refresh_epoch:
-                t_pg_plan = time.perf_counter()
-                pg_plane = pg_controller.compute_routing_plane(
+                t_greedy_plan = time.perf_counter()
+                greedy_plane = greedy_controller.compute_routing_plane(
                     snapshot=snap,
                     cell_grid=cell_grid,
                     demand_per_pair=current_demand,
                     version=epoch,
                 )
-                pg_plan_ms = (time.perf_counter() - t_pg_plan) * 1000
-                pg_plan_timing = dict(pg_controller.last_timing)
+                greedy_plan_ms = (time.perf_counter() - t_greedy_plan) * 1000
+                greedy_plan_timing = dict(greedy_controller.last_timing)
 
             lp_plan_ms: float | None = None
             lp_plan_timing: dict = {}
@@ -290,11 +290,11 @@ def _run_epoch_loop(
                     demand_per_pair=current_demand,
                     routing_planes={
                         "bl": bl_plane,
-                        "pg": pg_plane,
+                        "greedy": greedy_plane,
                         "lp": lp_plane,
                         "mip": mip_plane,
                     },
-                    reference_ground_knowledge=gk_pg,
+                    reference_ground_knowledge=gk_greedy,
                     dest_names=runtime.svc_names,
                     current_epoch=epoch,
                     lp_lower_bound=lp_controller.last_lp_opt,
@@ -324,26 +324,26 @@ def _run_epoch_loop(
             )
             feedback_bl.observe(result_bl)
 
-            view_pg = CapacityView.from_snapshot(
+            view_greedy = CapacityView.from_snapshot(
                 sat_state=snap.satellite,
                 shell=world.shell,
                 ground_stations=runtime.gs_by_id,
             )
-            book_pg = UsageBook(view=view_pg)
-            pg_forward = RoutingPlaneForward.for_epoch(
-                pg_forward,
-                pg_plane,
+            book_greedy = UsageBook(view=view_greedy)
+            greedy_forward = RoutingPlaneForward.for_epoch(
+                greedy_forward,
+                greedy_plane,
                 cell_grid,
-                book_pg,
+                book_greedy,
             )
-            result_pg = realize(
-                pg_forward,
+            result_greedy = realize(
+                greedy_forward,
                 snap,
                 demand,
-                ctx_pg,
+                ctx_greedy,
                 ingress_seed_base=config.seeds.ingress_seed_base,
             )
-            feedback_pg.observe(result_pg)
+            feedback_greedy.observe(result_greedy)
 
             view_lp = CapacityView.from_snapshot(
                 sat_state=snap.satellite,
@@ -394,43 +394,43 @@ def _run_epoch_loop(
                 sat_feeder_cap_gbps=SAT_FEEDER_CAP_GBPS,
             )
             bl_data.append(_collect_epoch(epoch, result_bl, book_bl, pop_capacity, runtime))
-            pg_data.append(_collect_epoch(epoch, result_pg, book_pg, pop_capacity, runtime))
+            greedy_data.append(_collect_epoch(epoch, result_greedy, book_greedy, pop_capacity, runtime))
             lp_data.append(_collect_epoch(epoch, result_lp, book_lp, pop_capacity, runtime))
             mip_data.append(_collect_epoch(epoch, result_mip, book_mip, pop_capacity, runtime))
 
             latest_breakdown = {
                 "baseline": compute_breakdown(result_bl),
-                "progressive": compute_breakdown(result_pg),
+                "greedy": compute_breakdown(result_greedy),
                 "lpround": compute_breakdown(result_lp),
                 "milp": compute_breakdown(result_mip),
             }
-            pop_cmp = compute_pop_compare(result_bl, result_pg)
-            ep_cmp = compute_epoch_compare(result_bl, result_pg, result_lp, result_mip)
+            pop_cmp = compute_pop_compare(result_bl, result_greedy)
+            ep_cmp = compute_epoch_compare(result_bl, result_greedy, result_lp, result_mip)
             ep_cmp["epoch"] = epoch
             ep_cmp["time_str"] = bl_data[-1]["time_str"]
             ep_cmp["bl_plan_ms"] = round(bl_plan_ms, 2) if bl_plan_ms is not None else None
-            ep_cmp["pg_plan_ms"] = round(pg_plan_ms, 2) if pg_plan_ms is not None else None
+            ep_cmp["greedy_plan_ms"] = round(greedy_plan_ms, 2) if greedy_plan_ms is not None else None
             ep_cmp["lp_plan_ms"] = round(lp_plan_ms, 2) if lp_plan_ms is not None else None
             ep_cmp["mip_plan_ms"] = round(mip_plan_ms, 2) if mip_plan_ms is not None else None
 
             bl_fwd = dict(result_bl.forward_timing_ms)
-            pg_fwd = dict(result_pg.forward_timing_ms)
+            greedy_fwd = dict(result_greedy.forward_timing_ms)
             lp_fwd = dict(result_lp.forward_timing_ms)
             mip_fwd = dict(result_mip.forward_timing_ms)
             bl_forward_ms = bl_fwd.get("total_ms", 0.0)
-            pg_forward_ms = pg_fwd.get("total_ms", 0.0)
+            greedy_forward_ms = greedy_fwd.get("total_ms", 0.0)
             lp_forward_ms = lp_fwd.get("total_ms", 0.0)
             mip_forward_ms = mip_fwd.get("total_ms", 0.0)
             ep_cmp["bl_forward_ms"] = round(bl_forward_ms, 2)
-            ep_cmp["pg_forward_ms"] = round(pg_forward_ms, 2)
+            ep_cmp["greedy_forward_ms"] = round(greedy_forward_ms, 2)
             ep_cmp["lp_forward_ms"] = round(lp_forward_ms, 2)
             ep_cmp["mip_forward_ms"] = round(mip_forward_ms, 2)
             ep_cmp["bl_total_ms"] = round((bl_plan_ms or 0.0) + bl_forward_ms, 2)
-            ep_cmp["pg_total_ms"] = round((pg_plan_ms or 0.0) + pg_forward_ms, 2)
+            ep_cmp["greedy_total_ms"] = round((greedy_plan_ms or 0.0) + greedy_forward_ms, 2)
             ep_cmp["lp_total_ms"] = round((lp_plan_ms or 0.0) + lp_forward_ms, 2)
             ep_cmp["mip_total_ms"] = round((mip_plan_ms or 0.0) + mip_forward_ms, 2)
             ep_cmp["forward_total_ms"] = round(
-                bl_forward_ms + pg_forward_ms + lp_forward_ms + mip_forward_ms,
+                bl_forward_ms + greedy_forward_ms + lp_forward_ms + mip_forward_ms,
                 2,
             )
             ep_cmp["lp_opt"] = (
@@ -448,16 +448,16 @@ def _run_epoch_loop(
                 mip_solve_meta.get("status") if refresh_epoch else None
             )
             forward_steps = {
-                key: bl_fwd[key] + pg_fwd[key] + lp_fwd[key] + mip_fwd[key]
-                for key in bl_fwd.keys() & pg_fwd.keys() & lp_fwd.keys() & mip_fwd.keys()
+                key: bl_fwd[key] + greedy_fwd[key] + lp_fwd[key] + mip_fwd[key]
+                for key in bl_fwd.keys() & greedy_fwd.keys() & lp_fwd.keys() & mip_fwd.keys()
             }
             ep_cmp["timing"] = {
                 "bl_plan_steps": round_ms(bl_plan_timing),
-                "pg_plan_steps": round_ms(pg_plan_timing),
+                "greedy_plan_steps": round_ms(greedy_plan_timing),
                 "lp_plan_steps": round_ms(lp_plan_timing),
                 "mip_plan_steps": round_ms(mip_plan_timing),
                 "bl_forward_steps": round_ms(bl_fwd),
-                "pg_forward_steps": round_ms(pg_fwd),
+                "greedy_forward_steps": round_ms(greedy_fwd),
                 "lp_forward_steps": round_ms(lp_fwd),
                 "mip_forward_steps": round_ms(mip_fwd),
                 "forward_steps": round_ms(forward_steps),
@@ -465,19 +465,19 @@ def _run_epoch_loop(
             compare_data.append(ep_cmp)
             writer.save_data(
                 baseline=bl_data,
-                progressive=pg_data,
+                greedy=greedy_data,
                 lpround=lp_data,
                 milp=mip_data,
                 latest_breakdown=latest_breakdown,
                 latest_pop_compare=pop_cmp,
                 epoch_compare=compare_data,
-                cache_state=extract_cache_state(gk_pg),
+                cache_state=extract_cache_state(gk_greedy),
             )
 
             t_ep = time.perf_counter() - t_ep_start
             if epoch % 10 == 0 or epoch == config.num_epochs - 1:
                 b = bl_data[-1]
-                p = pg_data[-1]
+                p = greedy_data[-1]
                 lp = lp_data[-1]
                 mp = mip_data[-1]
                 print(

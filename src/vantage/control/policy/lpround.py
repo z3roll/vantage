@@ -77,7 +77,7 @@ class LPRoundingController:
     """LP-relaxation + argmax-rounding planner.
 
     Public interface matches
-    :class:`~vantage.control.policy.greedy.ProgressiveController`:
+    :class:`~vantage.control.policy.greedy.GreedyController`:
     :meth:`compute_routing_plane` returns a :class:`RoutingPlane`
     whose ``cell_to_pop`` mapping carries nearest-PoP as the default
     and the LP-rounded assignment as per-destination overrides.

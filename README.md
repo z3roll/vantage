@@ -7,7 +7,7 @@ for user-to-service flows that traverse a Starlink-class constellation:
 
 - **Baseline (nearest-PoP):** every cell is pinned to its geographically
   closest PoP and spills through the nearest cascade under pressure.
-- **Progressive (cascade):** a central controller ranks PoPs per
+- **Greedy (cascade):** a central controller ranks PoPs per
   `(cell, destination)` by predicted end-to-end RTT and emits a ranked
   cascade; the data plane walks the cascade and picks the first egress
   whose Ka-feeder still has capacity.
@@ -68,7 +68,7 @@ src/vantage/
         evaluation.py           # control-plan objective and predicted RTT stats
         policy/                 # routing-plane builders
             nearest_pop.py      # Baseline controller
-            greedy.py           # Progressive (cascade) controller
+            greedy.py           # Greedy (cascade) controller
             lpround.py          # LP relaxation + rounding controller
             milp.py             # integer optimum reference controller
             common/             # shared routing-plane construction helpers

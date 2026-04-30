@@ -84,7 +84,7 @@ class DashboardWriter:
         self,
         *,
         baseline: list,
-        progressive: list,
+        greedy: list,
         lpround: list,
         milp: list,
         latest_breakdown: dict,
@@ -111,10 +111,10 @@ class DashboardWriter:
                     "ground_delay": self.ground_seed,
                     "ingress": self.ingress_seed_base,
                 },
-                "series": ["baseline", "progressive", "lpround", "milp"],
+                "series": ["baseline", "greedy", "lpround", "milp"],
             },
             "baseline": baseline,
-            "progressive": progressive,
+            "greedy": greedy,
             "lpround": lpround,
             "milp": milp,
             "latest_breakdown": latest_breakdown,
@@ -163,8 +163,8 @@ class DashboardWriter:
             return None
         cfg = data.get("config", {})
         bl = data.get("baseline") or []
-        pg = data.get("progressive") or []
-        epochs_done = max(len(bl), len(pg))
+        greedy = data.get("greedy") or []
+        epochs_done = max(len(bl), len(greedy))
         ts = cfg.get("started_at") or path.stem.removeprefix("sim_data_")
         return {
             "filename": path.name,

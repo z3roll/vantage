@@ -200,68 +200,68 @@ def collect_epoch_summary(
     }
 
 
-def compute_pop_compare(result_bl: Any, result_pg: Any) -> dict:
+def compute_pop_compare(result_bl: Any, result_greedy: Any) -> dict:
     bl_rtt_by_fk = {flow.flow_key: flow.total_rtt for flow in result_bl.flow_outcomes}
     bl_demand_by_pop: dict[str, float] = defaultdict(float)
     for flow in result_bl.flow_outcomes:
         bl_demand_by_pop[flow.pop_code] += flow.demand_gbps
     bl_total = sum(bl_demand_by_pop.values()) or 1.0
 
-    pg_demand_by_pop: dict[str, float] = defaultdict(float)
-    pg_flows_by_pop: dict[str, list] = defaultdict(list)
-    for flow in result_pg.flow_outcomes:
-        pg_demand_by_pop[flow.pop_code] += flow.demand_gbps
-        pg_flows_by_pop[flow.pop_code].append(flow)
-    pg_total = sum(pg_demand_by_pop.values()) or 1.0
+    greedy_demand_by_pop: dict[str, float] = defaultdict(float)
+    greedy_flows_by_pop: dict[str, list] = defaultdict(list)
+    for flow in result_greedy.flow_outcomes:
+        greedy_demand_by_pop[flow.pop_code] += flow.demand_gbps
+        greedy_flows_by_pop[flow.pop_code].append(flow)
+    greedy_total = sum(greedy_demand_by_pop.values()) or 1.0
 
     out: dict[str, dict] = {}
-    for pop in set(bl_demand_by_pop) | set(pg_demand_by_pop):
-        sum_w = sum_pg = sum_bl = 0.0
-        for flow in pg_flows_by_pop.get(pop, ()):
+    for pop in set(bl_demand_by_pop) | set(greedy_demand_by_pop):
+        sum_w = sum_greedy = sum_bl = 0.0
+        for flow in greedy_flows_by_pop.get(pop, ()):
             bl_rtt = bl_rtt_by_fk.get(flow.flow_key)
             if bl_rtt is None:
                 continue
             sum_w += flow.demand_gbps
-            sum_pg += flow.total_rtt * flow.demand_gbps
+            sum_greedy += flow.total_rtt * flow.demand_gbps
             sum_bl += bl_rtt * flow.demand_gbps
         if sum_w > 0:
-            pg_e2e = sum_pg / sum_w
+            greedy_e2e = sum_greedy / sum_w
             bl_e2e = sum_bl / sum_w
-            delta_pct = (pg_e2e - bl_e2e) / bl_e2e * 100 if bl_e2e else 0.0
+            delta_pct = (greedy_e2e - bl_e2e) / bl_e2e * 100 if bl_e2e else 0.0
         else:
-            pg_e2e = bl_e2e = delta_pct = None
+            greedy_e2e = bl_e2e = delta_pct = None
         out[pop] = {
             "bl_pct": round(bl_demand_by_pop.get(pop, 0.0) / bl_total * 100, 2),
-            "pg_pct": round(pg_demand_by_pop.get(pop, 0.0) / pg_total * 100, 2),
+            "greedy_pct": round(greedy_demand_by_pop.get(pop, 0.0) / greedy_total * 100, 2),
             "bl_e2e": round(bl_e2e, 2) if bl_e2e is not None else None,
-            "pg_e2e": round(pg_e2e, 2) if pg_e2e is not None else None,
+            "greedy_e2e": round(greedy_e2e, 2) if greedy_e2e is not None else None,
             "delta_pct": round(delta_pct, 2) if delta_pct is not None else None,
         }
     return out
 
 
-def compute_epoch_compare(result_bl: Any, result_pg: Any, result_lp: Any, result_mip: Any) -> dict:
+def compute_epoch_compare(result_bl: Any, result_greedy: Any, result_lp: Any, result_mip: Any) -> dict:
     """Per-epoch cross-controller metrics using demand-weighted RTTs."""
     bl_by = {flow.flow_key: flow for flow in result_bl.flow_outcomes}
-    pg_by = {flow.flow_key: flow for flow in result_pg.flow_outcomes}
+    greedy_by = {flow.flow_key: flow for flow in result_greedy.flow_outcomes}
     lp_by = {flow.flow_key: flow for flow in result_lp.flow_outcomes}
     mip_by = {flow.flow_key: flow for flow in result_mip.flow_outcomes}
-    common = set(bl_by) & set(pg_by) & set(lp_by) & set(mip_by)
+    common = set(bl_by) & set(greedy_by) & set(lp_by) & set(mip_by)
     tolerance = 0.5
 
     total_n = 0
     total_demand = 0.0
-    reroutes = {"pg": [0, 0, 0, 0], "lp": [0, 0, 0, 0], "mip": [0, 0, 0, 0]}
+    reroutes = {"greedy": [0, 0, 0, 0], "lp": [0, 0, 0, 0], "mip": [0, 0, 0, 0]}
     sums = {
         "bl": [0.0, 0.0],
-        "pg": [0.0, 0.0],
+        "greedy": [0.0, 0.0],
         "lp": [0.0, 0.0],
         "mip": [0.0, 0.0],
     }
-    rtt_pairs = {"bl": [], "pg": [], "lp": [], "mip": []}
-    rtt_wsum = {"bl": 0.0, "pg": 0.0, "lp": 0.0, "mip": 0.0}
+    rtt_pairs = {"bl": [], "greedy": [], "lp": [], "mip": []}
+    rtt_wsum = {"bl": 0.0, "greedy": 0.0, "lp": 0.0, "mip": 0.0}
 
-    series_by = {"bl": bl_by, "pg": pg_by, "lp": lp_by, "mip": mip_by}
+    series_by = {"bl": bl_by, "greedy": greedy_by, "lp": lp_by, "mip": mip_by}
     for flow_key in common:
         baseline = bl_by[flow_key]
         demand = baseline.demand_gbps
@@ -273,7 +273,7 @@ def compute_epoch_compare(result_bl: Any, result_pg: Any, result_lp: Any, result
             rtt_wsum[key] += flow.total_rtt * demand
             sums[key][0] += flow.satellite_rtt * demand
             sums[key][1] += flow.ground_rtt * demand
-        for key in ("pg", "lp", "mip"):
+        for key in ("greedy", "lp", "mip"):
             candidate = series_by[key][flow_key]
             if baseline.pop_code != candidate.pop_code:
                 reroutes[key][0] += 1
@@ -291,15 +291,15 @@ def compute_epoch_compare(result_bl: Any, result_pg: Any, result_lp: Any, result
     out = {
         "total_flows": total_n,
         "total_demand_gbps": round(total_demand, 2),
-        "reroute_flows": reroutes["pg"][0],
-        "reroute_pct": round(reroutes["pg"][0] / total_n * 100, 2) if total_n else 0,
-        "impr_flows": reroutes["pg"][1],
-        "worse_flows": reroutes["pg"][2],
-        "neutral_flows": reroutes["pg"][3],
-        "impr_pct_of_re": round(reroutes["pg"][1] / reroutes["pg"][0] * 100, 1) if reroutes["pg"][0] else 0,
-        "worse_pct_of_re": round(reroutes["pg"][2] / reroutes["pg"][0] * 100, 1) if reroutes["pg"][0] else 0,
+        "reroute_flows": reroutes["greedy"][0],
+        "reroute_pct": round(reroutes["greedy"][0] / total_n * 100, 2) if total_n else 0,
+        "impr_flows": reroutes["greedy"][1],
+        "worse_flows": reroutes["greedy"][2],
+        "neutral_flows": reroutes["greedy"][3],
+        "impr_pct_of_re": round(reroutes["greedy"][1] / reroutes["greedy"][0] * 100, 1) if reroutes["greedy"][0] else 0,
+        "worse_pct_of_re": round(reroutes["greedy"][2] / reroutes["greedy"][0] * 100, 1) if reroutes["greedy"][0] else 0,
     }
-    for key, prefix in (("bl", "bl"), ("pg", "pg"), ("lp", "lp"), ("mip", "mip")):
+    for key, prefix in (("bl", "bl"), ("greedy", "greedy"), ("lp", "lp"), ("mip", "mip")):
         out[f"{prefix}_mean_rtt"] = round(_weighted_avg(rtt_wsum[key]), 2)
         out[f"{prefix}_sat_rtt"] = round(_weighted_avg(sums[key][0]), 2)
         out[f"{prefix}_gnd_rtt"] = round(_weighted_avg(sums[key][1]), 2)

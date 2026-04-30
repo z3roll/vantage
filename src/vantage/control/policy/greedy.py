@@ -1,4 +1,4 @@
-"""Progressive controller: improvement-first per-destination PoP assignment.
+"""Greedy controller: improvement-first per-destination PoP assignment.
 
 Coarse-grained planner. For each (cell, destination), picks the PoP
 that minimises ``sat_cost + ground_cost`` while respecting
@@ -60,8 +60,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
-class ProgressiveController:
-    """E2E-aware PoP selection with Progressive Filling."""
+class GreedyController:
+    """E2E-aware PoP selection with Greedy Filling."""
 
     # Defaults for the GK-score composition used at rank time
     # (``mu + lambda_dev · dev + stale_per_epoch_ms · staleness``).
@@ -133,7 +133,7 @@ class ProgressiveController:
         derived = tuple(sorted({dest for _, dest in self._gk.all_entries()}))
         if not derived and not self._warned_no_dests:
             _log.warning(
-                "ProgressiveController.resolve_dest_names: no explicit "
+                "GreedyController.resolve_dest_names: no explicit "
                 "dest_names and ground_knowledge has no entries; "
                 "degrading to nearest-PoP baseline this epoch."
             )
@@ -180,7 +180,7 @@ class ProgressiveController:
 
         # Build a per-refresh scoring table bound to ``version`` (=
         # current epoch at plan build time) so :func:`rank_pops_by_e2e`
-        # and :func:`_progressive_filling` share the same cost
+        # and :func:`_greedy_filling` share the same cost
         # accounting — same mean + noise + staleness penalty on both
         # the baseline side and the alternates side of the
         # improvement delta. Passing ``pops`` + ``dest_names`` forces
@@ -218,7 +218,7 @@ class ProgressiveController:
         t_rankings = perf()
 
         # 3. Improvement-first greedy assignment against PoP-aggregate
-        # capacity. PG is coarse-grained: it contends at the PoP
+        # capacity. Greedy is coarse-grained: it contends at the PoP
         # level only. Per-sat-feeder and per-GS-feeder contention is
         # enforced at realize time by RoutingPlaneForward, which
         # additionally has multi-egress reroute + baseline fallback
@@ -226,7 +226,7 @@ class ProgressiveController:
         # fine-grained load.
         pop_cap = compute_pop_capacity(snapshot)
         t_pop_cap = perf()
-        assignments = _progressive_filling(
+        assignments = _greedy_filling(
             rankings=rankings,
             baseline=baseline,
             cell_grid=cell_grid,
@@ -238,14 +238,14 @@ class ProgressiveController:
 
         # 4. Assemble RoutingPlane. Emit a per_dest cascade for
         # *every* (cell, dest) the controller has rankings for —
-        # not just those PG actively moved off baseline. This is
+        # not just those Greedy actively moved off baseline. This is
         # the negative-improvement fallback the user asked for:
         # when the chosen PoP saturates at realize time, the data
         # plane walks the rest of the E2E-sorted ranking (which
         # includes PoPs with negative improvement) least-bad-first,
         # rather than dumping into the geographic top-N tail.
         #
-        # The cascade head is PG's chosen PoP if it planned an
+        # The cascade head is Greedy's chosen PoP if it planned an
         # alternate; otherwise it's the cell's geographic nearest
         # (= the same as baseline's head). Either way the tail is
         # all *other* reachable PoPs in E2E ASC order.
@@ -277,9 +277,9 @@ class ProgressiveController:
         pop_egress = build_pop_egress_table(snapshot, version=version)
         t_pop_egress = perf()
 
-        # Cascade-assembly cost (between progressive-fill and
-        # sat_paths) is folded into ``progressive_fill_ms`` since it
-        # is part of finalising PG's PoP assignment, not part of the
+        # Cascade-assembly cost (between greedy-fill and
+        # sat_paths) is folded into ``greedy_fill_ms`` since it
+        # is part of finalising Greedy's PoP assignment, not part of the
         # sat-path table build.
         self._last_timing = MappingProxyType({
             "prime_gk_ms": (t_prime - t0) * 1000.0,
@@ -287,7 +287,7 @@ class ProgressiveController:
             "cell_sat_cost_ms": (t_cell_sat - t_baseline) * 1000.0,
             "rankings_ms": (t_rankings - t_cell_sat) * 1000.0,
             "pop_cap_ms": (t_pop_cap - t_rankings) * 1000.0,
-            "progressive_fill_ms": (t_assemble - t_pop_cap) * 1000.0,
+            "greedy_fill_ms": (t_assemble - t_pop_cap) * 1000.0,
             "sat_paths_ms": (t_sat_paths - t_assemble) * 1000.0,
             "pop_egress_ms": (t_pop_egress - t_sat_paths) * 1000.0,
         })
@@ -301,7 +301,7 @@ class ProgressiveController:
         )
 
 
-def _progressive_filling(
+def _greedy_filling(
     rankings: dict[tuple[int, str], list[tuple[str, float]]],
     baseline: CellToPopTable,
     cell_grid: CellGrid,
@@ -312,7 +312,7 @@ def _progressive_filling(
 ) -> dict[tuple[int, str], str]:
     """Capacity-aware greedy assignment at PoP granularity.
 
-    PG plans coarsely: it picks a PoP per (cell, dest) against a
+    Greedy plans coarsely: it picks a PoP per (cell, dest) against a
     **PoP-aggregate** capacity budget (sum of GS.max_capacity on
     GSs attached to the PoP). Fine-grained egress-sat / GS
     selection, and any future ISL-capacity handling, remain the
@@ -410,7 +410,7 @@ def _progressive_filling(
         if chosen_pop is None:
             if best_fallback_pop is None:
                 _log.warning(
-                    "_progressive_filling: cell %d / dest %r has no "
+                    "_greedy_filling: cell %d / dest %r has no "
                     "PoP with positive capacity in the cascade; "
                     "routing this cell will fall back to baseline.",
                     cell_id, dest,

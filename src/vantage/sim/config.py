@@ -119,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Experimental: cap each PoP at N attached GSs (0 = no cap). "
             "Keeps the N closest by backhaul delay so popular PoPs hit "
-            "capacity earlier, exposing PG / DP differences under pressure."
+            "capacity earlier, exposing Greedy / DP differences under pressure."
         ),
     )
     parser.add_argument(

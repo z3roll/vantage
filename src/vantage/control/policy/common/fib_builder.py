@@ -199,7 +199,7 @@ def build_cell_to_pop_nearest(
 
     The output ranking depends only on geography, so it never changes
     between refreshes for a fixed ``(cell_grid, pops)`` pair.
-    Capacity-aware policies (Progressive Filling etc.) consume this
+    Capacity-aware policies (Greedy Filling etc.) consume this
     output as their reference baseline AND emit their own per-(cell,
     dest) ranked overrides on top.
 
@@ -574,7 +574,7 @@ def build_routing_plane_nearest_pop(
     Intended to be called by
     :meth:`NearestPoPController.compute_routing_plane` — exposed here
     so other policies that reuse the baseline (e.g., warm-start for
-    Progressive Filling) can call it directly.
+    Greedy Filling) can call it directly.
     """
     cell_to_pop = build_cell_to_pop_nearest(
         cell_grid=cell_grid,

@@ -44,7 +44,7 @@ class ControlPlanEvaluation:
     def empty(cls) -> ControlPlanEvaluation:
         return cls()
 
-    def dashboard_fields(self, labels: Iterable[str] = ("bl", "pg", "lp", "mip")) -> dict[str, float | None]:
+    def dashboard_fields(self, labels: Iterable[str] = ("bl", "greedy", "lp", "mip")) -> dict[str, float | None]:
         out: dict[str, float | None] = {
             "plan_lb": self.plan_lb,
             "plan_lb_mean": self.plan_lb_mean,

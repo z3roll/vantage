@@ -69,7 +69,7 @@ class MILPController:
     """HiGHS MILP planner with a wall-clock budget.
 
     Constructor surface mirrors
-    :class:`~vantage.control.policy.greedy.ProgressiveController`.
+    :class:`~vantage.control.policy.greedy.GreedyController`.
     No solver-precision knobs — this controller is full-precision
     mode by design.
     """

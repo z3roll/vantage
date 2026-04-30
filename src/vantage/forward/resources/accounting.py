@@ -215,7 +215,7 @@ class UsageBook:
         return self.gs_feeder_utilization(gs_id) > 1.0
 
     # --- residual capacity -------------------------------------------------
-    # Needed by max-min fair-share / Progressive Filling solvers so they
+    # Needed by max-min fair-share / Greedy Filling solvers so they
     # can decide how much more traffic a resource can still absorb. All
     # three clamp at zero (over-subscribed resources report no headroom
     # rather than a negative number).

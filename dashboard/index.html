@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Baseline · Progressive · LP · MILP — Live Dashboard</title>
+<title>Baseline · Greedy · LP · MILP — Live Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -100,7 +100,7 @@
 </style>
 </head>
 <body>
-<h1>Baseline · Progressive · LP · MILP</h1>
+<h1>Baseline · Greedy · LP · MILP</h1>
 <div class="subtitle" id="info">Loading...</div>
 <div style="text-align:center; margin-bottom:12px; font-size:12px;">
   <label for="file_select">Run:&nbsp;</label>
@@ -137,15 +137,15 @@
       <div class="pop-scroll" style="max-height: 340px;">
       <table id="epoch_tbl"><thead><tr>
         <th>Ep</th><th>Time</th>
-        <th title="Number of distinct (src, dst) flows this epoch (BL and PG share identical FlowKey set)">#flow</th>
-        <th title="# flows whose PG PoP ≠ BL PoP (count / % of all flows)">Reroute (#flow / %)</th>
+        <th title="Number of distinct (src, dst) flows this epoch (BL and Greedy share identical FlowKey set)">#flow</th>
+        <th title="# flows whose Greedy PoP ≠ BL PoP (count / % of all flows)">Reroute (#flow / %)</th>
         <th title="Of rerouted flows, split by E2E outcome vs BL (±0.5 ms tolerance). Each bucket shows #flow (% of reroute).">Impr / Worse / Neu (#flow (% of reroute))</th>
-        <th title="Flow-count mean E2E RTT this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%) where Δ = PG − BL. Negative Δ = PG faster.">Mean E2E (BL ms / PG ms / Δms (Δ%))</th>
-        <th title="Flow-count mean ΔSat = PG_sat − BL_sat, shown as Δms (Δ%) with Δ% = ΔSat / BL_sat × 100.">ΔSat (ms (%))</th>
-        <th title="Flow-count mean ΔGnd = PG_gnd − BL_gnd, shown as Δms (Δ%) with Δ% = ΔGnd / BL_gnd × 100.">ΔGnd (ms (%))</th>
-        <th title="Flow-count p95 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%)">P95 E2E (BL ms / PG ms / Δms (Δ%))</th>
-        <th title="Flow-count p99 of total_rtt this epoch — Baseline (ms) / Progressive (ms) / Δms (Δ%)">P99 E2E (BL ms / PG ms / Δms (Δ%))</th>
-        <th title="Controller plan time (wall) — how long each controller spent computing the cell × destination → PoP routing plan this epoch. Plans refresh every 15 epochs; cached epochs show 'cached'. BL = geographic nearest-PoP (build_cell_to_pop_nearest), PG = full _progressive_filling sweep including GK prime + E2E ranking.">Plan time BL / PG (ms)</th>
+        <th title="Flow-count mean E2E RTT this epoch — Baseline (ms) / Greedy (ms) / Δms (Δ%) where Δ = Greedy − BL. Negative Δ = Greedy faster.">Mean E2E (BL ms / Greedy ms / Δms (Δ%))</th>
+        <th title="Flow-count mean ΔSat = Greedy_sat − BL_sat, shown as Δms (Δ%) with Δ% = ΔSat / BL_sat × 100.">ΔSat (ms (%))</th>
+        <th title="Flow-count mean ΔGnd = Greedy_gnd − BL_gnd, shown as Δms (Δ%) with Δ% = ΔGnd / BL_gnd × 100.">ΔGnd (ms (%))</th>
+        <th title="Flow-count p95 of total_rtt this epoch — Baseline (ms) / Greedy (ms) / Δms (Δ%)">P95 E2E (BL ms / Greedy ms / Δms (Δ%))</th>
+        <th title="Flow-count p99 of total_rtt this epoch — Baseline (ms) / Greedy (ms) / Δms (Δ%)">P99 E2E (BL ms / Greedy ms / Δms (Δ%))</th>
+        <th title="Controller plan time (wall) — how long each controller spent computing the cell × destination → PoP routing plan this epoch. Plans refresh every 15 epochs; cached epochs show 'cached'. BL = geographic nearest-PoP (build_cell_to_pop_nearest), Greedy = full _greedy_filling sweep including GK prime + E2E ranking.">Plan time BL / Greedy (ms)</th>
       </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -164,11 +164,11 @@
       <table id="svc_table"><thead><tr>
         <th>Service</th>
         <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">BL Mean</th>
-        <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">PG Mean</th>
+        <th title="Flow-count-weighted cumulative mean RTT (ms) per service: Σ(mean·n)/Σn.">Greedy Mean</th>
         <th>Improve</th><th>%</th>
         <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">BL Avg Epoch P99</th>
-        <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">PG Avg Epoch P99</th>
-        <th>BL Sat</th><th>PG Sat</th><th>BL Gnd</th><th>PG Gnd</th>
+        <th title="Flow-count-weighted average of per-epoch P99 values per service: Σ(p99·n)/Σn. NOT a true cumulative percentile.">Greedy Avg Epoch P99</th>
+        <th>BL Sat</th><th>Greedy Sat</th><th>BL Gnd</th><th>Greedy Gnd</th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -189,15 +189,15 @@
       <div class="pop-scroll">
       <table id="pop_table"><thead><tr>
         <th>PoP</th><th>#GS</th><th>Cap (Gb)</th>
-        <th title="BL load / PG load (Gbps)">Load BL/PG</th>
-        <th title="BL util / PG util (% of capacity)">Util BL/PG</th>
-        <th title="BL %traffic / PG %traffic (share of total demand)">%Traf BL/PG</th>
+        <th title="BL load / Greedy load (Gbps)">Load BL/Greedy</th>
+        <th title="BL util / Greedy util (% of capacity)">Util BL/Greedy</th>
+        <th title="BL %traffic / Greedy %traffic (share of total demand)">%Traf BL/Greedy</th>
       </tr></thead><tbody></tbody></table>
       </div>
     </div>
 
     <div class="chart-box">
-      <h3>PG Ground-Knowledge Cache (current RTT ms, PoP × service)</h3>
+      <h3>Greedy Ground-Knowledge Cache (current RTT ms, PoP × service)</h3>
       <div style="overflow:auto; max-height:340px;">
       <table id="cache_tbl" style="font-size:10px; border-collapse:collapse;">
         <thead><tr id="cache_thead"><th style="position:sticky; left:0; background:#fafafa; z-index:1;">PoP</th></tr></thead>
@@ -207,12 +207,12 @@
       <div style="font-size:10px; color:#888; margin-top:6px;">
         Color: bold green = low RTT (best), faint grey = high (per-service min-max scaling).
         Values are round-trip ms, stored as EWMA (α=0.3) of per-epoch data-plane samples.
-        Only the PG controller maintains this cache (BL ignores it).
+        Only the Greedy controller maintains this cache (BL ignores it).
       </div>
     </div>
 
     <div class="chart-box">
-      <h3>PG Service → PoP Allocation Heatmap (latest epoch)</h3>
+      <h3>Greedy Service → PoP Allocation Heatmap (latest epoch)</h3>
       <div style="overflow:auto; max-height:360px;">
       <table id="svc_pop_tbl" style="font-size:10px; border-collapse:collapse; width:100%;">
         <thead></thead>
@@ -232,11 +232,11 @@
   <h2>Timing</h2>
   <div class="grid">
     <div class="chart-box">
-      <h3 title="Controller wall-clock for the 15 s routing-plane refresh. Cached epochs show null.">Plan Time (ms) — Baseline vs Progressive</h3>
+      <h3 title="Controller wall-clock for the 15 s routing-plane refresh. Cached epochs show null.">Plan Time (ms) — Baseline vs Greedy</h3>
       <canvas id="c_plan_time"></canvas>
     </div>
     <div class="chart-box">
-      <h3 title="Forward.realize() wall-clock per epoch.">Forward Time (ms) — Baseline vs Progressive</h3>
+      <h3 title="Forward.realize() wall-clock per epoch.">Forward Time (ms) — Baseline vs Greedy</h3>
       <canvas id="c_forward_time"></canvas>
     </div>
   </div>
@@ -244,12 +244,12 @@
 <div id="status"></div>
 
 <script>
-// Series colour palette. BL = seaborn blue, PG = seaborn orange,
+// Series colour palette. BL = seaborn blue, Greedy = seaborn orange,
 // LP = seaborn green, MIP = seaborn purple. Four curves render on
 // every latency / timing chart so all four solvers — nearest-PoP
-// (BL), greedy progressive (PG), LP-relaxation + rounding (LP),
+// (BL), greedy controller (Greedy), LP-relaxation + rounding (LP),
 // MILP (MIP) — are directly comparable.
-const BL="rgb(76,114,176)", PG="rgb(221,132,82)",
+const BL="rgb(76,114,176)", Greedy="rgb(221,132,82)",
       LP="rgb(85,168,104)", MIP="rgb(129,114,179)";
 const charts = {};
 
@@ -279,7 +279,7 @@ function init() {
   // 2.2 gives each roughly 120 px of height — short enough to scan
   // all five in one eyeful, tall enough for the trend to be legible.
   const FOUR = (metric) => [
-    L("Baseline", BL), L("Progressive", PG),
+    L("Baseline", BL), L("Greedy", Greedy),
     L("LP", LP),       L("MILP", MIP),
   ];
   mk("c_rtt","line", FOUR(), "Time","ms", 2.2);
@@ -289,13 +289,13 @@ function init() {
   mk("c_gnd","line", FOUR(), "Time","ms", 2.2);
   // Control-layer mirror: same 5 metrics, same 4 controllers,
   // same colours. Numbers come from the last refresh epoch's
-  // `{bl,pg,lp,mip}_plan_{mean,p95,p99,sat,gnd}` fields.
+  // `{bl,greedy,lp,mip}_plan_{mean,p95,p99,sat,gnd}` fields.
   // ``c_plan_rtt`` gets a 5th dashed grey series — the LP
   // continuous-relaxation lower bound expressed as a
   // demand-weighted mean RTT, i.e. the theoretical floor no
   // integer plan can beat on the "mean" axis.
   mk("c_plan_rtt","line", [
-    L("Baseline", BL), L("Progressive", PG), L("LP", LP), L("MILP", MIP),
+    L("Baseline", BL), L("Greedy", Greedy), L("LP", LP), L("MILP", MIP),
     {label: "Lower Bound", borderColor: "#888", backgroundColor: "#888",
      data: [], fill: false, borderDash: [6, 4]},
   ], "Time","ms", 2.2);
@@ -306,14 +306,14 @@ function init() {
   // c_svc_flows is initialized dynamically when we know service names
   mk("c_svc","bar",[
     {label:"Baseline",backgroundColor:BL,data:[]},
-    {label:"Progressive",backgroundColor:PG,data:[]},
+    {label:"Greedy",backgroundColor:Greedy,data:[]},
     {label:"LP",backgroundColor:LP,data:[]},
     {label:"MILP",backgroundColor:MIP,data:[]},
   ],"","ms");
   // Per-service improvement vs baseline — three non-baseline bars
   // so the user can see which services each solver helps most.
   mk("c_svc_impr","bar",[
-    {label:"PG vs BL %",backgroundColor:PG,data:[]},
+    {label:"Greedy vs BL %",backgroundColor:Greedy,data:[]},
     {label:"LP vs BL %",backgroundColor:LP,data:[]},
     {label:"MILP vs BL %",backgroundColor:MIP,data:[]},
   ],"","%");
@@ -441,7 +441,7 @@ function renderCacheTable(cache, svcs) {
 // row still sums to 100%).
 //
 // Row-normalized: each cell shows what percentage of that service's total
-// demand PG routed to that PoP. This makes per-service allocation patterns
+// demand Greedy routed to that PoP. This makes per-service allocation patterns
 // directly comparable — a service that concentrates 50% of traffic into
 // one PoP looks visibly darker than a service that spreads uniformly.
 const HM_TOP_POPS = 30;
@@ -450,8 +450,8 @@ function renderSvcPopAlloc(breakdown, svcs) {
   const tb = document.querySelector("#svc_pop_tbl tbody");
   const thead = document.querySelector("#svc_pop_tbl thead");
   if (!tb || !thead) return;
-  const pg = (breakdown || {}).progressive || {};
-  if (Object.keys(pg).length === 0) {
+  const greedy = (breakdown || {}).greedy || {};
+  if (Object.keys(greedy).length === 0) {
     thead.innerHTML = `<tr><th style="text-align:left; padding:4px 6px;">Service</th><th>—</th></tr>`;
     tb.innerHTML = `<tr><td colspan="2" style="color:#888; text-align:center; padding:10px;">no breakdown data yet</td></tr>`;
     return;
@@ -461,9 +461,9 @@ function renderSvcPopAlloc(breakdown, svcs) {
   // for old JSON files that predate the svc_gbps field.
   const svcPopGbps = {};
   for (const svc of svcs) svcPopGbps[svc] = {};
-  const hasSvcGbps = Object.values(pg).some(d => d?.svc_gbps);
+  const hasSvcGbps = Object.values(greedy).some(d => d?.svc_gbps);
   if (hasSvcGbps) {
-    for (const [pop, d] of Object.entries(pg)) {
+    for (const [pop, d] of Object.entries(greedy)) {
       if (!d?.svc_gbps) continue;
       for (const [svc, gbps] of Object.entries(d.svc_gbps)) {
         if (svcPopGbps[svc] == null) continue;
@@ -471,7 +471,7 @@ function renderSvcPopAlloc(breakdown, svcs) {
       }
     }
   } else {
-    for (const [pop, d] of Object.entries(pg)) {
+    for (const [pop, d] of Object.entries(greedy)) {
       if (!d?.top) continue;
       for (const entry of d.top) {
         if (svcPopGbps[entry.svc] == null) continue;
@@ -562,27 +562,27 @@ function renderEpochTable(compare) {
     return;
   }
   const rows = compare.slice(-EPOCH_TABLE_ROWS).reverse();
-  // Δ% = (pg − bl) / bl × 100, guarded against bl = 0 (epoch 0 edge).
-  const pctOf = (bl, pg) => bl > 0 ? (pg - bl) / bl * 100 : 0;
+  // Δ% = (greedy − bl) / bl × 100, guarded against bl = 0 (epoch 0 edge).
+  const pctOf = (bl, greedy) => bl > 0 ? (greedy - bl) / bl * 100 : 0;
   const fmtPct = v => (v > 0 ? "+" : "") + v.toFixed(1) + "%";
   const fmtMs = v => (v > 0 ? "+" : "") + v.toFixed(1);
-  // Combined cell: "BL ms / PG ms / Δms (Δ%)" with Δ colored by direction.
-  const triCell = (bl, pg, weight) => {
-    if (bl == null || pg == null) return "—";
-    const dp = pctOf(bl, pg);
-    const dm = pg - bl;
+  // Combined cell: "BL ms / Greedy ms / Δms (Δ%)" with Δ colored by direction.
+  const triCell = (bl, greedy, weight) => {
+    if (bl == null || greedy == null) return "—";
+    const dp = pctOf(bl, greedy);
+    const dm = greedy - bl;
     const w = weight || "400";
     return `<span style="color:#555;">${bl.toFixed(1)}</span>
       <span style="color:#aaa;"> / </span>
-      <span style="color:#555;">${pg.toFixed(1)}</span>
+      <span style="color:#555;">${greedy.toFixed(1)}</span>
       <span style="color:#aaa;"> / </span>
       <span style="color:${colorDelta(dp)}; font-weight:${w};">${fmtMs(dm)} (${fmtPct(dp)})</span>`;
   };
   // Delta cell: "Δms (Δ%)" with Δ colored by direction.
-  const deltaCell = (bl, pg) => {
-    if (bl == null || pg == null) return "—";
-    const dp = pctOf(bl, pg);
-    const dm = pg - bl;
+  const deltaCell = (bl, greedy) => {
+    if (bl == null || greedy == null) return "—";
+    const dp = pctOf(bl, greedy);
+    const dm = greedy - bl;
     return `<span style="color:${colorDelta(dp)};">${fmtMs(dm)} (${fmtPct(dp)})</span>`;
   };
 
@@ -602,19 +602,19 @@ function renderEpochTable(compare) {
       <td>${r.total_flows.toLocaleString()}</td>
       <td><span style="color:${reColor}; font-weight:${r.reroute_pct > 20 ? '600' : '400'};">${r.reroute_flows.toLocaleString()} (${r.reroute_pct.toFixed(0)}%)</span></td>
       <td>${split}</td>
-      <td>${triCell(r.bl_mean_rtt, r.pg_mean_rtt, "600")}</td>
-      <td>${deltaCell(r.bl_sat_rtt, r.pg_sat_rtt)}</td>
-      <td>${deltaCell(r.bl_gnd_rtt, r.pg_gnd_rtt)}</td>
-      <td>${triCell(r.bl_p95_rtt, r.pg_p95_rtt)}</td>
-      <td>${triCell(r.bl_p99_rtt, r.pg_p99_rtt)}</td>
-      <td>${planMs(r.bl_plan_ms)} / ${planMs(r.pg_plan_ms)}</td>
+      <td>${triCell(r.bl_mean_rtt, r.greedy_mean_rtt, "600")}</td>
+      <td>${deltaCell(r.bl_sat_rtt, r.greedy_sat_rtt)}</td>
+      <td>${deltaCell(r.bl_gnd_rtt, r.greedy_gnd_rtt)}</td>
+      <td>${triCell(r.bl_p95_rtt, r.greedy_p95_rtt)}</td>
+      <td>${triCell(r.bl_p99_rtt, r.greedy_p99_rtt)}</td>
+      <td>${planMs(r.bl_plan_ms)} / ${planMs(r.greedy_plan_ms)}</td>
     </tr>`;
   }).join("");
 }
 
 // Populate the two Timing charts:
-//   * c_plan_time    — controller plan wall-clock (bl / pg / dp).
-//   * c_forward_time — forward.realize() wall-clock (bl / pg / dp).
+//   * c_plan_time    — controller plan wall-clock (bl / greedy / dp).
+//   * c_forward_time — forward.realize() wall-clock (bl / greedy / dp).
 // Plan times are recorded only on the 15-epoch refresh cadence, so the
 // plan series is sparse (≤1 non-null sample per 15 epochs). Without
 // ``spanGaps`` Chart.js would refuse to draw anything between the
@@ -647,13 +647,13 @@ function renderTimingSection(compare, labels) {
     });
     chart.update();
   };
-  setCurve(planChart, "bl_plan_ms", "pg_plan_ms", "lp_plan_ms", "mip_plan_ms");
-  setCurve(fwdChart, "bl_forward_ms", "pg_forward_ms", "lp_forward_ms", "mip_forward_ms");
+  setCurve(planChart, "bl_plan_ms", "greedy_plan_ms", "lp_plan_ms", "mip_plan_ms");
+  setCurve(fwdChart, "bl_forward_ms", "greedy_forward_ms", "lp_forward_ms", "mip_forward_ms");
 }
 
 // Populate the five Control-layer latency curves (mean / p95 / p99 /
 // sat / gnd). Same shape as the Forward-side `setLine` helper but
-// reads `{bl,pg,lp,mip}_plan_{metric}` fields, which only exist on
+// reads `{bl,greedy,lp,mip}_plan_{metric}` fields, which only exist on
 // refresh epochs. spanGaps connects the sparse markers; cached-plan
 // epochs stay null so the plot doesn't pretend to have fresh values.
 function renderPlanLatency(compare, labels) {
@@ -670,7 +670,7 @@ function renderPlanLatency(compare, labels) {
     c.data.labels = labels;
     c.options.spanGaps = true;
     const fields = [
-      `bl_plan_${metric}`, `pg_plan_${metric}`,
+      `bl_plan_${metric}`, `greedy_plan_${metric}`,
       `lp_plan_${metric}`, `mip_plan_${metric}`,
     ];
     fields.forEach((f, i) => {
@@ -691,12 +691,12 @@ function renderPlanLatency(compare, labels) {
   });
 }
 
-// Render the BL vs PG contributor side-by-side panel for one PoP.
+// Render the BL vs Greedy contributor side-by-side panel for one PoP.
 // Expects `brk = {baseline: {pop: {top, total, n_distinct, sats, n_sats}}, ...}`.
 function renderBreakdown(code, brk) {
   const bl = brk.baseline?.[code];
-  const pg = brk.progressive?.[code];
-  if (!bl && !pg) {
+  const greedy = brk.greedy?.[code];
+  if (!bl && !greedy) {
     return "<i style='color:#888; font-size:11px;'>No breakdown available — re-run with the updated run_1hour.py to populate <code>latest_breakdown</code>.</i>";
   }
   const SAT_CAP = 20.0;
@@ -751,7 +751,7 @@ function renderBreakdown(code, brk) {
       ${gsHeader}
     </div>`;
   }
-  return side("Baseline", bl) + side("Progressive", pg);
+  return side("Baseline", bl) + side("Greedy", greedy);
 }
 
 // Compute cumulative per-service averages from all epochs
@@ -783,7 +783,7 @@ function cumAvgSvc(epochs, svcs) {
 }
 
 function update(data) {
-  const bl=data.baseline, pg=data.progressive, svcs=data.config.services;
+  const bl=data.baseline, greedy=data.greedy, svcs=data.config.services;
   const lp = data.lpround || [];
   const mip = data.milp || [];
   // LP / MILP series are present iff run.py was updated to produce
@@ -798,7 +798,7 @@ function update(data) {
   function setLine(id,k) {
     const c=charts[id]; c.data.labels=labels;
     c.data.datasets[0].data=bl.map(d=>d[k]);
-    c.data.datasets[1].data=pg.map(d=>d[k]);
+    c.data.datasets[1].data=greedy.map(d=>d[k]);
     if (c.data.datasets[2]) {
       c.data.datasets[2].data = hasLP ? lp.map(d=>d[k]) : [];
     }
@@ -812,7 +812,7 @@ function update(data) {
 
   // Cumulative per-service averages for the service bar charts.
   const blAvg = cumAvgSvc(bl, svcs);
-  const pgAvg = cumAvgSvc(pg, svcs);
+  const pgAvg = cumAvgSvc(greedy, svcs);
   const lpAvg = hasLP ? cumAvgSvc(lp, svcs) : {};
   const mipAvg = hasMIP ? cumAvgSvc(mip, svcs) : {};
 
@@ -829,7 +829,7 @@ function update(data) {
   cs.update();
 
   // Per-service improvement vs BL: three non-baseline bars so the
-  // user sees which services LP / MILP help beyond greedy PG.
+  // user sees which services LP / MILP help beyond greedy Greedy.
   const ci=charts["c_svc_impr"];
   ci.data.labels=svcs;
   const imprVs = (avgMap) => svcs.map(s=>{
@@ -853,7 +853,7 @@ function update(data) {
   // all four series via ``acc`` keyed by series name.
   const acc = {
     bl: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
-    pg: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
+    greedy: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
     lp: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
     mip: {sumRtt:0, flows:0, sumP95:0, sumP99:0},
   };
@@ -866,7 +866,7 @@ function update(data) {
   }
   for (let i=0;i<bl.length;i++){
     _addRow(acc.bl, bl[i]);
-    _addRow(acc.pg, pg[i]);
+    _addRow(acc.greedy, greedy[i]);
     if (hasLP) _addRow(acc.lp, lp[i]);
     if (hasMIP) _addRow(acc.mip, mip[i]);
   }
@@ -877,11 +877,11 @@ function update(data) {
       p99: N>0 ? a.sumP99/N : 0,
     };
   }
-  const S = {bl: stats(acc.bl), pg: stats(acc.pg), lp: stats(acc.lp), mip: stats(acc.mip)};
+  const S = {bl: stats(acc.bl), greedy: stats(acc.greedy), lp: stats(acc.lp), mip: stats(acc.mip)};
 
   // Per-controller latency card. Three rows: mean / p95 / p99.
   // Percent Δ shown only when a baseline ref is supplied (BL card
-  // passes ``null``). Negative improvement = green (DP / PG faster
+  // passes ``null``). Negative improvement = green (DP / Greedy faster
   // than BL); positive = red.
   function latencyCard(label, color, mean, p95, p99, ref) {
     function row(k, v, refV) {
@@ -908,7 +908,7 @@ function update(data) {
 
   const blRef = S.bl;
   const blCard  = latencyCard("Baseline",    "rgb(76,114,176)", S.bl.mean,  S.bl.p95,  S.bl.p99,  null);
-  const pgCard  = latencyCard("Progressive", "rgb(221,132,82)", S.pg.mean,  S.pg.p95,  S.pg.p99,  blRef);
+  const pgCard  = latencyCard("Greedy", "rgb(221,132,82)", S.greedy.mean,  S.greedy.p95,  S.greedy.p99,  blRef);
   const lpCard  = hasLP
     ? latencyCard("LP",   "rgb(85,168,104)",  S.lp.mean,  S.lp.p95,  S.lp.p99,  blRef)
     : "";
@@ -925,7 +925,7 @@ function update(data) {
   const ec = data.epoch_compare || [];
   let lastRefresh = null;
   for (let i = ec.length - 1; i >= 0; i--) {
-    if (ec[i] && ec[i].pg_plan_cost != null) { lastRefresh = ec[i]; break; }
+    if (ec[i] && ec[i].greedy_plan_cost != null) { lastRefresh = ec[i]; break; }
   }
   const planBLRef = lastRefresh
     ? {mean: lastRefresh.bl_plan_mean,
@@ -950,7 +950,7 @@ function update(data) {
     <div class="summary-divider"></div>
     <div class="summary-group" data-label="Control">
       ${planCard("Baseline",    "rgb(76,114,176)",  "bl",  null)}
-      ${planCard("Progressive", "rgb(221,132,82)",  "pg",  planBLRef)}
+      ${planCard("Greedy", "rgb(221,132,82)",  "greedy",  planBLRef)}
       ${planCard("LP",          "rgb(85,168,104)",  "lp",  planBLRef)}
       ${planCard("MILP",        "rgb(129,114,179)", "mip", planBLRef)}
     </div>
@@ -1003,7 +1003,7 @@ function update(data) {
 
   // PoP table — ALL PoPs, aligned by PoP code
   const blPops = bl[N-1].pops || [];
-  const pgPops = pg[N-1].pops || [];
+  const pgPops = greedy[N-1].pops || [];
   const blMap = Object.fromEntries(blPops.map(p=>[p.code, p]));
   const pgMap = Object.fromEntries(pgPops.map(p=>[p.code, p]));
   const allCodes = [...new Set([...blPops.map(p=>p.code), ...pgPops.map(p=>p.code)])];
@@ -1012,7 +1012,7 @@ function update(data) {
     const bMax = Math.max(blMap[b]?.load||0, pgMap[b]?.load||0);
     return bMax - aMax;
   });
-  const brk = data.latest_breakdown || {baseline:{}, progressive:{}};
+  const brk = data.latest_breakdown || {baseline:{}, greedy:{}};
   // Cache currently-expanded rows so they persist across update() rebuilds.
   const prevExpanded = new Set(
     [...document.querySelectorAll(".pop-row.expanded")].map(r => r.dataset.pop)
@@ -1031,8 +1031,8 @@ function update(data) {
     const nGss = bp.n_gss_total ?? pp.n_gss_total ?? 0;
     const cmp = (data.latest_pop_compare || {})[code] || {};
     const blTraf = cmp.bl_pct != null ? cmp.bl_pct.toFixed(1) + "%" : "—";
-    const pgTraf = cmp.pg_pct != null ? cmp.pg_pct.toFixed(1) + "%" : "—";
-    // Combined cells: BL on left, PG on right, with " / " separator.
+    const pgTraf = cmp.greedy_pct != null ? cmp.greedy_pct.toFixed(1) + "%" : "—";
+    // Combined cells: BL on left, Greedy on right, with " / " separator.
     // Per-side colour for util so saturation is still glanceable.
     const blColB = bUtil > 100 ? "#c62828" : bUtil > 80 ? "#ef6c00" : "#333";
     const pgColB = pUtil > 100 ? "#c62828" : pUtil > 80 ? "#ef6c00" : "#333";
@@ -1079,10 +1079,10 @@ function update(data) {
   // Per-epoch reallocation stats table (replaces the old country-mix stacked chart).
   renderEpochTable(data.epoch_compare);
 
-  // PG ground-knowledge cache state — PoP × service RTT heatmap.
+  // Greedy ground-knowledge cache state — PoP × service RTT heatmap.
   renderCacheTable(data.cache_state, svcs);
 
-  // PG service → PoP allocation stacked bar chart.
+  // Greedy service → PoP allocation stacked bar chart.
   renderSvcPopAlloc(data.latest_breakdown, svcs);
 
   // Timing section — totals over time plus click-driven step drill-down.
