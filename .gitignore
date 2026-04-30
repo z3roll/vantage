@@ -31,6 +31,7 @@ tests/*
 !tests/unit/
 tests/unit/*
 scripts/
+tools/
 
 # Local session journals & ad-hoc experiment scripts
 SESSION_PROGRESS.md
