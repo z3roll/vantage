@@ -41,14 +41,11 @@ from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from vantage.control.costing import build_ground_cost_lookup
-from vantage.control.policy.common.fib_builder import (
-    build_cell_to_pop_nearest,
-    build_pop_egress_table,
-    build_sat_path_table,
-    compute_cell_sat_cost,
-    compute_pop_capacity,
-    rank_pops_by_e2e,
+from vantage.control.policy.common.assembly import assemble_assignment_routing_plane
+from vantage.control.policy.common.planning import (
+    build_e2e_planning_context,
+    build_policy_ground_cost,
+    resolve_policy_dest_names,
 )
 from vantage.control.knowledge import GroundKnowledge
 from vantage.control.plane import CellToPopTable, RoutingPlane
@@ -128,17 +125,14 @@ class GreedyController:
         time that happens, so degraded behaviour is visible without
         spamming the log every epoch.
         """
-        if self._dest_names:
-            return self._dest_names
-        derived = tuple(sorted({dest for _, dest in self._gk.all_entries()}))
-        if not derived and not self._warned_no_dests:
-            _log.warning(
-                "GreedyController.resolve_dest_names: no explicit "
-                "dest_names and ground_knowledge has no entries; "
-                "degrading to nearest-PoP baseline this epoch."
-            )
-            self._warned_no_dests = True
-        return derived
+        dest_names, self._warned_no_dests = resolve_policy_dest_names(
+            controller_name="GreedyController",
+            explicit_dest_names=self._dest_names,
+            ground_knowledge=self._gk,
+            warned_no_dests=self._warned_no_dests,
+            logger=_log,
+        )
+        return dest_names
 
     def _make_ground_cost(
         self,
@@ -148,7 +142,7 @@ class GreedyController:
         dest_names: Iterable[str] | None = None,
     ) -> Callable[[str, str], float | None]:
         """Compatibility shim for callers that still probe controller internals."""
-        return build_ground_cost_lookup(
+        return build_policy_ground_cost(
             self._gk,
             current_epoch=current_epoch,
             lambda_dev=self._score_lambda_dev,
@@ -165,7 +159,6 @@ class GreedyController:
         demand_per_pair: dict[tuple[str, str], float] | None = None,
         version: int = 0,
     ) -> RoutingPlane:
-        pops = snapshot.infra.pops
         dest_names = self.resolve_dest_names()
         perf = time.perf_counter
 
@@ -186,36 +179,17 @@ class GreedyController:
         # improvement delta. Passing ``pops`` + ``dest_names`` forces
         # the precomputed-table path: ~10⁶ per-call evaluations
         # collapse to ~700 one-time ones.
-        ground_cost = build_ground_cost_lookup(
-            self._gk,
-            current_epoch=int(version),
-            lambda_dev=self._score_lambda_dev,
-            stale_per_epoch_ms=self._score_stale_per_epoch_ms,
-            pops=pops,
-            dest_names=dest_names,
-        )
-
-        # 1. Baseline: nearest PoP per cell. Used as both the data-plane
-        #    fallback for cells without overrides AND the reference
-        #    cost against which "improvement" is measured.
-        baseline = build_cell_to_pop_nearest(
-            cell_grid=cell_grid, pops=pops,
-            built_at=snapshot.time_s, version=version,
-        )
-        t_baseline = perf()
-
-        # 2. Rank all reachable PoPs per (cell, dest) by E2E cost.
-        cell_sat_cost = compute_cell_sat_cost(snapshot, cell_grid)
-        t_cell_sat = perf()
-        rankings = rank_pops_by_e2e(
+        ctx = build_e2e_planning_context(
+            snapshot=snapshot,
             cell_grid=cell_grid,
-            pops=pops,
-            baseline=baseline,
-            cell_sat_cost=cell_sat_cost,
-            ground_cost_fn=ground_cost,
+            ground_knowledge=self._gk,
             dest_names=dest_names,
+            demand_per_pair=demand_per_pair or {},
+            version=version,
+            score_lambda_dev=self._score_lambda_dev,
+            score_stale_per_epoch_ms=self._score_stale_per_epoch_ms,
+            include_items=False,
         )
-        t_rankings = perf()
 
         # 3. Improvement-first greedy assignment against PoP-aggregate
         # capacity. Greedy is coarse-grained: it contends at the PoP
@@ -224,17 +198,16 @@ class GreedyController:
         # additionally has multi-egress reroute + baseline fallback
         # if the planner's choice is suboptimal under the actual
         # fine-grained load.
-        pop_cap = compute_pop_capacity(snapshot)
-        t_pop_cap = perf()
         assignments = _greedy_filling(
-            rankings=rankings,
-            baseline=baseline,
+            rankings=ctx.rankings,
+            baseline=ctx.baseline,
             cell_grid=cell_grid,
-            cell_sat_cost=cell_sat_cost,
-            ground_cost_fn=ground_cost,
-            pop_cap=pop_cap,
+            cell_sat_cost=ctx.cell_sat_cost,
+            ground_cost_fn=ctx.ground_cost,
+            pop_cap=ctx.pop_cap,
             demand_per_pair=demand_per_pair or {},
         )
+        t_greedy = perf()
 
         # 4. Assemble RoutingPlane. Emit a per_dest cascade for
         # *every* (cell, dest) the controller has rankings for —
@@ -249,33 +222,13 @@ class GreedyController:
         # alternate; otherwise it's the cell's geographic nearest
         # (= the same as baseline's head). Either way the tail is
         # all *other* reachable PoPs in E2E ASC order.
-        per_dest_overrides: dict[tuple[int, str], tuple[str, ...]] = {}
-        baseline_mapping = baseline.mapping
-        for (cell_id, dest), ranked in rankings.items():
-            if not ranked:
-                continue
-            chosen_pop = assignments.get((cell_id, dest))
-            if chosen_pop is None:
-                base_ranked = baseline_mapping.get(cell_id)
-                if not base_ranked:
-                    continue
-                chosen_pop = base_ranked[0]
-            tail = tuple(p for p, _ in ranked if p != chosen_pop)
-            ranked_tuple = (chosen_pop,) + tail
-            if ranked_tuple != baseline_mapping.get(cell_id, ()):
-                per_dest_overrides[(cell_id, dest)] = ranked_tuple
-
-        cell_to_pop = CellToPopTable(
-            mapping=baseline_mapping,
+        assembly = assemble_assignment_routing_plane(
+            snapshot=snapshot,
+            baseline=ctx.baseline,
+            rankings=ctx.rankings,
+            assignments=assignments,
             version=version,
-            built_at=snapshot.time_s,
-            per_dest=MappingProxyType(per_dest_overrides),
         )
-        t_assemble = perf()
-        sat_paths = build_sat_path_table(snapshot, version=version)
-        t_sat_paths = perf()
-        pop_egress = build_pop_egress_table(snapshot, version=version)
-        t_pop_egress = perf()
 
         # Cascade-assembly cost (between greedy-fill and
         # sat_paths) is folded into ``greedy_fill_ms`` since it
@@ -283,22 +236,25 @@ class GreedyController:
         # sat-path table build.
         self._last_timing = MappingProxyType({
             "prime_gk_ms": (t_prime - t0) * 1000.0,
-            "baseline_ms": (t_baseline - t_prime) * 1000.0,
-            "cell_sat_cost_ms": (t_cell_sat - t_baseline) * 1000.0,
-            "rankings_ms": (t_rankings - t_cell_sat) * 1000.0,
-            "pop_cap_ms": (t_pop_cap - t_rankings) * 1000.0,
-            "greedy_fill_ms": (t_assemble - t_pop_cap) * 1000.0,
-            "sat_paths_ms": (t_sat_paths - t_assemble) * 1000.0,
-            "pop_egress_ms": (t_pop_egress - t_sat_paths) * 1000.0,
+            "baseline_ms": (ctx.timing.baseline_done - t_prime) * 1000.0,
+            "cell_sat_cost_ms": (
+                ctx.timing.cell_sat_cost_done - ctx.timing.baseline_done
+            ) * 1000.0,
+            "rankings_ms": (
+                ctx.timing.rankings_done - ctx.timing.cell_sat_cost_done
+            ) * 1000.0,
+            "pop_cap_ms": (
+                ctx.timing.pop_cap_done - ctx.timing.rankings_done
+            ) * 1000.0,
+            "greedy_fill_ms": (
+                (t_greedy - ctx.timing.pop_cap_done) * 1000.0
+                + assembly.timing_ms["cell_to_pop_ms"]
+            ),
+            "sat_paths_ms": assembly.timing_ms["sat_paths_ms"],
+            "pop_egress_ms": assembly.timing_ms["pop_egress_ms"],
         })
 
-        return RoutingPlane(
-            cell_to_pop=cell_to_pop,
-            sat_paths=sat_paths,
-            pop_egress=pop_egress,
-            version=version,
-            built_at=snapshot.time_s,
-        )
+        return assembly.plane
 
 
 def _greedy_filling(

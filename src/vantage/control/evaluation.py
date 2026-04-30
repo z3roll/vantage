@@ -11,10 +11,13 @@ from vantage.control.knowledge import GroundKnowledge
 from vantage.control.plane import RoutingPlane
 from vantage.control.policy.common.fib_builder import (
     build_cell_to_pop_nearest,
-    build_demand_items,
     compute_cell_sat_cost,
     compute_pop_capacity,
     rank_pops_by_e2e,
+)
+from vantage.control.policy.common.planning import (
+    RankedDemandItem,
+    build_ranked_demand_items,
 )
 from vantage.model import CellGrid, NetworkSnapshot
 
@@ -27,8 +30,6 @@ __all__ = [
     "evaluate_control_plans",
     "summarize_plan_latency",
 ]
-
-RankedDemandItem = tuple[int, str, float, list[tuple[str, float]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,28 +56,6 @@ class ControlPlanEvaluation:
             for metric in ("mean", "sat", "gnd", "p95", "p99"):
                 out[f"{label}_plan_{metric}"] = stats.get(metric)
         return out
-
-
-def build_ranked_demand_items(
-    rankings: Mapping[tuple[int, str], list[tuple[str, float]]],
-    cell_grid: CellGrid,
-    demand_per_pair: Mapping[tuple[str, str], float],
-) -> list[RankedDemandItem]:
-    """Attach ranked PoP cascades to aggregated ``(cell, dest)`` demand."""
-    demand_by_cell_dest = {
-        (cell_id, dest): demand
-        for cell_id, dest, demand in build_demand_items(demand_per_pair, cell_grid)
-    }
-    items: list[RankedDemandItem] = []
-    for key, ranked in rankings.items():
-        if not ranked:
-            continue
-        demand = demand_by_cell_dest.get(key, 0.0)
-        if demand <= 0.0:
-            continue
-        cell_id, dest = key
-        items.append((cell_id, dest, demand, ranked))
-    return items
 
 
 def assignment_from_routing_plane(
