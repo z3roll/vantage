@@ -48,9 +48,8 @@ class EgressOption(NamedTuple):
 
     Implemented as ``NamedTuple`` (not ``@dataclass(frozen=True,
     slots=True)``) because decide() allocates up to
-    ``max_cascade_pops × k`` of these per flow: ``NamedTuple.__new__``
-    is ~3× faster than the frozen-dataclass constructor at our scale
-    (1.9 M allocations/epoch), and the tuple backing also lets
+    many of these per flow: ``NamedTuple.__new__`` is ~3× faster than
+    the frozen-dataclass constructor at our scale, and the tuple backing lets
     ``min(options, key=...)`` iterate without attribute lookups.
     """
 
@@ -60,6 +59,7 @@ class EgressOption(NamedTuple):
     isl_links: tuple[tuple[int, int], ...]
     propagation_rtt: float    # uplink + sat-segment (RTT)
     ground_rtt: float         # PoP→destination (RTT)
+
 
 def _walk_isl_path_row(
     pred_row: list[int], src: int, dst: int,
@@ -98,15 +98,14 @@ class PathDecision:
     Stores the controller's ranked PoP cascade lazily: each entry
     is ``(pop_code, raw_options_tuple, ground_rtt_for_this_pop)``
     where ``raw_options_tuple`` is the cached per-``(ingress, pop)``
-    top-K sat list (propagation_rtt = sat segment only, ground_rtt
+    ranked egress list (propagation_rtt = sat segment only, ground_rtt
     = 0 on the raw options). :meth:`RoutingPlaneForward.charge`
     walks the cascade lazily and only materialises a fully-enriched
     :class:`EgressOption` (with uplink + ground baked in) for the
     one option it ultimately chooses.
 
     This avoids the pre-2026-04-20 pattern where ``decide`` eagerly
-    built up to ``max_cascade_pops × k`` enriched options per flow
-    (~400 allocations at production scale), most of which the
+    built hundreds of enriched options per flow, most of which the
     first-fit loop never touched.
 
     ``options`` materialises the full enriched cascade on demand for
@@ -208,10 +207,9 @@ class RoutingPlaneForward:
     2. ``charge`` — walk the cascade (PoPs in rank order, sats in
        E2E order within each PoP); pick the first whose
        ``egress_sat`` has remaining sat-feeder capacity (20 Gbps
-       per Ka antenna) and allocate the enriched EgressOption right
-       then. If every option's egress sat is saturated, pick the
-       option with the smallest current load ratio and accept the
-       overflow (still only one allocation).
+       per satellite feeder). If every option's egress sat is saturated,
+       pick the option with the smallest current load ratio and accept
+       the overflow (still only one allocation).
 
     3. ``measure`` — use the chosen option's path metrics + the
        final :class:`UsageBook` state to compute per-link
@@ -226,7 +224,7 @@ class RoutingPlaneForward:
     __slots__ = (
         "_book", "_decision_cache", "_gf_perf_cache", "_grid",
         "_ground_rtt_by_dst", "_isl_perf_cache",
-        "_k", "_max_cascade_pops", "_options_by_ingress",
+        "_max_cascade_pops", "_options_by_ingress",
         "_path_cache", "_plane", "_pop_egress", "_pred_row_cache",
         "_sat_paths", "_sf_perf_cache", "_template_cache",
         "_uplink_sat_pin",
@@ -254,7 +252,7 @@ class RoutingPlaneForward:
         self._pop_egress = routing_plane.pop_egress
         self._grid = cell_grid
         self._book = usage_book
-        self._k = k
+        del k  # legacy constructor knob; per-GS top-k is owned by GatewayAttachments.
         # Cap how many ranked PoPs decide() considers per flow.
         # ``None`` (default) means "the full controller cascade" —
         # cell's geographic fallback chain goes all the way until
@@ -354,7 +352,7 @@ class RoutingPlaneForward:
     # cached-plan epochs. Only caches whose inputs depend purely on
     # the bound plane survive a :meth:`reset_for_epoch` call:
     #
-    #   * ``_options_by_ingress`` — top-K enriched options per
+    #   * ``_options_by_ingress`` — ranked egress options per
     #     ``(ingress, pop)``; inputs are ``pop_egress`` + the
     #     ``delay_row``/``pred_row`` from ``sat_paths``, both owned
     #     by the plane.
@@ -461,7 +459,7 @@ class RoutingPlaneForward:
 
         Preserved (plane-static):
 
-        * ``_options_by_ingress`` — top-K options per ``(ingress, pop)``
+        * ``_options_by_ingress`` — ranked options per ``(ingress, pop)``
           come from the plane's ``pop_egress`` + ``sat_paths``.
         * ``_path_cache`` — ISL hop sequences via the plane's
           ``pred_row``.
@@ -508,12 +506,16 @@ class RoutingPlaneForward:
         *,
         opts_by_pop: dict[str, tuple[EgressOption, ...]] | None = None,
     ) -> tuple[EgressOption, ...]:
-        """Top-K enriched egress options for ``(ingress, pop_code)``.
+        """Ranked egress options for ``(ingress, pop_code)``.
 
         Pulls the per-PoP downlink candidates from the controller-built
         :class:`PopEgressTable`, then vectorises the per-candidate
         ISL RTT against the per-ingress row from :class:`SatPathTable`
-        and takes the top-K survivors. The snapshot parameter is kept
+        and sorts every finite survivor by E2E cost. The per-GS
+        candidate fanout is already capped by ``GatewayAttachments``
+        (currently top-8 visible sats per GS), so this method must not
+        apply another global per-PoP top-k that would hide later GSs.
+        The snapshot parameter is kept
         only so the ``ForwardStrategy.decide`` signature remains
         compatible for test subclasses; this method itself no longer
         touches ``snapshot.satellite``.
@@ -545,15 +547,7 @@ class RoutingPlaneForward:
             return ()
         valid_idx = np.nonzero(finite)[0]
         valid_cost = cost[valid_idx]
-        k = self._k
-        # ``argpartition`` gets the unordered top-K in O(m); then a
-        # tiny ``argsort`` over only K entries finishes the ranking.
-        # At ``k ≤ m`` this is ~3× faster than sorting the full array.
-        if valid_idx.size > k:
-            part = np.argpartition(valid_cost, k - 1)[:k]
-            order_local = part[np.argsort(valid_cost[part])]
-        else:
-            order_local = np.argsort(valid_cost)
+        order_local = np.argsort(valid_cost, kind="stable")
         top_idx = valid_idx[order_local]
         path_cache = self._path_cache
         pred_row = self._pred_row_for(ingress)
@@ -718,16 +712,13 @@ class RoutingPlaneForward:
         self, decision: PathDecision, flow_demand: float,
     ) -> EgressOption:
         book = self._book
-        view = book.view
-        used = book.sat_feeder_used
         uplink_rtt = decision.uplink_rtt
 
-        # Per-sat Ka feeder cap; constant 20 Gbps for the default
-        # shell but read via CapacityView for forward-compat.
+        # Per-sat Ka feeder cap; GS identity is not part of this resource.
         for _pop_code, raw_opts, ground_rtt in decision.pop_cascade:
             for raw in raw_opts:
                 sat = raw.egress_sat
-                if used.get(sat, 0.0) + flow_demand <= view.sat_feeder_cap(sat):
+                if book.can_charge_sat_feeder(sat, flow_demand):
                     chosen = EgressOption(
                         pop_code=raw.pop_code, egress_sat=sat,
                         gs_id=raw.gs_id, isl_links=raw.isl_links,
@@ -737,12 +728,9 @@ class RoutingPlaneForward:
                     self._do_charge(chosen, flow_demand)
                     return chosen
 
-        # Every option's egress sat is saturated. Pick the option
-        # with the smallest post-charge load ratio so overflow
-        # spreads evenly instead of piling on one sat. For the
-        # default uniform 20 Gbps cap this is the same as
-        # minimising raw load; generalises to "smallest ratio" if
-        # shells ever advertise per-sat caps.
+        # Every option's egress sat is saturated. Pick the option with the
+        # smallest current load ratio so overflow spreads evenly instead
+        # of piling on one sat.
         best_raw: EgressOption | None = None
         best_pop = ""
         best_ground = 0.0
@@ -750,7 +738,9 @@ class RoutingPlaneForward:
         for pop_code, raw_opts, ground_rtt in decision.pop_cascade:
             for raw in raw_opts:
                 sat = raw.egress_sat
-                ratio = used.get(sat, 0.0) / max(view.sat_feeder_cap(sat), 1e-9)
+                ratio = book.sat_feeder_used.get(sat, 0.0) / max(
+                    book.view.sat_feeder_cap(sat), 1e-9,
+                )
                 if ratio < best_ratio:
                     best_ratio = ratio
                     best_raw = raw

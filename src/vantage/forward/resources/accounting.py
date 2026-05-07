@@ -152,10 +152,9 @@ class UsageBook:
         return (sat_a, sat_b) if sat_a <= sat_b else (sat_b, sat_a)
 
     # --- charge / release --------------------------------------------------
-    # Charging never refuses; it just accumulates. A separate fairness pass
-    # inspects the book to decide who gets throttled. All charge/release
-    # inputs must be non-negative — use the complementary method instead of
-    # a signed value, so bookkeeping bugs surface loudly.
+    # Charging accumulates monotonically. All charge/release inputs must
+    # be non-negative — use the complementary method instead of a signed
+    # value, so bookkeeping bugs surface loudly.
 
     @staticmethod
     def _check_non_negative(gbps: float) -> None:
@@ -166,6 +165,11 @@ class UsageBook:
         self._check_non_negative(gbps)
         key = self.isl_key(sat_a, sat_b)
         self.isl_used[key] = self.isl_used.get(key, 0.0) + gbps
+
+    def can_charge_sat_feeder(self, sat_id: int, gbps: float) -> bool:
+        self._check_non_negative(gbps)
+        used = self.sat_feeder_used.get(sat_id, 0.0)
+        return used + gbps <= self.view.sat_feeder_cap(sat_id)
 
     def charge_sat_feeder(self, sat_id: int, gbps: float) -> None:
         self._check_non_negative(gbps)
