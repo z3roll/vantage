@@ -2,7 +2,7 @@
 
 Coarse-grained planner. For each (cell, destination), picks the PoP
 that minimises ``sat_cost + ground_cost`` while respecting
-**PoP-aggregate** capacity (sum of attached GS.max_capacity).
+**PoP-aggregate** capacity from retained GS egress attachments.
 Fine-grained egress-satellite / GS selection — and any future
 ISL-capacity handling — stays in the data plane
 (:class:`~vantage.forward.RoutingPlaneForward`), which still has
@@ -269,10 +269,10 @@ def _greedy_filling(
     """Capacity-aware greedy assignment at PoP granularity.
 
     Greedy plans coarsely: it picks a PoP per (cell, dest) against a
-    **PoP-aggregate** capacity budget (sum of GS.max_capacity on
-    GSs attached to the PoP). Fine-grained egress-sat / GS
-    selection, and any future ISL-capacity handling, remain the
-    data plane's responsibility.
+    **PoP-aggregate** capacity budget derived from the retained GS
+    egress attachments. Fine-grained egress-sat / GS selection, and
+    any future ISL-capacity handling, remain the data plane's
+    responsibility.
 
     For each (cell, dest) with positive demand:
 

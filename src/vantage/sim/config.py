@@ -10,6 +10,7 @@ from vantage.common.seed import derive_subseed, fresh_run_seed
 
 __all__ = [
     "CELL_CACHE",
+    "CONTROL_ALGORITHMS",
     "DASHBOARD_DIR",
     "DATA_DIR",
     "EPOCH_S",
@@ -21,6 +22,7 @@ __all__ = [
     "XML",
     "SeedBundle",
     "SimConfig",
+    "normalize_control_algorithms",
     "parse_args",
 ]
 
@@ -35,6 +37,56 @@ EPOCH_S = 1.0
 REFRESH = 15
 N_ANTENNAS_PER_GS = 8
 SAT_FEEDER_CAP_GBPS = 20.0
+CONTROL_ALGORITHMS: tuple[str, ...] = (
+    "baseline",
+    "optimizer_baseline",
+    "progressive",
+    "optimizer",
+    "greedy",
+    "lpround",
+    "milp",
+)
+_CONTROL_ALIASES = {
+    "all": "all",
+    "bl": "baseline",
+    "nearest": "baseline",
+    "nearest_pop": "baseline",
+    "opt_bl": "optimizer_baseline",
+    "optbaseline": "optimizer_baseline",
+    "optimizerbaseline": "optimizer_baseline",
+    "path_baseline": "optimizer_baseline",
+    "standalone_baseline": "optimizer_baseline",
+    "prog": "progressive",
+    "progressive_spillover": "progressive",
+    "opt": "optimizer",
+    "pathaware": "optimizer",
+    "path_aware": "optimizer",
+    "lp": "lpround",
+    "mip": "milp",
+}
+
+
+def normalize_control_algorithms(values: list[str] | None) -> tuple[str, ...]:
+    """Normalize CLI control-policy selection."""
+    if not values:
+        return CONTROL_ALGORITHMS
+    requested: list[str] = []
+    for raw_value in values:
+        for token in raw_value.split(","):
+            name = token.strip().lower().replace("-", "_")
+            if not name:
+                continue
+            name = _CONTROL_ALIASES.get(name, name)
+            if name == "all":
+                return CONTROL_ALGORITHMS
+            if name not in CONTROL_ALGORITHMS:
+                choices = ", ".join(("all",) + CONTROL_ALGORITHMS)
+                raise ValueError(f"unknown control algorithm {token!r}; choose from {choices}")
+            if name not in requested:
+                requested.append(name)
+    if not requested:
+        return CONTROL_ALGORITHMS
+    return tuple(requested)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,22 +113,28 @@ class SeedBundle:
 class SimConfig:
     num_epochs: int
     user_scale: float
+    control_algorithms: tuple[str, ...]
+    egress_top_k: int
     port: int
     no_browser: bool
     no_serve: bool
     max_gs_per_pop: int
     seeds: SeedBundle
+    enforce_isl_capacity: bool = True
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> SimConfig:
         return cls(
             num_epochs=args.epochs,
             user_scale=args.user_scale,
+            control_algorithms=normalize_control_algorithms(args.control_algorithms),
+            egress_top_k=args.egress_top_k,
             port=args.port,
             no_browser=args.no_browser,
             no_serve=args.no_serve,
             max_gs_per_pop=args.max_gs_per_pop,
             seeds=SeedBundle.from_cli_seed(args.seed),
+            enforce_isl_capacity=not args.disable_isl_capacity,
         )
 
 
@@ -95,6 +153,32 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=5.0,
         help="Starlink user-count multiplier (default: 5.0)",
+    )
+    parser.add_argument(
+        "--control",
+        "--controls",
+        dest="control_algorithms",
+        action="append",
+        default=None,
+        help=(
+            "Control algorithm(s) to run: all, baseline, optimizer_baseline, "
+            "progressive, greedy, optimizer, lpround, milp. Comma-separated "
+            "and repeated forms are both accepted (default: all)."
+        ),
+    )
+    parser.add_argument(
+        "--egress-top-k",
+        "--gateway-top-k",
+        "--egress-sats-per-gs",
+        dest="egress_top_k",
+        type=int,
+        default=N_ANTENNAS_PER_GS,
+        choices=range(1, N_ANTENNAS_PER_GS + 1),
+        metavar=f"1..{N_ANTENNAS_PER_GS}",
+        help=(
+            "Number of highest-elevation visible egress satellites retained "
+            f"per GS for forward candidates (default: {N_ANTENNAS_PER_GS})."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -120,6 +204,14 @@ def parse_args() -> argparse.Namespace:
             "Experimental: cap each PoP at N attached GSs (0 = no cap). "
             "Keeps the N closest by backhaul delay so popular PoPs hit "
             "capacity earlier, exposing Greedy / DP differences under pressure."
+        ),
+    )
+    parser.add_argument(
+        "--disable-isl-capacity",
+        action="store_true",
+        help=(
+            "Experiment: ignore ISL capacity in forward path selection and "
+            "measurement; sat feeder and GS feeder limits still apply."
         ),
     )
     parser.add_argument(

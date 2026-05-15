@@ -7,7 +7,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,9 +56,12 @@ class DashboardWriter:
     refresh_s: float
     user_scale: float
     max_gs_per_pop: int
+    egress_top_k: int
+    enforce_isl_capacity: bool
+    series: Sequence[str]
     svc_names: Sequence[str]
     pop_list: Sequence[str]
-    antennas_per_gs: int
+    total_capacity_gbps: float
     sat_feeder_cap_gbps: float
     run_seed: int
     seed_source: str
@@ -83,10 +86,7 @@ class DashboardWriter:
     def save_data(
         self,
         *,
-        baseline: list,
-        greedy: list,
-        lpround: list,
-        milp: list,
+        series_data: Mapping[str, list],
         latest_breakdown: dict,
         latest_pop_compare: dict,
         epoch_compare: list,
@@ -99,10 +99,10 @@ class DashboardWriter:
                 "refresh_s": self.refresh_s,
                 "user_scale": self.user_scale,
                 "max_gs_per_pop": self.max_gs_per_pop,
+                "egress_top_k": self.egress_top_k,
+                "enforce_isl_capacity": self.enforce_isl_capacity,
                 "services": list(self.svc_names),
-                "total_capacity_gbps": (
-                    self.antennas_per_gs * self.sat_feeder_cap_gbps * len(self.pop_list)
-                ),
+                "total_capacity_gbps": self.total_capacity_gbps,
                 "started_at": self.start_ts,
                 "run_seed": self.run_seed,
                 "seed_source": self.seed_source,
@@ -111,20 +111,18 @@ class DashboardWriter:
                     "ground_delay": self.ground_seed,
                     "ingress": self.ingress_seed_base,
                 },
-                "series": ["baseline", "greedy", "lpround", "milp"],
+                "series": list(self.series),
             },
-            "baseline": baseline,
-            "greedy": greedy,
-            "lpround": lpround,
-            "milp": milp,
             "latest_breakdown": latest_breakdown,
             "latest_pop_compare": latest_pop_compare,
             "epoch_compare": epoch_compare,
             "cache_state": cache_state,
         }
+        out.update({name: series_data.get(name, []) for name in self.series})
         with open(self.out_file, "w") as file:
             json.dump(out, file)
-        self.update_index(epochs_done=len(baseline))
+        first_series = self.series[0] if self.series else ""
+        self.update_index(epochs_done=len(series_data.get(first_series, [])))
 
     def update_index(self, epochs_done: int) -> None:
         by_name: dict[str, dict] = {}
@@ -142,6 +140,7 @@ class DashboardWriter:
             "epochs_total": self.num_epochs,
             "user_scale": self.user_scale,
             "max_gs_per_pop": self.max_gs_per_pop,
+            "enforce_isl_capacity": self.enforce_isl_capacity,
             "mtime": time.time(),
         }
         existing = {path.name for path in self.dashboard_dir.glob("sim_data_*.json")}
@@ -162,9 +161,8 @@ class DashboardWriter:
         except (OSError, json.JSONDecodeError):
             return None
         cfg = data.get("config", {})
-        bl = data.get("baseline") or []
-        greedy = data.get("greedy") or []
-        epochs_done = max(len(bl), len(greedy))
+        series = cfg.get("series") or ("baseline", "greedy")
+        epochs_done = max((len(data.get(name) or []) for name in series), default=0)
         ts = cfg.get("started_at") or path.stem.removeprefix("sim_data_")
         return {
             "filename": path.name,
@@ -173,5 +171,6 @@ class DashboardWriter:
             "epochs_total": cfg.get("num_epochs", epochs_done),
             "user_scale": cfg.get("user_scale", 1.0),
             "max_gs_per_pop": cfg.get("max_gs_per_pop"),
+            "enforce_isl_capacity": cfg.get("enforce_isl_capacity", True),
             "mtime": path.stat().st_mtime,
         }

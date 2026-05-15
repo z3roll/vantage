@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+import heapq
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import numpy as np
 
 from vantage.common.link_model import LinkPerformance
-from vantage.control.plane import RoutingPlane
+from vantage.control.plane import PlannedPath, RoutingPlane
 from vantage.forward.execution.measurement import measure_flow
 from vantage.forward.resources.accounting import UsageBook
 from vantage.forward.results.models import ResolvedFlow
@@ -24,12 +25,20 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+_CAP_EPS = 1e-9
+
 __all__ = [
     "EgressOption",
     "ForwardStrategy",
+    "NoForwardCapacity",
     "PathDecision",
+    "PlannedRoutingPlaneForward",
     "RoutingPlaneForward",
 ]
+
+
+class NoForwardCapacity(RuntimeError):
+    """Raised when a flow has no capacity-feasible forward path."""
 
 class EgressOption(NamedTuple):
     """One ``(egress_sat, gs, path)`` candidate for routing a flow.
@@ -86,10 +95,68 @@ def _walk_isl_path_row(
     else:
         return None
     rev_path.reverse()
-    # ``zip(rev_path, rev_path[1:])`` is the C-implemented equivalent
-    # of the earlier ``((p[i], p[i+1]) for i in range(...))`` genexpr
-    # and trims ~40 % off per-hop overhead at 1.6 M iterations/epoch.
-    return tuple(zip(rev_path, rev_path[1:], strict=False))
+    # Store hops in the UsageBook's canonical ISL key form. Forward's
+    # capacity loop treats ISLs as undirected resources, so this avoids
+    # re-normalising every hop on every candidate check.
+    return tuple(
+        (a, b) if a <= b else (b, a)
+        for a, b in zip(rev_path, rev_path[1:], strict=False)
+    )
+
+
+def _shortest_capacity_isl_path(
+    adjacency: Mapping[int, tuple[tuple[int, float], ...]],
+    book: UsageBook,
+    src: int,
+    dst: int,
+    demand_gbps: float,
+) -> tuple[float, tuple[tuple[int, int], ...]] | None:
+    """Shortest currently capacity-feasible ISL path.
+
+    This is the scalable fallback when the controller's shortest path
+    is blocked: remove ISL edges with insufficient residual capacity
+    and run one Dijkstra over the frozen adjacency view.
+    """
+    if src == dst:
+        return (0.0, ())
+
+    seq = 0
+    heap: list[tuple[float, int, int]] = [(0.0, seq, src)]
+    dist: dict[int, float] = {src: 0.0}
+    prev: dict[int, int] = {}
+
+    while heap:
+        delay, _seq, node = heapq.heappop(heap)
+        if delay != dist.get(node):
+            continue
+        if node == dst:
+            rev_path = [dst]
+            cur = dst
+            while cur != src:
+                cur = prev[cur]
+                rev_path.append(cur)
+            rev_path.reverse()
+            return delay, tuple(
+                (a, b) if a <= b else (b, a)
+                for a, b in zip(rev_path, rev_path[1:], strict=False)
+            )
+
+        for neighbor, edge_delay in adjacency.get(node, ()):
+            edge_key = (
+                (node, neighbor) if node <= neighbor else (neighbor, node)
+            )
+            is_saturated = demand_gbps > 0.0 and edge_key in book.saturated_isl
+            if is_saturated or book.remaining_isl_key(edge_key) < demand_gbps:
+                continue
+            next_delay = delay + edge_delay
+            old_delay = dist.get(neighbor)
+            if old_delay is not None and next_delay >= old_delay:
+                continue
+            seq += 1
+            dist[neighbor] = next_delay
+            prev[neighbor] = node
+            heapq.heappush(heap, (next_delay, seq, neighbor))
+    return None
 
 @dataclass(frozen=True, slots=True)
 class PathDecision:
@@ -166,10 +233,11 @@ class ForwardStrategy(Protocol):
     def charge(
         self, decision: PathDecision, flow_demand: float,
     ) -> EgressOption:
-        """Pick an option from ``decision`` (primary if it has cap,
-        else alternate, else fallback) and apply ``flow_demand`` to
-        the underlying :class:`UsageBook`. Return the chosen option
-        so :meth:`measure` can use it in pass 2.
+        """Pick a capacity-feasible option from ``decision``.
+
+        The chosen option must have both sat-feeder and ISL headroom.
+        If none exists, implementations raise :class:`NoForwardCapacity`
+        and the flow remains unrouted.
 
         Called only when ``decide`` returned a non-``None``
         :class:`PathDecision`."""
@@ -205,11 +273,9 @@ class RoutingPlaneForward:
        :class:`EgressOption` is allocated yet.
 
     2. ``charge`` — walk the cascade (PoPs in rank order, sats in
-       E2E order within each PoP); pick the first whose
-       ``egress_sat`` has remaining sat-feeder capacity (20 Gbps
-       per satellite feeder). If every option's egress sat is saturated,
-       pick the option with the smallest current load ratio and accept
-       the overflow (still only one allocation).
+       E2E order within each PoP); pick the first whose ISL path and
+       ``egress_sat`` have remaining capacity. If no candidate has
+       both sat-feeder and ISL headroom, the flow is left unrouted.
 
     3. ``measure`` — use the chosen option's path metrics + the
        final :class:`UsageBook` state to compute per-link
@@ -222,11 +288,13 @@ class RoutingPlaneForward:
     """
 
     __slots__ = (
-        "_book", "_decision_cache", "_gf_perf_cache", "_grid",
-        "_ground_rtt_by_dst", "_isl_perf_cache",
-        "_max_cascade_pops", "_options_by_ingress",
+        "_all_saturated_raw_opts", "_book", "_capacity_path_cache",
+        "_capacity_path_fail_cache", "_decision_cache", "_enforce_isl_capacity",
+        "_forward_counters", "_gf_perf_cache", "_grid", "_ground_rtt_by_dst",
+        "_isl_perf_cache", "_max_cascade_pops", "_options_by_ingress",
         "_path_cache", "_plane", "_pop_egress", "_pred_row_cache",
-        "_sat_paths", "_sf_perf_cache", "_template_cache",
+        "_sat_feeder_fail_threshold_by_raw_opts", "_sat_paths", "_sf_perf_cache",
+        "_template_cache",
         "_uplink_sat_pin",
     )
 
@@ -238,6 +306,7 @@ class RoutingPlaneForward:
         path_table: object | None = None,    # ignored — kept for callers
         k: int = 8,
         max_cascade_pops: int | None = None,
+        enforce_isl_capacity: bool = True,
     ) -> None:
         del path_table  # legacy positional arg from the pre-multi-egress API
         self._plane = routing_plane
@@ -252,6 +321,7 @@ class RoutingPlaneForward:
         self._pop_egress = routing_plane.pop_egress
         self._grid = cell_grid
         self._book = usage_book
+        self._enforce_isl_capacity = enforce_isl_capacity
         del k  # legacy constructor knob; per-GS top-k is owned by GatewayAttachments.
         # Cap how many ranked PoPs decide() considers per flow.
         # ``None`` (default) means "the full controller cascade" —
@@ -289,6 +359,13 @@ class RoutingPlaneForward:
         self._path_cache: dict[
             tuple[int, int], tuple[tuple[int, int], ...] | None
         ] = {}
+        self._capacity_path_cache: dict[
+            tuple[int, int], tuple[float, tuple[tuple[int, int], ...]]
+        ] = {}
+        self._capacity_path_fail_cache: dict[tuple[int, int], float] = {}
+        self._all_saturated_raw_opts: set[int] = set()
+        self._sat_feeder_fail_threshold_by_raw_opts: dict[int, float] = {}
+        self._forward_counters: dict[str, int] = {}
         # measure() pass-2 caches. Book is frozen across pass 2 so
         # per-link performance depends only on the link id. ~45 k
         # link_performance calls collapse to ~1 k unique links.
@@ -384,6 +461,8 @@ class RoutingPlaneForward:
     #     evolve across epochs as learned stats accumulate.
     #   * ``_isl_perf_cache`` / ``_sf_perf_cache`` / ``_gf_perf_cache``
     #     — derived from the previous epoch's :class:`UsageBook` state.
+    #   * ``_capacity_path_cache`` — residual-capacity alternate ISL
+    #     paths; valid only while the current epoch's book is bound.
     #
     # Callers MUST re-construct a new :class:`RoutingPlaneForward`
     # when the plane changes (identity check via :attr:`plane` or
@@ -418,6 +497,7 @@ class RoutingPlaneForward:
         *,
         k: int = 8,
         max_cascade_pops: int | None = None,
+        enforce_isl_capacity: bool = True,
     ) -> RoutingPlaneForward:
         """Return a forward wired to ``usage_book`` for this epoch.
 
@@ -434,12 +514,17 @@ class RoutingPlaneForward:
         * Otherwise a fresh instance is constructed with empty
           caches.
         """
-        if previous is not None and previous._plane is routing_plane:
+        if (
+            previous is not None
+            and previous._plane is routing_plane
+            and previous._enforce_isl_capacity == enforce_isl_capacity
+        ):
             previous.reset_for_epoch(usage_book)
             return previous
         return cls(
             routing_plane, cell_grid, usage_book,
             k=k, max_cascade_pops=max_cascade_pops,
+            enforce_isl_capacity=enforce_isl_capacity,
         )
 
     def reset_for_epoch(self, usage_book: UsageBook) -> None:
@@ -473,11 +558,24 @@ class RoutingPlaneForward:
           cached-plan epochs (see the class-level comment).
         """
         self._book = usage_book
+        self._all_saturated_raw_opts.clear()
+        self._sat_feeder_fail_threshold_by_raw_opts.clear()
+        self._capacity_path_cache.clear()
+        self._capacity_path_fail_cache.clear()
         self._decision_cache.clear()
+        self._forward_counters.clear()
         self._ground_rtt_by_dst.clear()
         self._isl_perf_cache.clear()
         self._sf_perf_cache.clear()
         self._gf_perf_cache.clear()
+
+    def forward_counters(self) -> Mapping[str, int]:
+        """Per-epoch debug counters collected by the charge hot path."""
+        return self._forward_counters
+
+    def _count(self, name: str, amount: int = 1) -> None:
+        counters = self._forward_counters
+        counters[name] = counters.get(name, 0) + amount
 
     def _pred_row_for(self, ingress: int) -> list[int]:
         """Return ``pred[ingress]`` as a Python list, cached per realize.
@@ -549,9 +647,9 @@ class RoutingPlaneForward:
         valid_cost = cost[valid_idx]
         order_local = np.argsort(valid_cost, kind="stable")
         top_idx = valid_idx[order_local]
+        options: list[EgressOption] = []
         path_cache = self._path_cache
         pred_row = self._pred_row_for(ingress)
-        options: list[EgressOption] = []
         for pos in top_idx:
             i = int(pos)
             egress = int(egress_ids[i])
@@ -711,55 +809,202 @@ class RoutingPlaneForward:
     def charge(
         self, decision: PathDecision, flow_demand: float,
     ) -> EgressOption:
-        book = self._book
+        self._count("charge_calls")
         uplink_rtt = decision.uplink_rtt
+        ingress = decision.user_sat
 
-        # Per-sat Ka feeder cap; GS identity is not part of this resource.
         for _pop_code, raw_opts, ground_rtt in decision.pop_cascade:
-            for raw in raw_opts:
-                sat = raw.egress_sat
-                if book.can_charge_sat_feeder(sat, flow_demand):
-                    chosen = EgressOption(
-                        pop_code=raw.pop_code, egress_sat=sat,
-                        gs_id=raw.gs_id, isl_links=raw.isl_links,
-                        propagation_rtt=uplink_rtt + raw.propagation_rtt,
-                        ground_rtt=ground_rtt,
-                    )
-                    self._do_charge(chosen, flow_demand)
-                    return chosen
+            self._count("pop_scans")
+            chosen = self._choose_in_pop(
+                raw_opts, ingress, uplink_rtt, ground_rtt, flow_demand,
+                require_sat_feeder=True,
+            )
+            if chosen is not None:
+                self._do_charge(chosen, flow_demand)
+                return chosen
 
-        # Every option's egress sat is saturated. Pick the option with the
-        # smallest current load ratio so overflow spreads evenly instead
-        # of piling on one sat.
-        best_raw: EgressOption | None = None
-        best_pop = ""
-        best_ground = 0.0
-        best_ratio = float("inf")
-        for pop_code, raw_opts, ground_rtt in decision.pop_cascade:
-            for raw in raw_opts:
-                sat = raw.egress_sat
-                ratio = book.sat_feeder_used.get(sat, 0.0) / max(
-                    book.view.sat_feeder_cap(sat), 1e-9,
-                )
-                if ratio < best_ratio:
-                    best_ratio = ratio
-                    best_raw = raw
-                    best_pop = pop_code
-                    best_ground = ground_rtt
-
-        assert best_raw is not None  # pop_cascade invariant: non-empty
-        chosen = EgressOption(
-            pop_code=best_pop, egress_sat=best_raw.egress_sat,
-            gs_id=best_raw.gs_id, isl_links=best_raw.isl_links,
-            propagation_rtt=uplink_rtt + best_raw.propagation_rtt,
-            ground_rtt=best_ground,
+        _log.debug(
+            "charge: no sat-feeder/ISL-capacity-feasible option for %.6f Gbps flow",
+            flow_demand,
         )
-        self._do_charge(chosen, flow_demand)
-        return chosen
+        self._count("no_capacity")
+        raise NoForwardCapacity(
+            "no sat-feeder/ISL-capacity-feasible option for flow demand "
+            f"{flow_demand:.6f} Gbps"
+        )
+
+    def _choose_in_pop(
+        self,
+        raw_opts: tuple[EgressOption, ...],
+        ingress: int,
+        uplink_rtt: float,
+        ground_rtt: float,
+        flow_demand: float,
+        *,
+        require_sat_feeder: bool,
+    ) -> EgressOption | None:
+        """Return the lowest-RTT capacity-feasible option in one PoP.
+
+        ``raw_opts`` contains the shortest ISL path per downlink
+        candidate. A min-heap lazily inserts one residual-feasible
+        alternate for a candidate only when its controller-shortest
+        path is blocked by ISL capacity, preserving global order across
+        ``GS × egress × path`` without eagerly materialising alternates.
+        """
+        raw_opts_key = id(raw_opts)
+        if (
+            require_sat_feeder
+            and flow_demand > 0.0
+            and raw_opts_key in self._all_saturated_raw_opts
+        ):
+            self._count("all_saturated_pop_skips")
+            return None
+        failed_at = self._sat_feeder_fail_threshold_by_raw_opts.get(raw_opts_key)
+        if failed_at is not None and flow_demand >= failed_at - _CAP_EPS:
+            self._count("sat_feeder_fail_cache_hits")
+            return None
+
+        alternate_heap: list[tuple[float, int, EgressOption]] = []
+        next_primary = 0
+        raw_count = len(raw_opts)
+        all_primary_sats_saturated = require_sat_feeder and flow_demand > 0.0
+        any_sat_feeder_ok = not require_sat_feeder or flow_demand <= 0.0
+
+        while next_primary < raw_count or alternate_heap:
+            if next_primary < raw_count:
+                primary = raw_opts[next_primary]
+                primary_key = (primary.propagation_rtt, next_primary)
+            else:
+                primary = None
+                primary_key = (float("inf"), 1 << 62)
+
+            if alternate_heap and (alternate_heap[0][0], alternate_heap[0][1]) < primary_key:
+                _cost, seq, candidate = heapq.heappop(alternate_heap)
+                is_alternate = True
+            else:
+                assert primary is not None
+                seq = next_primary
+                candidate = primary
+                next_primary += 1
+                is_alternate = False
+
+            self._count("options_scanned")
+            sat = candidate.egress_sat
+            if require_sat_feeder:
+                if (
+                    flow_demand > 0.0
+                    and sat in self._book.saturated_sat_feeders
+                ):
+                    self._count("sat_feeder_saturated_skips")
+                    continue
+                all_primary_sats_saturated = False
+                if not self._book.can_charge_sat_feeder(sat, flow_demand):
+                    self._count("sat_feeder_rejects")
+                    continue
+                any_sat_feeder_ok = True
+            if not self._enforce_isl_capacity:
+                self._count("isl_capacity_disabled_accepts")
+                return EgressOption(
+                    pop_code=candidate.pop_code,
+                    egress_sat=sat,
+                    gs_id=candidate.gs_id,
+                    isl_links=candidate.isl_links,
+                    propagation_rtt=uplink_rtt + candidate.propagation_rtt,
+                    ground_rtt=ground_rtt,
+                )
+            self._count("isl_path_checks")
+            if self._book.can_charge_isl_path_keys(
+                candidate.isl_links, flow_demand,
+            ):
+                return EgressOption(
+                    pop_code=candidate.pop_code,
+                    egress_sat=sat,
+                    gs_id=candidate.gs_id,
+                    isl_links=candidate.isl_links,
+                    propagation_rtt=uplink_rtt + candidate.propagation_rtt,
+                    ground_rtt=ground_rtt,
+                )
+            self._count("isl_rejects")
+            if not is_alternate:
+                self._count("alternate_requests")
+                next_variant = self._capacity_feasible_variant(
+                    candidate, ingress, flow_demand,
+                )
+                if next_variant is not None:
+                    heapq.heappush(
+                        alternate_heap,
+                        (next_variant.propagation_rtt, seq, next_variant),
+                    )
+        if all_primary_sats_saturated:
+            self._all_saturated_raw_opts.add(raw_opts_key)
+        if require_sat_feeder and flow_demand > 0.0 and not any_sat_feeder_ok:
+            old_failed_at = self._sat_feeder_fail_threshold_by_raw_opts.get(raw_opts_key)
+            self._sat_feeder_fail_threshold_by_raw_opts[raw_opts_key] = (
+                flow_demand
+                if old_failed_at is None
+                else min(old_failed_at, flow_demand)
+            )
+        return None
+
+    def _first_isl_feasible_variant(
+        self, raw: EgressOption, ingress: int, flow_demand: float,
+    ) -> EgressOption | None:
+        if not self._enforce_isl_capacity:
+            return raw
+        if self._book.can_charge_isl_path_keys(raw.isl_links, flow_demand):
+            return raw
+        return self._capacity_feasible_variant(raw, ingress, flow_demand)
+
+    def _capacity_feasible_variant(
+        self, raw: EgressOption, ingress: int, flow_demand: float,
+    ) -> EgressOption | None:
+        adjacency = self._sat_paths.isl_adjacency
+        if not adjacency:
+            return None
+        key = (ingress, raw.egress_sat)
+        failed_at = self._capacity_path_fail_cache.get(key)
+        if failed_at is not None and flow_demand >= failed_at - _CAP_EPS:
+            self._count("alternate_fail_cache_hits")
+            return None
+        found = self._capacity_path_cache.get(key)
+        from_cache = False
+        if found is not None:
+            if self._book.can_charge_isl_path_keys(found[1], flow_demand):
+                from_cache = True
+                self._count("alternate_success_cache_hits")
+            else:
+                found = None
+        if found is None:
+            self._count("alternate_dijkstra_calls")
+            found = _shortest_capacity_isl_path(
+                adjacency, self._book, ingress, raw.egress_sat, flow_demand,
+            )
+            if found is not None:
+                self._capacity_path_cache[key] = found
+        if found is None:
+            old_failed_at = self._capacity_path_fail_cache.get(key)
+            self._capacity_path_fail_cache[key] = (
+                flow_demand
+                if old_failed_at is None
+                else min(old_failed_at, flow_demand)
+            )
+            self._count("alternate_fail")
+            return None
+        if not from_cache:
+            self._count("alternate_success")
+        isl_delay, isl_links = found
+        primary_delay = self._sat_paths.isl_delay(ingress, raw.egress_sat)
+        return raw._replace(
+            isl_links=isl_links,
+            propagation_rtt=float(
+                raw.propagation_rtt + (isl_delay - primary_delay) * 2.0
+            ),
+        )
 
     def _do_charge(self, option: EgressOption, demand: float) -> None:
-        for a, b in option.isl_links:
-            self._book.charge_isl(a, b, demand)
+        if self._enforce_isl_capacity:
+            for key in option.isl_links:
+                self._book.charge_isl_key(key, demand)
         self._book.charge_sat_feeder(option.egress_sat, demand)
         self._book.charge_gs_feeder(option.gs_id, demand)
 
@@ -775,6 +1020,275 @@ class RoutingPlaneForward:
         # Per-link perf caches are owned by the forward (tied to its
         # UsageBook lifecycle via :meth:`reset_for_epoch`); the actual
         # measurement lives in :mod:`vantage.forward.execution.measurement`.
+        return measure_flow(
+            decision, chosen,
+            book=self._book,
+            sat_paths=self._sat_paths,
+            isl_cache=self._isl_perf_cache,
+            sf_cache=self._sf_perf_cache,
+            gf_cache=self._gf_perf_cache,
+            ground_rtt_truth=ground_rtt_truth,
+        )
+
+
+class PlannedRoutingPlaneForward:
+    """Execute controller-planned concrete paths without capacity search.
+
+    This is the companion forwarder for path-aware optimizers. The
+    optimizer has already selected ``(PoP, GS, egress_sat, ISL path)``
+    candidates under its capacity model, so the data plane should not
+    run another first-fit capacity search that changes the plan. It
+    simply resolves the planned path for ``(ingress, cell, dest)``,
+    charges the UsageBook for measurement, and reuses
+    :func:`measure_flow` for final RTT/loss/bottleneck statistics.
+
+    Existing PoP-cascade policies continue to use
+    :class:`RoutingPlaneForward`.
+    """
+
+    __slots__ = (
+        "_book", "_decision_cache", "_forward_counters", "_gf_perf_cache",
+        "_grid", "_ground_rtt_by_dst", "_isl_perf_cache", "_plane",
+        "_preferred_ingress_by_cell_dest", "_sf_perf_cache", "_sat_paths",
+        "_uplink_sat_pin",
+    )
+
+    def __init__(
+        self,
+        routing_plane: RoutingPlane,
+        cell_grid: CellGrid,
+        usage_book: UsageBook,
+    ) -> None:
+        if routing_plane.path_hints is None:
+            raise ValueError(
+                "PlannedRoutingPlaneForward requires RoutingPlane.path_hints"
+            )
+        self._plane = routing_plane
+        self._sat_paths = routing_plane.sat_paths
+        self._grid = cell_grid
+        self._book = usage_book
+        self._decision_cache: dict[
+            tuple[int, int, str], PathDecision | None
+        ] = {}
+        self._ground_rtt_by_dst: dict[str, dict[str, float]] = {}
+        self._isl_perf_cache: dict[tuple[int, int], LinkPerformance] = {}
+        self._sf_perf_cache: dict[int, LinkPerformance] = {}
+        self._gf_perf_cache: dict[str, LinkPerformance] = {}
+        self._forward_counters: dict[str, int] = {}
+        self._uplink_sat_pin: dict[str, int] = {}
+        hints = routing_plane.path_hints
+        assert hints is not None
+        preferred: dict[tuple[int, str], int] = {}
+        for ingress, cell_id, dest in hints.paths:
+            preferred.setdefault((cell_id, dest), ingress)
+        self._preferred_ingress_by_cell_dest = preferred
+
+    @classmethod
+    def for_epoch(
+        cls,
+        previous: PlannedRoutingPlaneForward | None,
+        routing_plane: RoutingPlane,
+        cell_grid: CellGrid,
+        usage_book: UsageBook,
+    ) -> PlannedRoutingPlaneForward:
+        """Reuse the planned forward while the same plane is active."""
+        if previous is not None and previous._plane is routing_plane:
+            previous.reset_for_epoch(usage_book)
+            return previous
+        return cls(routing_plane, cell_grid, usage_book)
+
+    @property
+    def plane(self) -> RoutingPlane:
+        return self._plane
+
+    @property
+    def plane_version(self) -> int:
+        return int(self._plane.version)
+
+    def uplink_sat_pin(self) -> dict[str, int]:
+        """Window-scoped ``src_name -> pinned_sat_id`` map."""
+        return self._uplink_sat_pin
+
+    def preferred_ingress(
+        self,
+        flow_key: FlowKey,
+        src_ep: Endpoint,
+        visible: tuple[AccessLink, ...] | list[AccessLink],
+        snapshot: NetworkSnapshot,
+        context: RunContext,
+        epoch: int,
+    ) -> int | None:
+        """Return the controller-planned ingress for this flow."""
+        del src_ep, snapshot, context, epoch
+        try:
+            cell_id = self._grid.cell_of(flow_key.src)
+        except KeyError:
+            return None
+        preferred = self._preferred_ingress_by_cell_dest.get((cell_id, flow_key.dst))
+        if preferred is None:
+            return None
+        visible_ids = {link.sat_id for link in visible}
+        return preferred if preferred in visible_ids else None
+
+    def reset_for_epoch(self, usage_book: UsageBook) -> None:
+        self._book = usage_book
+        self._decision_cache.clear()
+        self._ground_rtt_by_dst.clear()
+        self._isl_perf_cache.clear()
+        self._sf_perf_cache.clear()
+        self._gf_perf_cache.clear()
+        self._forward_counters.clear()
+
+    def forward_counters(self) -> Mapping[str, int]:
+        """Per-epoch debug counters collected by the planned hot path."""
+        return self._forward_counters
+
+    def _count(self, name: str, amount: int = 1) -> None:
+        counters = self._forward_counters
+        counters[name] = counters.get(name, 0) + amount
+
+    def decide(
+        self,
+        flow_key: FlowKey,
+        src_ep: Endpoint,
+        ingress: int,
+        uplink: AccessLink,
+        snapshot: NetworkSnapshot,
+        context: RunContext,
+        epoch: int,
+    ) -> PathDecision | None:
+        del src_ep, snapshot, epoch
+        try:
+            cell_id = self._grid.cell_of(flow_key.src)
+        except KeyError:
+            self._count("missing_cell")
+            return None
+
+        key = (ingress, cell_id, flow_key.dst)
+        cached = self._decision_cache.get(key)
+        if cached is not None or key in self._decision_cache:
+            return cached
+
+        hints = self._plane.path_hints
+        assert hints is not None
+        planned_paths = hints.paths_for(ingress, cell_id, flow_key.dst)
+        if not planned_paths:
+            self._count("missing_plan")
+            self._decision_cache[key] = None
+            return None
+
+        dst = flow_key.dst
+        rtt_by_pop = self._ground_rtt_by_dst.get(dst)
+        if rtt_by_pop is None:
+            rtt_by_pop = {}
+            self._ground_rtt_by_dst[dst] = rtt_by_pop
+        ground_knowledge = context.ground_knowledge
+
+        cascade: list[tuple[str, tuple[EgressOption, ...], float]] = []
+        for planned in planned_paths:
+            raw = self._raw_option_from_plan(planned)
+            if raw is None:
+                continue
+            ground_rtt = rtt_by_pop.get(planned.pop_code)
+            if ground_rtt is None:
+                try:
+                    ground_rtt = ground_knowledge.get_or_estimate(
+                        planned.pop_code, dst,
+                    )
+                except KeyError:
+                    self._count("missing_ground")
+                    continue
+                rtt_by_pop[planned.pop_code] = ground_rtt
+            cascade.append((planned.pop_code, (raw,), ground_rtt))
+
+        if not cascade:
+            self._count("invalid_plan")
+            self._decision_cache[key] = None
+            return None
+        decision = PathDecision(
+            user_sat=ingress,
+            uplink_rtt=uplink.delay * 2,
+            pop_cascade=tuple(cascade),
+        )
+        self._decision_cache[key] = decision
+        return decision
+
+    def _raw_option_from_plan(self, planned: PlannedPath) -> EgressOption | None:
+        access_rtt = planned.access_rtt
+        if access_rtt is None:
+            access_rtt = self._lookup_access_rtt(planned)
+            if access_rtt is None:
+                self._count("missing_access")
+                return None
+
+        isl_rtt = 0.0
+        for a, b in planned.isl_links:
+            one_way = self._direct_isl_delay(a, b)
+            if one_way is None:
+                self._count("invalid_isl_link")
+                return None
+            isl_rtt += one_way * 2.0
+
+        return EgressOption(
+            pop_code=planned.pop_code,
+            egress_sat=planned.egress_sat,
+            gs_id=planned.gs_id,
+            isl_links=planned.isl_links,
+            propagation_rtt=isl_rtt + access_rtt,
+            ground_rtt=0.0,
+        )
+
+    def _lookup_access_rtt(self, planned: PlannedPath) -> float | None:
+        egress_ids, base_cost, gs_ids = self._plane.pop_egress.for_pop(
+            planned.pop_code,
+        )
+        for idx, gs_id in enumerate(gs_ids):
+            if gs_id == planned.gs_id and int(egress_ids[idx]) == planned.egress_sat:
+                return float(base_cost[idx])
+        return None
+
+    def _direct_isl_delay(self, sat_a: int, sat_b: int) -> float | None:
+        for neighbor, delay in self._sat_paths.neighbors(sat_a):
+            if neighbor == sat_b:
+                return delay
+        return None
+
+    def charge(
+        self, decision: PathDecision, flow_demand: float,
+    ) -> EgressOption:
+        self._count("charge_calls")
+        for _pop_code, raw_opts, ground_rtt in decision.pop_cascade:
+            if not raw_opts:
+                continue
+            raw = raw_opts[0]
+            chosen = EgressOption(
+                pop_code=raw.pop_code,
+                egress_sat=raw.egress_sat,
+                gs_id=raw.gs_id,
+                isl_links=raw.isl_links,
+                propagation_rtt=decision.uplink_rtt + raw.propagation_rtt,
+                ground_rtt=ground_rtt,
+            )
+            self._do_charge(chosen, flow_demand)
+            return chosen
+        self._count("no_planned_path")
+        raise NoForwardCapacity("no planned path for flow")
+
+    def _do_charge(self, option: EgressOption, demand: float) -> None:
+        for key in option.isl_links:
+            self._book.charge_isl_key(key, demand)
+        self._book.charge_sat_feeder(option.egress_sat, demand)
+        self._book.charge_gs_feeder(option.gs_id, demand)
+
+    def measure(
+        self,
+        decision: PathDecision,
+        chosen: EgressOption,
+        snapshot: NetworkSnapshot,
+        *,
+        ground_rtt_truth: float | None = None,
+    ) -> ResolvedFlow:
+        del snapshot
         return measure_flow(
             decision, chosen,
             book=self._book,

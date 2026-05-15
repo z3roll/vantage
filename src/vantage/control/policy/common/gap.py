@@ -196,58 +196,132 @@ def repair_overflow(
     items: list[RankedDemandItem],
     pop_cap: Mapping[str, float],
 ) -> dict[tuple[int, str], str]:
-    """Return an assignment guaranteed to respect ``pop_cap``."""
-    assignments = dict(assignments)
-    item_by_key: dict[tuple[int, str], tuple[float, list[tuple[str, float]]]] = {
-        (cell_id, dest): (demand, ranked)
-        for cell_id, dest, demand, ranked in items
-    }
+    """Return a capacity-feasible assignment using greedy local repair.
 
+    LP argmax rounding usually misses capacity by a tiny amount, but solving a
+    sub-MILP just to repair that overflow can become larger than the original
+    LP's practical budget. This repair keeps the LP-rounded solution as the
+    starting point, moves items out of overloaded PoPs to the cheapest
+    currently-capable alternate PoP, and falls back to a full first-fit
+    decreasing rebuild if local moves get stuck.
+    """
+    assignments = dict(assignments)
     load = _assignment_load(assignments, items)
     if _is_feasible(load, pop_cap):
         return assignments
 
-    overloaded = {
-        pop_code
-        for pop_code, used in load.items()
-        if used > pop_cap.get(pop_code, 0.0) + _FEASIBILITY_TOL
-    }
-    movable_keys = [
-        key for key, pop_code in assignments.items()
-        if pop_code in overloaded
-    ]
-    if movable_keys:
-        movable_set = set(movable_keys)
-        frozen_load: dict[str, float] = {}
-        for key, pop_code in assignments.items():
-            if key in movable_set:
-                continue
-            demand, _ranked = item_by_key[key]
-            frozen_load[pop_code] = frozen_load.get(pop_code, 0.0) + demand
-        remaining_cap = {
-            pop_code: max(0.0, pop_cap.get(pop_code, 0.0) - frozen_load.get(pop_code, 0.0))
-            for pop_code in pop_cap
-        }
-        sub_items = [
-            (cell_id, dest, item_by_key[(cell_id, dest)][0], item_by_key[(cell_id, dest)][1])
-            for cell_id, dest in movable_keys
-        ]
-        sub_result = solve_sub_milp(sub_items, remaining_cap)
-        if sub_result is not None:
-            candidate = dict(assignments)
-            candidate.update(sub_result)
-            if _is_feasible(_assignment_load(candidate, items), pop_cap):
-                return candidate
+    repaired = _repair_overflow_by_local_moves(assignments, items, pop_cap, load)
+    if repaired is not None:
+        return repaired
 
-    full_result = solve_sub_milp(list(items), pop_cap)
-    if full_result is not None and _is_feasible(_assignment_load(full_result, items), pop_cap):
-        return full_result
+    rebuilt = _repair_overflow_by_first_fit(items, pop_cap)
+    if rebuilt is not None:
+        return rebuilt
 
     raise RuntimeError(
         "repair_overflow: could not produce a capacity-feasible integer "
-        "assignment (narrow and full sub-MILP both failed or stayed "
-        "overloaded). Given pop_cap, no feasible integer solution exists."
+        "assignment with greedy local or full first-fit repair. Given "
+        "pop_cap, no feasible integer solution may exist."
     )
+
+
+def _ranked_cost_lookup(
+    ranked: list[tuple[str, float]],
+) -> dict[str, float]:
+    return {pop_code: cost for pop_code, cost in ranked}
+
+
+def _repair_overflow_by_local_moves(
+    assignments: dict[tuple[int, str], str],
+    items: list[RankedDemandItem],
+    pop_cap: Mapping[str, float],
+    load: dict[str, float],
+) -> dict[tuple[int, str], str] | None:
+    item_by_key: dict[tuple[int, str], tuple[float, list[tuple[str, float]]]] = {
+        (cell_id, dest): (demand, ranked)
+        for cell_id, dest, demand, ranked in items
+    }
+    keys_by_pop: dict[str, set[tuple[int, str]]] = {}
+    for key, pop_code in assignments.items():
+        keys_by_pop.setdefault(pop_code, set()).add(key)
+
+    while True:
+        overloaded = sorted(
+            (
+                (pop_code, used - pop_cap.get(pop_code, 0.0))
+                for pop_code, used in load.items()
+                if used > pop_cap.get(pop_code, 0.0) + _FEASIBILITY_TOL
+            ),
+            key=lambda item: -item[1],
+        )
+        if not overloaded:
+            return assignments
+
+        moved = False
+        for pop_code, over in overloaded:
+            best_move: tuple[float, float, float, tuple[int, str], str] | None = None
+            for key in keys_by_pop.get(pop_code, ()):
+                demand, ranked = item_by_key[key]
+                cost_by_pop = _ranked_cost_lookup(ranked)
+                current_cost = cost_by_pop.get(pop_code, ranked[-1][1])
+                for target_pop, target_cost in ranked:
+                    if target_pop == pop_code:
+                        continue
+                    cap = pop_cap.get(target_pop, 0.0)
+                    if cap <= 0.0 or load.get(target_pop, 0.0) + demand > cap + _FEASIBILITY_TOL:
+                        continue
+                    cost_increase = max(0.0, target_cost - current_cost)
+                    relieves_overflow = 0 if demand >= over else 1
+                    candidate = (
+                        relieves_overflow,
+                        cost_increase / max(demand, 1e-9),
+                        cost_increase,
+                        key,
+                        target_pop,
+                    )
+                    if best_move is None or candidate < best_move:
+                        best_move = candidate
+                    break
+
+            if best_move is None:
+                continue
+
+            _relieves, _unit_penalty, _penalty, key, target_pop = best_move
+            demand, _ranked = item_by_key[key]
+            assignments[key] = target_pop
+            keys_by_pop[pop_code].remove(key)
+            keys_by_pop.setdefault(target_pop, set()).add(key)
+            load[pop_code] = load.get(pop_code, 0.0) - demand
+            load[target_pop] = load.get(target_pop, 0.0) + demand
+            moved = True
+            break
+
+        if not moved:
+            return None
+
+
+def _repair_overflow_by_first_fit(
+    items: list[RankedDemandItem],
+    pop_cap: Mapping[str, float],
+) -> dict[tuple[int, str], str] | None:
+    load: dict[str, float] = {}
+    out: dict[tuple[int, str], str] = {}
+    sorted_items = sorted(
+        items,
+        key=lambda item: (-item[2], item[1], item[0]),
+    )
+    for cell_id, dest, demand, ranked in sorted_items:
+        chosen_pop = None
+        for pop_code, _cost in ranked:
+            cap = pop_cap.get(pop_code, 0.0)
+            if cap > 0.0 and load.get(pop_code, 0.0) + demand <= cap + _FEASIBILITY_TOL:
+                chosen_pop = pop_code
+                break
+        if chosen_pop is None:
+            return None
+        out[(cell_id, dest)] = chosen_pop
+        load[chosen_pop] = load.get(chosen_pop, 0.0) + demand
+    return out
 
 
 def solve_sub_milp(

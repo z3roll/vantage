@@ -15,11 +15,11 @@ controller at refresh time:
     * :class:`CellToPopTable` — global ``cell → ranked PoP cascade``
       map (unchanged). Primary head + cascading fallbacks.
     * :class:`SatPathTable` — per-snapshot ISL shortest-path artifact:
-      the one-way ``delay_matrix`` and ``predecessor_matrix`` used for
-      ISL-segment RTT lookups and hop reconstruction. These are the
-      shortest-path outputs the controller computes every 15 s; the
-      data plane reads this artifact rather than the raw
-      ``SatelliteState`` matrices.
+      the one-way ``delay_matrix`` / ``predecessor_matrix`` plus a
+      frozen ISL adjacency view used for alternate-path TE under ISL
+      capacity constraints. These are the routing artifacts the
+      controller computes every 15 s; the data plane reads this
+      artifact rather than the raw ``SatelliteState`` matrices.
     * :class:`PopEgressTable` — per-PoP precomputed candidate arrays
       ``(egress_sat_ids, base_cost, gs_ids)`` where ``base_cost`` is
       ``2·downlink + 2·backhaul`` per sat. Built once by the
@@ -48,6 +48,8 @@ from vantage.model.coverage import CellId
 __all__ = [
     "ROUTING_PLANE_REFRESH_S",
     "CellToPopTable",
+    "PlannedPath",
+    "PlannedPathTable",
     "PopEgressTable",
     "RoutingPlane",
     "SatPathTable",
@@ -124,9 +126,10 @@ class SatPathTable:
     """Per-snapshot ISL shortest-path artifact owned by the controller.
 
     Wraps the two Dijkstra outputs (``delay_matrix`` and
-    ``predecessor_matrix``) behind the routing-plane interface so the
-    data plane can look up ISL RTTs and reconstruct hop sequences
-    without reaching back into ``SatelliteState``.
+    ``predecessor_matrix``) plus an optional adjacency view behind the
+    routing-plane interface so the data plane can look up ISL RTTs,
+    reconstruct hop sequences, and enumerate a bounded set of alternate
+    ISL paths without reaching back into ``SatelliteState``.
 
     The arrays are treated as immutable — the controller writes them
     once at refresh time and then hands them out via this table. For
@@ -149,6 +152,9 @@ class SatPathTable:
     predecessor_matrix: NDArray[np.int32]
     version: int
     built_at: float
+    isl_adjacency: Mapping[int, tuple[tuple[int, float], ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         dm = self.delay_matrix
@@ -169,6 +175,14 @@ class SatPathTable:
             dm.flags.writeable = False
         if pm.flags.writeable:
             pm.flags.writeable = False
+        if not isinstance(self.isl_adjacency, MappingProxyType):
+            frozen_adj = {
+                int(src): tuple((int(dst), float(delay)) for dst, delay in neighbors)
+                for src, neighbors in self.isl_adjacency.items()
+            }
+            object.__setattr__(
+                self, "isl_adjacency", MappingProxyType(frozen_adj)
+            )
 
     @property
     def num_sats(self) -> int:
@@ -185,6 +199,10 @@ class SatPathTable:
     def pred_row(self, ingress: int) -> NDArray[np.int32]:
         """Shortest-path predecessors rooted at ``ingress``."""
         return self.predecessor_matrix[ingress]
+
+    def neighbors(self, sat_id: int) -> tuple[tuple[int, float], ...]:
+        """Adjacent ISL neighbors as ``(sat_id, one_way_delay_ms)``."""
+        return self.isl_adjacency.get(sat_id, ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +262,67 @@ class PopEgressTable:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedPath:
+    """Controller-planned concrete egress path for one demand class.
+
+    ``isl_links`` uses the forward layer's canonical undirected ISL key
+    shape, ``(min_sat, max_sat)`` per hop. ``access_rtt`` is optional
+    because a controller may either pass the precomputed
+    ``2*downlink + 2*backhaul`` contribution directly, or let the
+    forward layer recover it from :class:`PopEgressTable`.
+    """
+
+    pop_code: str
+    gs_id: str
+    egress_sat: int
+    isl_links: tuple[tuple[int, int], ...]
+    access_rtt: float | None = None
+    expected_rtt: float | None = None
+
+    def __post_init__(self) -> None:
+        canonical = tuple(
+            (int(a), int(b)) if int(a) <= int(b) else (int(b), int(a))
+            for a, b in self.isl_links
+        )
+        object.__setattr__(self, "egress_sat", int(self.egress_sat))
+        object.__setattr__(self, "isl_links", canonical)
+        if self.access_rtt is not None:
+            object.__setattr__(self, "access_rtt", float(self.access_rtt))
+        if self.expected_rtt is not None:
+            object.__setattr__(self, "expected_rtt", float(self.expected_rtt))
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedPathTable:
+    """Optional path-level TE plan produced by a path-aware controller.
+
+    Keys are ``(ingress_sat, cell_id, dest)``. Values are ordered
+    concrete path candidates; the planned forward strategy tries them
+    in controller order and records usage/metrics without doing a
+    second capacity-feasibility search.
+    """
+
+    paths: Mapping[tuple[int, CellId, str], tuple[PlannedPath, ...]]
+    version: int
+    built_at: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.paths, MappingProxyType):
+            return
+        frozen: dict[tuple[int, CellId, str], tuple[PlannedPath, ...]] = {}
+        for (ingress, cell_id, dest), planned in self.paths.items():
+            key = (int(ingress), int(cell_id), str(dest))
+            frozen[key] = tuple(planned)
+        object.__setattr__(self, "paths", MappingProxyType(frozen))
+
+    def paths_for(
+        self, ingress_sat: int, cell_id: CellId, dest: str,
+    ) -> tuple[PlannedPath, ...]:
+        """Return planned paths for ``(ingress_sat, cell_id, dest)``."""
+        return self.paths.get((int(ingress_sat), int(cell_id), dest), ())
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingPlane:
     """The full per-epoch routing state visible to the data plane.
 
@@ -259,6 +338,7 @@ class RoutingPlane:
     pop_egress: PopEgressTable
     version: int
     built_at: float  # simulation time (s) of the most recent refresh
+    path_hints: PlannedPathTable | None = None
 
     def is_stale(self, now_s: float, cadence_s: float = ROUTING_PLANE_REFRESH_S) -> bool:
         """Return ``True`` if the plane needs a refresh at simulation time ``now_s``."""

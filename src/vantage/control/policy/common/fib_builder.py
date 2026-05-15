@@ -38,6 +38,8 @@ from vantage.control.plane import (
 )
 from vantage.control.policy.common.sat_cost import precompute_sat_cost
 from vantage.model import CellGrid, NetworkSnapshot, PoP
+from vantage.model.satellite.state import AccessLink
+from vantage.model.satellite.topology import build_adjacency
 
 __all__ = [
     "build_cell_to_pop_nearest",
@@ -45,6 +47,7 @@ __all__ = [
     "build_pop_egress_table",
     "build_routing_plane_nearest_pop",
     "build_sat_path_table",
+    "compute_cell_access",
     "compute_cell_ingress",
     "compute_cell_sat_cost",
     "compute_pop_capacity",
@@ -54,24 +57,32 @@ __all__ = [
 
 
 def compute_pop_capacity(snapshot: NetworkSnapshot) -> dict[str, float]:
-    """Per-PoP aggregate ingress capacity (Gbps) from the ground segment.
+    """Per-PoP aggregate egress capacity (Gbps) visible to control.
 
-    For each :class:`~vantage.model.PoP`, sums
-    :attr:`~vantage.model.GroundStation.max_capacity` across every
-    GS attached to the PoP via ``gs_pop_edges``. This is the
-    coarse-grained envelope the planner uses to rank PoPs against
-    aggregate demand — it is **not** a realize-time enforcement
-    knob. Fine-grained per-sat-feeder / per-GS-feeder limits remain
-    the data plane's responsibility (see
-    :class:`~vantage.forward.RoutingPlaneForward`).
+    Capacity is derived from the same gateway attachment set that the
+    data plane consumes. For a GS with ``k`` retained egress satellites,
+    effective capacity is ``k * per_sat_feeder_cap`` capped by the
+    configured GS aggregate maximum. Since ``gateway_attachments`` is
+    already truncated by the CLI ``--egress-top-k`` setting, this keeps
+    the control-plane PoP budget aligned with the forward candidate set
+    instead of assuming every GS always exposes all physical antennas.
     """
     infra = snapshot.infra
+    attach = snapshot.satellite.gateway_attachments.attachments
     caps: dict[str, float] = {}
     for pop in infra.pops:
         total = 0.0
         for gs_id, _ in infra.pop_gs_edges(pop.code):
             gs = infra.gs_by_id(gs_id)
-            if gs is not None:
+            if gs is None:
+                continue
+            gs_links = attach.get(gs_id)
+            if not gs_links:
+                continue
+            if gs.num_antennas > 0:
+                per_sat_cap = gs.max_capacity / gs.num_antennas
+                total += min(gs.max_capacity, len(gs_links) * per_sat_cap)
+            else:
                 total += gs.max_capacity
         caps[pop.code] = total
     return caps
@@ -98,11 +109,16 @@ def build_sat_path_table(
     place that decides when/how the matrices get rebuilt.
     """
     sat = snapshot.satellite
+    adjacency = build_adjacency(sat.graph)
     return SatPathTable(
         delay_matrix=sat.delay_matrix,
         predecessor_matrix=sat.predecessor_matrix,
         version=version,
         built_at=snapshot.time_s,
+        isl_adjacency=MappingProxyType({
+            sat_id: tuple(neighbors)
+            for sat_id, neighbors in adjacency.items()
+        }),
     )
 
 
@@ -406,6 +422,92 @@ def compute_cell_ingress(
     for i in range(len(items)):
         if valid[i]:
             out[int(cell_ids[i])] = int(best[i])
+    return out
+
+
+def compute_cell_access(
+    snapshot: NetworkSnapshot,
+    cell_grid: CellGrid,
+) -> dict[int, tuple[AccessLink, ...]]:
+    """Visible satellites from each active cell center, sorted by elevation.
+
+    This is the full-access companion to :func:`compute_cell_ingress`.
+    It is used by path-aware baselines that need to know whether a
+    source cell and a candidate GS can share the same satellite for
+    bent-pipe forwarding. The calculation is vectorized across active
+    cells and satellites; output materialization is proportional to the
+    number of visible cell-satellite pairs.
+    """
+    from vantage.common import DEFAULT_MIN_ELEVATION_DEG
+    from vantage.common.constants import C_VACUUM_KM_S, EARTH_RADIUS_KM
+
+    sat_positions = snapshot.satellite.positions
+    if sat_positions.ndim != 2 or sat_positions.shape[1] != 3:
+        raise ValueError(
+            f"sat_positions must have shape (n_sats, 3); got {sat_positions.shape}"
+        )
+
+    active_cell_ids = set(cell_grid.endpoint_to_cell.values())
+    items: list[tuple[int, float, float]] = []
+    for cid in active_cell_ids:
+        cell = cell_grid.cells.get(cid)
+        if cell is not None:
+            items.append((cid, cell.lat_deg, cell.lon_deg))
+    if not items:
+        return {}
+
+    cell_ids = np.fromiter((it[0] for it in items), dtype=np.int64, count=len(items))
+    lat = np.fromiter((it[1] for it in items), dtype=np.float64, count=len(items))
+    lon = np.fromiter((it[2] for it in items), dtype=np.float64, count=len(items))
+
+    g_lat = np.deg2rad(lat)
+    g_lon = np.deg2rad(lon)
+    cos_g_lat = np.cos(g_lat)
+    gx = EARTH_RADIUS_KM * cos_g_lat * np.cos(g_lon)
+    gy = EARTH_RADIUS_KM * cos_g_lat * np.sin(g_lon)
+    gz = EARTH_RADIUS_KM * np.sin(g_lat)
+
+    s_lat = np.deg2rad(sat_positions[:, 0])
+    s_lon = np.deg2rad(sat_positions[:, 1])
+    s_r = EARTH_RADIUS_KM + sat_positions[:, 2]
+    cos_s_lat = np.cos(s_lat)
+    sx = s_r * cos_s_lat * np.cos(s_lon)
+    sy = s_r * cos_s_lat * np.sin(s_lon)
+    sz = s_r * np.sin(s_lat)
+
+    dx = sx[None, :] - gx[:, None]
+    dy = sy[None, :] - gy[:, None]
+    dz = sz[None, :] - gz[:, None]
+    dist = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+    ux = cos_g_lat * np.cos(g_lon)
+    uy = cos_g_lat * np.sin(g_lon)
+    uz = np.sin(g_lat)
+    sin_elev = np.clip(
+        (dx * ux[:, None] + dy * uy[:, None] + dz * uz[:, None])
+        / np.maximum(dist, 1e-10),
+        -1.0,
+        1.0,
+    )
+    elev_deg = np.degrees(np.arcsin(sin_elev))
+
+    out: dict[int, tuple[AccessLink, ...]] = {}
+    for row, cell_id_raw in enumerate(cell_ids):
+        visible_idx = np.flatnonzero(elev_deg[row] >= DEFAULT_MIN_ELEVATION_DEG)
+        if visible_idx.size == 0:
+            continue
+        order = np.argsort(-elev_deg[row, visible_idx], kind="stable")
+        ordered = visible_idx[order]
+        links = tuple(
+            AccessLink(
+                sat_id=int(sat_id),
+                elevation_deg=float(elev_deg[row, sat_id]),
+                slant_range_km=float(dist[row, sat_id]),
+                delay=float(dist[row, sat_id] / C_VACUUM_KM_S * 1000.0),
+            )
+            for sat_id in ordered
+        )
+        out[int(cell_id_raw)] = links
     return out
 
 

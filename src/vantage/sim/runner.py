@@ -6,8 +6,10 @@ import gc
 import time
 import webbrowser
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from vantage.control.evaluation import ControlPlanEvaluation, evaluate_control_plans
 from vantage.control.feedback import GroundDelayFeedback
@@ -16,8 +18,13 @@ from vantage.control.policy.greedy import GreedyController
 from vantage.control.policy.lpround import LPRoundingController
 from vantage.control.policy.milp import MILPController
 from vantage.control.policy.nearest_pop import NearestPoPController
+from vantage.control.policy.optimizer import (
+    PathAwareNearestBaselineController,
+    PathAwareOptimizerController,
+)
+from vantage.control.policy.progressive import ProgressiveSpilloverController
 from vantage.control.plane import RoutingPlane
-from vantage.forward import RoutingPlaneForward, realize
+from vantage.forward import PlannedRoutingPlaneForward, RoutingPlaneForward, realize
 from vantage.forward.execution.context import RunContext
 from vantage.forward.resources.accounting import CapacityView, UsageBook
 from vantage.sim.build import SimulationRuntime, build_runtime
@@ -25,7 +32,6 @@ from vantage.sim.config import (
     CELL_CACHE,
     DASHBOARD_DIR,
     EPOCH_S,
-    N_ANTENNAS_PER_GS,
     REFRESH,
     SAT_FEEDER_CAP_GBPS,
     SimConfig,
@@ -44,9 +50,136 @@ from vantage.sim.metrics import (
 __all__ = ["collect_refresh_gc", "run_simulation"]
 
 
+_CONTROL_PREFIX = {
+    "baseline": "bl",
+    "optimizer_baseline": "optbl",
+    "progressive": "progressive",
+    "optimizer": "opt",
+    "greedy": "greedy",
+    "lpround": "lp",
+    "milp": "mip",
+}
+_CONTROL_MEAN_HEADER = {
+    "baseline": "BL",
+    "optimizer_baseline": "OptBL",
+    "progressive": "Prog",
+    "optimizer": "Opt",
+    "greedy": "Greedy",
+    "lpround": "LP",
+    "milp": "MIP",
+}
+_CONTROL_P95_HEADER = {
+    "baseline": "BL95",
+    "optimizer_baseline": "OBL95",
+    "progressive": "Pr95",
+    "optimizer": "Opt95",
+    "greedy": "Gre95",
+    "lpround": "LP95",
+    "milp": "MIP95",
+}
+
+
+@dataclass(slots=True)
+class _ControlSeries:
+    name: str
+    prefix: str
+    mean_header: str
+    p95_header: str
+    controller: Any
+    ground_knowledge: GroundKnowledge
+    context: RunContext
+    feedback: GroundDelayFeedback
+    plane: RoutingPlane | None = None
+    forward: Any | None = None
+    data: list = field(default_factory=list)
+    last_result: Any | None = None
+    last_book: UsageBook | None = None
+    plan_ms: float | None = None
+    plan_timing: dict[str, float] = field(default_factory=dict)
+    solve_meta: dict[str, Any] = field(default_factory=dict)
+
+
 def collect_refresh_gc() -> None:
     """Run a full cyclic-GC pass at routing-plane refresh boundaries."""
     gc.collect(2)
+
+
+def _make_control_series(
+    name: str,
+    runtime: SimulationRuntime,
+) -> _ControlSeries:
+    gk = GroundKnowledge(estimator=runtime.geo_delay)
+    context = RunContext(
+        world=runtime.world,
+        endpoints=runtime.endpoints,
+        ground_knowledge=gk,
+        ground_truth=runtime.ground_truth,
+    )
+    feedback = GroundDelayFeedback(gk)
+    dest_names = tuple(runtime.svc_names)
+
+    if name == "baseline":
+        controller = NearestPoPController()
+    elif name == "optimizer_baseline":
+        controller = PathAwareNearestBaselineController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    elif name == "progressive":
+        controller = ProgressiveSpilloverController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    elif name == "greedy":
+        controller = GreedyController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    elif name == "optimizer":
+        controller = PathAwareOptimizerController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    elif name == "lpround":
+        controller = LPRoundingController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    elif name == "milp":
+        controller = MILPController(
+            ground_knowledge=gk,
+            dest_names=dest_names,
+        )
+    else:
+        raise ValueError(f"unknown control algorithm {name!r}")
+
+    return _ControlSeries(
+        name=name,
+        prefix=_CONTROL_PREFIX[name],
+        mean_header=_CONTROL_MEAN_HEADER[name],
+        p95_header=_CONTROL_P95_HEADER[name],
+        controller=controller,
+        ground_knowledge=gk,
+        context=context,
+        feedback=feedback,
+    )
+
+
+def _reference_ground_knowledge(states: list[_ControlSeries]) -> GroundKnowledge:
+    for state in states:
+        if state.name == "greedy":
+            return state.ground_knowledge
+    return states[0].ground_knowledge
+
+
+def _find_series(
+    states: list[_ControlSeries],
+    name: str,
+) -> _ControlSeries | None:
+    for state in states:
+        if state.name == name:
+            return state
+    return None
 
 
 def run_simulation(config: SimConfig) -> Path:
@@ -85,6 +218,12 @@ def run_simulation(config: SimConfig) -> Path:
     runtime = build_runtime(config)
     if runtime.prune_summary is not None:
         print(runtime.prune_summary)
+    display_pop_capacity = compute_theoretical_pop_capacity(
+        runtime.pop_gs_list,
+        runtime.pop_list,
+        antennas_per_gs=config.egress_top_k,
+        sat_feeder_cap_gbps=SAT_FEEDER_CAP_GBPS,
+    )
 
     writer = DashboardWriter(
         dashboard_dir=DASHBOARD_DIR,
@@ -96,9 +235,12 @@ def run_simulation(config: SimConfig) -> Path:
         refresh_s=REFRESH,
         user_scale=config.user_scale,
         max_gs_per_pop=config.max_gs_per_pop,
+        egress_top_k=config.egress_top_k,
+        enforce_isl_capacity=config.enforce_isl_capacity,
+        series=config.control_algorithms,
         svc_names=runtime.svc_names,
         pop_list=runtime.pop_list,
-        antennas_per_gs=N_ANTENNAS_PER_GS,
+        total_capacity_gbps=sum(display_pop_capacity.values()),
         sat_feeder_cap_gbps=SAT_FEEDER_CAP_GBPS,
         run_seed=seeds.run_seed,
         seed_source=seeds.seed_source,
@@ -117,92 +259,41 @@ def run_simulation(config: SimConfig) -> Path:
         f"Epochs: {config.num_epochs} x {EPOCH_S}s = "
         f"{config.num_epochs * EPOCH_S / 60:.1f} min"
     )
+    print(f"Controls: {', '.join(config.control_algorithms)}")
+    print(f"Egress top-k per GS: {config.egress_top_k}")
+    print(
+        "ISL capacity: "
+        f"{'enabled' if config.enforce_isl_capacity else 'disabled'}"
+    )
     print(f"Output: {out_file}\n")
 
     if should_open_browser:
         with suppress(Exception):
             webbrowser.open(url)
 
-    return _run_epoch_loop(config, runtime, writer)
+    return _run_epoch_loop(config, runtime, writer, display_pop_capacity)
 
 
 def _run_epoch_loop(
     config: SimConfig,
     runtime: SimulationRuntime,
     writer: DashboardWriter,
+    pop_capacity: dict[str, float],
 ) -> Path:
     world = runtime.world
     cell_grid = runtime.cell_grid
-
-    gk_bl = GroundKnowledge(estimator=runtime.geo_delay)
-    ctx_bl = RunContext(
-        world=world,
-        endpoints=runtime.endpoints,
-        ground_knowledge=gk_bl,
-        ground_truth=runtime.ground_truth,
-    )
-    gk_greedy = GroundKnowledge(estimator=runtime.geo_delay)
-    ctx_greedy = RunContext(
-        world=world,
-        endpoints=runtime.endpoints,
-        ground_knowledge=gk_greedy,
-        ground_truth=runtime.ground_truth,
-    )
-    gk_lp = GroundKnowledge(estimator=runtime.geo_delay)
-    ctx_lp = RunContext(
-        world=world,
-        endpoints=runtime.endpoints,
-        ground_knowledge=gk_lp,
-        ground_truth=runtime.ground_truth,
-    )
-    gk_mip = GroundKnowledge(estimator=runtime.geo_delay)
-    ctx_mip = RunContext(
-        world=world,
-        endpoints=runtime.endpoints,
-        ground_knowledge=gk_mip,
-        ground_truth=runtime.ground_truth,
-    )
-    feedback_bl = GroundDelayFeedback(gk_bl)
-    feedback_greedy = GroundDelayFeedback(gk_greedy)
-    feedback_lp = GroundDelayFeedback(gk_lp)
-    feedback_mip = GroundDelayFeedback(gk_mip)
-
-    bl_controller = NearestPoPController()
-    greedy_controller = GreedyController(
-        ground_knowledge=gk_greedy,
-        dest_names=tuple(runtime.svc_names),
-    )
-    lp_controller = LPRoundingController(
-        ground_knowledge=gk_lp,
-        dest_names=tuple(runtime.svc_names),
-    )
-    mip_controller = MILPController(
-        ground_knowledge=gk_mip,
-        dest_names=tuple(runtime.svc_names),
-    )
-
-    bl_plane: RoutingPlane | None = None
-    greedy_plane: RoutingPlane | None = None
-    lp_plane: RoutingPlane | None = None
-    mip_plane: RoutingPlane | None = None
-    bl_forward: RoutingPlaneForward | None = None
-    greedy_forward: RoutingPlaneForward | None = None
-    lp_forward: RoutingPlaneForward | None = None
-    mip_forward: RoutingPlaneForward | None = None
-
-    bl_data: list = []
-    greedy_data: list = []
-    lp_data: list = []
-    mip_data: list = []
+    states = [
+        _make_control_series(name, runtime)
+        for name in config.control_algorithms
+    ]
     compare_data: list = []
-
+    mean_header = " ".join(f"{state.mean_header:>6}" for state in states)
+    p95_header = " ".join(f"{state.p95_header:>6}" for state in states)
     print(
         f"{'ep':>4} {'time':>8} {'flows':>6} {'dem':>6}  "
-        f"{'BL':>6} {'Greedy':>6} {'LP':>6} {'MIP':>6}  "
-        f"{'BL95':>6} {'Gre95':>6} {'LP95':>6} {'MIP95':>6}  "
-        f"{'wall':>5}"
+        f"{mean_header}  {p95_header}  {'wall':>5}"
     )
-    print("-" * 110)
+    print("-" * max(58, 38 + len(states) * 14))
 
     gc_was_enabled = gc.isenabled()
     if gc_was_enabled:
@@ -216,11 +307,12 @@ def _run_epoch_loop(
             t_ep_start = time.perf_counter()
 
             snap = world.snapshot_at(epoch, t)
-            gk_bl.set_clock(t)
-            gk_greedy.set_clock(t)
-            gk_lp.set_clock(t)
-            gk_mip.set_clock(t)
-            refresh_epoch = bl_plane is None or epoch % REFRESH == 0
+            for state in states:
+                state.ground_knowledge.set_clock(t)
+            refresh_epoch = (
+                any(state.plane is None for state in states)
+                or epoch % REFRESH == 0
+            )
 
             demand = runtime.traffic.generate(epoch)
             current_demand = {
@@ -228,265 +320,192 @@ def _run_epoch_loop(
                 for flow_key, flow_demand in demand.flows.items()
             }
 
-            bl_plan_ms: float | None = None
-            bl_plan_timing: dict = {}
-            if refresh_epoch:
-                t_bl_plan = time.perf_counter()
-                bl_plane = bl_controller.compute_routing_plane(
-                    snap,
-                    cell_grid,
-                    demand_per_pair=current_demand,
-                    version=epoch,
-                )
-                bl_plan_ms = (time.perf_counter() - t_bl_plan) * 1000
-                bl_plan_timing = dict(bl_controller.last_timing)
-
-            greedy_plan_ms: float | None = None
-            greedy_plan_timing: dict = {}
-            if refresh_epoch:
-                t_greedy_plan = time.perf_counter()
-                greedy_plane = greedy_controller.compute_routing_plane(
+            for state in states:
+                state.plan_ms = None
+                state.plan_timing = {}
+                state.solve_meta = {}
+                if not refresh_epoch:
+                    continue
+                t_plan = time.perf_counter()
+                state.plane = state.controller.compute_routing_plane(
                     snapshot=snap,
                     cell_grid=cell_grid,
                     demand_per_pair=current_demand,
                     version=epoch,
                 )
-                greedy_plan_ms = (time.perf_counter() - t_greedy_plan) * 1000
-                greedy_plan_timing = dict(greedy_controller.last_timing)
-
-            lp_plan_ms: float | None = None
-            lp_plan_timing: dict = {}
-            if refresh_epoch:
-                t_lp_plan = time.perf_counter()
-                lp_plane = lp_controller.compute_routing_plane(
-                    snapshot=snap,
-                    cell_grid=cell_grid,
-                    demand_per_pair=current_demand,
-                    version=epoch,
-                )
-                lp_plan_ms = (time.perf_counter() - t_lp_plan) * 1000
-                lp_plan_timing = dict(lp_controller.last_timing)
-
-            mip_plan_ms: float | None = None
-            mip_plan_timing: dict = {}
-            mip_solve_meta: dict = {}
-            if refresh_epoch:
-                t_mip_plan = time.perf_counter()
-                mip_plane = mip_controller.compute_routing_plane(
-                    snapshot=snap,
-                    cell_grid=cell_grid,
-                    demand_per_pair=current_demand,
-                    version=epoch,
-                )
-                mip_plan_ms = (time.perf_counter() - t_mip_plan) * 1000
-                mip_plan_timing = dict(mip_controller.last_timing)
-                mip_solve_meta = dict(mip_controller.last_solve_meta)
+                state.plan_ms = (time.perf_counter() - t_plan) * 1000
+                state.plan_timing = dict(state.controller.last_timing)
+                if state.name == "milp":
+                    state.solve_meta = dict(state.controller.last_solve_meta)
 
             plan_eval = ControlPlanEvaluation.empty()
             if refresh_epoch:
+                lp_state = _find_series(states, "lpround")
+                lp_lower_bound = (
+                    None if lp_state is None
+                    else lp_state.controller.last_lp_opt
+                )
                 plan_eval = evaluate_control_plans(
                     snapshot=snap,
                     cell_grid=cell_grid,
                     demand_per_pair=current_demand,
                     routing_planes={
-                        "bl": bl_plane,
-                        "greedy": greedy_plane,
-                        "lp": lp_plane,
-                        "mip": mip_plane,
+                        state.prefix: state.plane
+                        for state in states
+                        if state.plane is not None
                     },
-                    reference_ground_knowledge=gk_greedy,
+                    reference_ground_knowledge=_reference_ground_knowledge(states),
                     dest_names=runtime.svc_names,
                     current_epoch=epoch,
-                    lp_lower_bound=lp_controller.last_lp_opt,
+                    lp_lower_bound=lp_lower_bound,
                 )
 
             if refresh_epoch and gc_was_enabled:
                 collect_refresh_gc()
 
-            view_bl = CapacityView.from_snapshot(
-                sat_state=snap.satellite,
-                shell=world.shell,
-                ground_stations=runtime.gs_by_id,
-            )
-            book_bl = UsageBook(view=view_bl)
-            bl_forward = RoutingPlaneForward.for_epoch(
-                bl_forward,
-                bl_plane,
-                cell_grid,
-                book_bl,
-            )
-            result_bl = realize(
-                bl_forward,
-                snap,
-                demand,
-                ctx_bl,
-                ingress_seed_base=config.seeds.ingress_seed_base,
-            )
-            feedback_bl.observe(result_bl)
+            results: dict[str, Any] = {}
+            latest_breakdown: dict[str, dict] = {}
+            forward_timings: dict[str, dict] = {}
+            for state in states:
+                if state.plane is None:
+                    raise RuntimeError(f"{state.name} control plane was not built")
+                view = CapacityView.from_snapshot(
+                    sat_state=snap.satellite,
+                    shell=world.shell,
+                    ground_stations=runtime.gs_by_id,
+                )
+                book = UsageBook(view=view)
+                if state.plane.path_hints is not None:
+                    planned_previous = (
+                        state.forward
+                        if isinstance(state.forward, PlannedRoutingPlaneForward)
+                        else None
+                    )
+                    state.forward = PlannedRoutingPlaneForward.for_epoch(
+                        planned_previous,
+                        state.plane,
+                        cell_grid,
+                        book,
+                    )
+                else:
+                    routing_previous = (
+                        state.forward
+                        if isinstance(state.forward, RoutingPlaneForward)
+                        else None
+                    )
+                    state.forward = RoutingPlaneForward.for_epoch(
+                        routing_previous,
+                        state.plane,
+                        cell_grid,
+                        book,
+                        enforce_isl_capacity=config.enforce_isl_capacity,
+                    )
+                result = realize(
+                    state.forward,
+                    snap,
+                    demand,
+                    state.context,
+                    ingress_seed_base=config.seeds.ingress_seed_base,
+                )
+                state.feedback.observe(result)
+                state.last_result = result
+                state.last_book = book
+                state.data.append(
+                    _collect_epoch(epoch, result, book, pop_capacity, runtime)
+                )
+                results[state.name] = result
+                latest_breakdown[state.name] = compute_breakdown(result)
+                forward_timings[state.name] = dict(result.forward_timing_ms)
 
-            view_greedy = CapacityView.from_snapshot(
-                sat_state=snap.satellite,
-                shell=world.shell,
-                ground_stations=runtime.gs_by_id,
-            )
-            book_greedy = UsageBook(view=view_greedy)
-            greedy_forward = RoutingPlaneForward.for_epoch(
-                greedy_forward,
-                greedy_plane,
-                cell_grid,
-                book_greedy,
-            )
-            result_greedy = realize(
-                greedy_forward,
-                snap,
-                demand,
-                ctx_greedy,
-                ingress_seed_base=config.seeds.ingress_seed_base,
-            )
-            feedback_greedy.observe(result_greedy)
+            if "baseline" in results and "greedy" in results:
+                pop_cmp = compute_pop_compare(results["baseline"], results["greedy"])
+            else:
+                pop_cmp = {}
 
-            view_lp = CapacityView.from_snapshot(
-                sat_state=snap.satellite,
-                shell=world.shell,
-                ground_stations=runtime.gs_by_id,
-            )
-            book_lp = UsageBook(view=view_lp)
-            lp_forward = RoutingPlaneForward.for_epoch(
-                lp_forward,
-                lp_plane,
-                cell_grid,
-                book_lp,
-            )
-            result_lp = realize(
-                lp_forward,
-                snap,
-                demand,
-                ctx_lp,
-                ingress_seed_base=config.seeds.ingress_seed_base,
-            )
-            feedback_lp.observe(result_lp)
-
-            view_mip = CapacityView.from_snapshot(
-                sat_state=snap.satellite,
-                shell=world.shell,
-                ground_stations=runtime.gs_by_id,
-            )
-            book_mip = UsageBook(view=view_mip)
-            mip_forward = RoutingPlaneForward.for_epoch(
-                mip_forward,
-                mip_plane,
-                cell_grid,
-                book_mip,
-            )
-            result_mip = realize(
-                mip_forward,
-                snap,
-                demand,
-                ctx_mip,
-                ingress_seed_base=config.seeds.ingress_seed_base,
-            )
-            feedback_mip.observe(result_mip)
-
-            pop_capacity = compute_theoretical_pop_capacity(
-                runtime.pop_gs_list,
-                runtime.pop_list,
-                antennas_per_gs=N_ANTENNAS_PER_GS,
-                sat_feeder_cap_gbps=SAT_FEEDER_CAP_GBPS,
-            )
-            bl_data.append(_collect_epoch(epoch, result_bl, book_bl, pop_capacity, runtime))
-            greedy_data.append(_collect_epoch(epoch, result_greedy, book_greedy, pop_capacity, runtime))
-            lp_data.append(_collect_epoch(epoch, result_lp, book_lp, pop_capacity, runtime))
-            mip_data.append(_collect_epoch(epoch, result_mip, book_mip, pop_capacity, runtime))
-
-            latest_breakdown = {
-                "baseline": compute_breakdown(result_bl),
-                "greedy": compute_breakdown(result_greedy),
-                "lpround": compute_breakdown(result_lp),
-                "milp": compute_breakdown(result_mip),
-            }
-            pop_cmp = compute_pop_compare(result_bl, result_greedy)
-            ep_cmp = compute_epoch_compare(result_bl, result_greedy, result_lp, result_mip)
+            ep_cmp = compute_epoch_compare(results=results)
             ep_cmp["epoch"] = epoch
-            ep_cmp["time_str"] = bl_data[-1]["time_str"]
-            ep_cmp["bl_plan_ms"] = round(bl_plan_ms, 2) if bl_plan_ms is not None else None
-            ep_cmp["greedy_plan_ms"] = round(greedy_plan_ms, 2) if greedy_plan_ms is not None else None
-            ep_cmp["lp_plan_ms"] = round(lp_plan_ms, 2) if lp_plan_ms is not None else None
-            ep_cmp["mip_plan_ms"] = round(mip_plan_ms, 2) if mip_plan_ms is not None else None
+            ep_cmp["time_str"] = states[0].data[-1]["time_str"]
 
-            bl_fwd = dict(result_bl.forward_timing_ms)
-            greedy_fwd = dict(result_greedy.forward_timing_ms)
-            lp_fwd = dict(result_lp.forward_timing_ms)
-            mip_fwd = dict(result_mip.forward_timing_ms)
-            bl_forward_ms = bl_fwd.get("total_ms", 0.0)
-            greedy_forward_ms = greedy_fwd.get("total_ms", 0.0)
-            lp_forward_ms = lp_fwd.get("total_ms", 0.0)
-            mip_forward_ms = mip_fwd.get("total_ms", 0.0)
-            ep_cmp["bl_forward_ms"] = round(bl_forward_ms, 2)
-            ep_cmp["greedy_forward_ms"] = round(greedy_forward_ms, 2)
-            ep_cmp["lp_forward_ms"] = round(lp_forward_ms, 2)
-            ep_cmp["mip_forward_ms"] = round(mip_forward_ms, 2)
-            ep_cmp["bl_total_ms"] = round((bl_plan_ms or 0.0) + bl_forward_ms, 2)
-            ep_cmp["greedy_total_ms"] = round((greedy_plan_ms or 0.0) + greedy_forward_ms, 2)
-            ep_cmp["lp_total_ms"] = round((lp_plan_ms or 0.0) + lp_forward_ms, 2)
-            ep_cmp["mip_total_ms"] = round((mip_plan_ms or 0.0) + mip_forward_ms, 2)
-            ep_cmp["forward_total_ms"] = round(
-                bl_forward_ms + greedy_forward_ms + lp_forward_ms + mip_forward_ms,
-                2,
+            forward_total_ms = 0.0
+            timing: dict[str, dict] = {}
+            for state in states:
+                fwd = forward_timings[state.name]
+                forward_ms = fwd.get("total_ms", 0.0)
+                forward_total_ms += forward_ms
+                ep_cmp[f"{state.prefix}_plan_ms"] = (
+                    round(state.plan_ms, 2)
+                    if state.plan_ms is not None
+                    else None
+                )
+                ep_cmp[f"{state.prefix}_forward_ms"] = round(forward_ms, 2)
+                ep_cmp[f"{state.prefix}_total_ms"] = round(
+                    (state.plan_ms or 0.0) + forward_ms,
+                    2,
+                )
+                timing[f"{state.prefix}_plan_steps"] = round_ms(
+                    state.plan_timing
+                )
+                timing[f"{state.prefix}_forward_steps"] = round_ms(fwd)
+
+            ep_cmp["forward_total_ms"] = round(forward_total_ms, 2)
+            lp_state = _find_series(states, "lpround")
+            if lp_state is not None:
+                lp_opt = lp_state.controller.last_lp_opt
+                ep_cmp["lp_opt"] = (
+                    round(lp_opt, 2)
+                    if lp_opt is not None and refresh_epoch
+                    else None
+                )
+            mip_state = _find_series(states, "milp")
+            if mip_state is not None:
+                mip_opt = mip_state.controller.last_milp_opt
+                ep_cmp["mip_opt"] = (
+                    round(mip_opt, 2)
+                    if mip_opt is not None and refresh_epoch
+                    else None
+                )
+                ep_cmp["mip_solve_status"] = (
+                    mip_state.solve_meta.get("status") if refresh_epoch else None
+                )
+
+            ep_cmp.update(
+                plan_eval.dashboard_fields(
+                    labels=tuple(state.prefix for state in states)
+                )
             )
-            ep_cmp["lp_opt"] = (
-                round(lp_controller.last_lp_opt, 2)
-                if lp_controller.last_lp_opt is not None and refresh_epoch
-                else None
-            )
-            ep_cmp["mip_opt"] = (
-                round(mip_controller.last_milp_opt, 2)
-                if mip_controller.last_milp_opt is not None and refresh_epoch
-                else None
-            )
-            ep_cmp.update(plan_eval.dashboard_fields())
-            ep_cmp["mip_solve_status"] = (
-                mip_solve_meta.get("status") if refresh_epoch else None
+            common_forward_keys = set.intersection(
+                *(set(timing_by_name) for timing_by_name in forward_timings.values())
             )
             forward_steps = {
-                key: bl_fwd[key] + greedy_fwd[key] + lp_fwd[key] + mip_fwd[key]
-                for key in bl_fwd.keys() & greedy_fwd.keys() & lp_fwd.keys() & mip_fwd.keys()
+                key: sum(fwd[key] for fwd in forward_timings.values())
+                for key in common_forward_keys
             }
-            ep_cmp["timing"] = {
-                "bl_plan_steps": round_ms(bl_plan_timing),
-                "greedy_plan_steps": round_ms(greedy_plan_timing),
-                "lp_plan_steps": round_ms(lp_plan_timing),
-                "mip_plan_steps": round_ms(mip_plan_timing),
-                "bl_forward_steps": round_ms(bl_fwd),
-                "greedy_forward_steps": round_ms(greedy_fwd),
-                "lp_forward_steps": round_ms(lp_fwd),
-                "mip_forward_steps": round_ms(mip_fwd),
-                "forward_steps": round_ms(forward_steps),
-            }
+            timing["forward_steps"] = round_ms(forward_steps)
+            ep_cmp["timing"] = timing
             compare_data.append(ep_cmp)
             writer.save_data(
-                baseline=bl_data,
-                greedy=greedy_data,
-                lpround=lp_data,
-                milp=mip_data,
+                series_data={state.name: state.data for state in states},
                 latest_breakdown=latest_breakdown,
                 latest_pop_compare=pop_cmp,
                 epoch_compare=compare_data,
-                cache_state=extract_cache_state(gk_greedy),
+                cache_state=extract_cache_state(_reference_ground_knowledge(states)),
             )
 
             t_ep = time.perf_counter() - t_ep_start
             if epoch % 10 == 0 or epoch == config.num_epochs - 1:
-                b = bl_data[-1]
-                p = greedy_data[-1]
-                lp = lp_data[-1]
-                mp = mip_data[-1]
+                first = states[0].data[-1]
+                means = " ".join(
+                    f"{state.data[-1]['mean_rtt']:>6.1f}"
+                    for state in states
+                )
+                p95s = " ".join(
+                    f"{state.data[-1]['p95_rtt']:>6.1f}"
+                    for state in states
+                )
                 print(
-                    f"{epoch:>4} {b['time_str']:>8} {b['n_flows']:>6} "
-                    f"{b['demand_gbps']:>5.0f}G  "
-                    f"{b['mean_rtt']:>5.1f} {p['mean_rtt']:>5.1f} "
-                    f"{lp['mean_rtt']:>5.1f} {mp['mean_rtt']:>5.1f}  "
-                    f"{b['p95_rtt']:>5.1f} {p['p95_rtt']:>5.1f} "
-                    f"{lp['p95_rtt']:>5.1f} {mp['p95_rtt']:>5.1f}  "
+                    f"{epoch:>4} {first['time_str']:>8} "
+                    f"{first['n_flows']:>6} {first['demand_gbps']:>5.0f}G  "
+                    f"{means}  {p95s}  "
                     f"{t_ep:>4.1f}s"
                 )
     except KeyboardInterrupt:

@@ -72,6 +72,7 @@ def build_runtime(config: SimConfig) -> SimulationRuntime:
         shell_id=1,
         ground_stations=ground.ground_stations,
         visibility=SphericalAccessModel(),
+        gateway_top_k=config.egress_top_k,
     )
     world = WorldModel(satellite, ground)
 

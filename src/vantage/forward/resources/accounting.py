@@ -40,6 +40,8 @@ __all__ = [
     "UsageBook",
 ]
 
+_CAP_EPS = 1e-9
+
 
 # --- CapacityView ------------------------------------------------------------
 
@@ -145,6 +147,8 @@ class UsageBook:
     isl_used: dict[tuple[int, int], float] = field(default_factory=dict)
     sat_feeder_used: dict[int, float] = field(default_factory=dict)
     gs_feeder_used: dict[str, float] = field(default_factory=dict)
+    saturated_isl: set[tuple[int, int]] = field(default_factory=set)
+    saturated_sat_feeders: set[int] = field(default_factory=set)
 
     @staticmethod
     def isl_key(sat_a: int, sat_b: int) -> tuple[int, int]:
@@ -163,17 +167,59 @@ class UsageBook:
 
     def charge_isl(self, sat_a: int, sat_b: int, gbps: float) -> None:
         self._check_non_negative(gbps)
-        key = self.isl_key(sat_a, sat_b)
-        self.isl_used[key] = self.isl_used.get(key, 0.0) + gbps
+        self.charge_isl_key(self.isl_key(sat_a, sat_b), gbps)
+
+    def charge_isl_key(self, key: tuple[int, int], gbps: float) -> None:
+        """Charge an already-canonical ISL key.
+
+        Forwarding stores path hops in canonical ``(min, max)`` form on
+        the hot path. This avoids re-canonicalising each hop every time
+        a candidate path is capacity-checked or charged.
+        """
+        self._check_non_negative(gbps)
+        new_used = self.isl_used.get(key, 0.0) + gbps
+        self.isl_used[key] = new_used
+        if new_used >= self.view.isl_cap_index[key] - _CAP_EPS:
+            self.saturated_isl.add(key)
+
+    def can_charge_isl_path(
+        self, links: tuple[tuple[int, int], ...], gbps: float,
+    ) -> bool:
+        """Return ``True`` only if every ISL hop has enough headroom."""
+        self._check_non_negative(gbps)
+        keys = tuple(self.isl_key(a, b) for a, b in links)
+        return self.can_charge_isl_path_keys(keys, gbps)
+
+    def can_charge_isl_path_keys(
+        self, keys: tuple[tuple[int, int], ...], gbps: float,
+    ) -> bool:
+        """Return ``True`` if every canonical ISL key has headroom."""
+        self._check_non_negative(gbps)
+        if gbps <= 0.0:
+            return True
+        used = self.isl_used
+        caps = self.view.isl_cap_index
+        saturated = self.saturated_isl
+        for key in keys:
+            if key in saturated:
+                return False
+            if caps[key] - used.get(key, 0.0) < gbps:
+                return False
+        return True
 
     def can_charge_sat_feeder(self, sat_id: int, gbps: float) -> bool:
         self._check_non_negative(gbps)
+        if gbps > 0.0 and sat_id in self.saturated_sat_feeders:
+            return False
         used = self.sat_feeder_used.get(sat_id, 0.0)
         return used + gbps <= self.view.sat_feeder_cap(sat_id)
 
     def charge_sat_feeder(self, sat_id: int, gbps: float) -> None:
         self._check_non_negative(gbps)
-        self.sat_feeder_used[sat_id] = self.sat_feeder_used.get(sat_id, 0.0) + gbps
+        new_used = self.sat_feeder_used.get(sat_id, 0.0) + gbps
+        self.sat_feeder_used[sat_id] = new_used
+        if new_used >= self.view.sat_feeder_cap(sat_id) - _CAP_EPS:
+            self.saturated_sat_feeders.add(sat_id)
 
     def charge_gs_feeder(self, gs_id: str, gbps: float) -> None:
         self._check_non_negative(gbps)
@@ -183,10 +229,14 @@ class UsageBook:
         self._check_non_negative(gbps)
         key = self.isl_key(sat_a, sat_b)
         self.isl_used[key] = max(0.0, self.isl_used.get(key, 0.0) - gbps)
+        if self.isl_used[key] < self.view.isl_cap_index[key] - _CAP_EPS:
+            self.saturated_isl.discard(key)
 
     def release_sat_feeder(self, sat_id: int, gbps: float) -> None:
         self._check_non_negative(gbps)
         self.sat_feeder_used[sat_id] = max(0.0, self.sat_feeder_used.get(sat_id, 0.0) - gbps)
+        if self.sat_feeder_used[sat_id] < self.view.sat_feeder_cap(sat_id) - _CAP_EPS:
+            self.saturated_sat_feeders.discard(sat_id)
 
     def release_gs_feeder(self, gs_id: str, gbps: float) -> None:
         self._check_non_negative(gbps)
@@ -210,10 +260,10 @@ class UsageBook:
         return used / cap if cap > 0 else float("inf")
 
     def is_isl_saturated(self, sat_a: int, sat_b: int) -> bool:
-        return self.isl_utilization(sat_a, sat_b) > 1.0
+        return self.isl_key(sat_a, sat_b) in self.saturated_isl
 
     def is_sat_feeder_saturated(self, sat_id: int) -> bool:
-        return self.sat_feeder_utilization(sat_id) > 1.0
+        return sat_id in self.saturated_sat_feeders
 
     def is_gs_feeder_saturated(self, gs_id: str) -> bool:
         return self.gs_feeder_utilization(gs_id) > 1.0
@@ -225,8 +275,14 @@ class UsageBook:
     # rather than a negative number).
 
     def remaining_isl(self, sat_a: int, sat_b: int) -> float:
-        cap = self.view.isl_cap(sat_a, sat_b)
-        used = self.isl_used.get(self.isl_key(sat_a, sat_b), 0.0)
+        key = self.isl_key(sat_a, sat_b)
+        cap = self.view.isl_cap_index[key]
+        used = self.isl_used.get(key, 0.0)
+        return max(0.0, cap - used)
+
+    def remaining_isl_key(self, key: tuple[int, int]) -> float:
+        cap = self.view.isl_cap_index[key]
+        used = self.isl_used.get(key, 0.0)
         return max(0.0, cap - used)
 
     def remaining_sat_feeder(self, sat_id: int) -> float:

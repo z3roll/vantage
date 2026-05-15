@@ -61,9 +61,9 @@ class ISLEdge:
     """An inter-satellite link edge.
 
     ``delay`` is one-way propagation in ms. ``capacity_gbps`` is the
-    laser ISL throughput; the default of 96 Gbps matches Starlink v2
-    mini (per PPT Slide 9). Overwrite at construction time for shells
-    that use v3 hardware (~1 Tbps) or other variants.
+    laser ISL throughput; the default is 200 Gbps for the current
+    Argus capacity model. Overwrite at construction time for shells
+    that use different hardware.
     """
 
     sat_a: int
@@ -71,7 +71,7 @@ class ISLEdge:
     delay: float  # one-way propagation, ms
     distance_km: float
     link_type: Literal["intra_orbit", "inter_orbit"]
-    capacity_gbps: float = 96.0
+    capacity_gbps: float = 200.0
 
 
 @dataclass(frozen=True, slots=True)

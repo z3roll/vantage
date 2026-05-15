@@ -7,7 +7,9 @@ from vantage.forward.results.models import EpochResult, FlowOutcome, ResolvedFlo
 from vantage.forward.strategy.routing import (
     EgressOption,
     ForwardStrategy,
+    NoForwardCapacity,
     PathDecision,
+    PlannedRoutingPlaneForward,
     RoutingPlaneForward,
 )
 
@@ -18,7 +20,9 @@ __all__ = [
     "FlowOutcome",
     "ForwardContext",
     "ForwardStrategy",
+    "NoForwardCapacity",
     "PathDecision",
+    "PlannedRoutingPlaneForward",
     "ResolvedFlow",
     "RoutingPlaneForward",
     "RunContext",

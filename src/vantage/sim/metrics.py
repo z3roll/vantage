@@ -37,7 +37,7 @@ def compute_theoretical_pop_capacity(
     antennas_per_gs: int,
     sat_feeder_cap_gbps: float,
 ) -> dict[str, float]:
-    """Per-PoP display cap = attached GS count times feeder budget."""
+    """Per-PoP display cap = attached GS count times configured egress budget."""
     return {
         pop: len(pop_gs_list.get(pop, ())) * antennas_per_gs * sat_feeder_cap_gbps
         for pop in pop_list
@@ -240,31 +240,62 @@ def compute_pop_compare(result_bl: Any, result_greedy: Any) -> dict:
     return out
 
 
-def compute_epoch_compare(result_bl: Any, result_greedy: Any, result_lp: Any, result_mip: Any) -> dict:
+def compute_epoch_compare(
+    result_bl: Any | None = None,
+    result_greedy: Any | None = None,
+    result_lp: Any | None = None,
+    result_mip: Any | None = None,
+    *,
+    result_progressive: Any | None = None,
+    results: Mapping[str, Any] | None = None,
+) -> dict:
     """Per-epoch cross-controller metrics using demand-weighted RTTs."""
-    bl_by = {flow.flow_key: flow for flow in result_bl.flow_outcomes}
-    greedy_by = {flow.flow_key: flow for flow in result_greedy.flow_outcomes}
-    lp_by = {flow.flow_key: flow for flow in result_lp.flow_outcomes}
-    mip_by = {flow.flow_key: flow for flow in result_mip.flow_outcomes}
-    common = set(bl_by) & set(greedy_by) & set(lp_by) & set(mip_by)
+    if results is None:
+        legacy_results = {
+            "baseline": result_bl,
+            "progressive": result_progressive,
+            "greedy": result_greedy,
+            "lpround": result_lp,
+            "milp": result_mip,
+        }
+        results = {name: result for name, result in legacy_results.items() if result is not None}
+    if not results:
+        return {}
+
+    prefix_by_name = {
+        "baseline": "bl",
+        "optimizer_baseline": "optbl",
+        "progressive": "progressive",
+        "optimizer": "opt",
+        "greedy": "greedy",
+        "lpround": "lp",
+        "milp": "mip",
+    }
+    series_by = {
+        name: {flow.flow_key: flow for flow in result.flow_outcomes}
+        for name, result in results.items()
+    }
+    common = set.intersection(*(set(by_flow) for by_flow in series_by.values()))
     tolerance = 0.5
 
     total_n = 0
     total_demand = 0.0
-    reroutes = {"greedy": [0, 0, 0, 0], "lp": [0, 0, 0, 0], "mip": [0, 0, 0, 0]}
-    sums = {
-        "bl": [0.0, 0.0],
-        "greedy": [0.0, 0.0],
-        "lp": [0.0, 0.0],
-        "mip": [0.0, 0.0],
+    reroutes = {
+        name: [0, 0, 0, 0]
+        for name in series_by
+        if name != "baseline" and "baseline" in series_by
     }
-    rtt_pairs = {"bl": [], "greedy": [], "lp": [], "mip": []}
-    rtt_wsum = {"bl": 0.0, "greedy": 0.0, "lp": 0.0, "mip": 0.0}
-
-    series_by = {"bl": bl_by, "greedy": greedy_by, "lp": lp_by, "mip": mip_by}
+    sums = {name: [0.0, 0.0] for name in series_by}
+    rtt_pairs = {name: [] for name in series_by}
+    rtt_wsum = {name: 0.0 for name in series_by}
+    baseline_by = series_by.get("baseline")
     for flow_key in common:
-        baseline = bl_by[flow_key]
-        demand = baseline.demand_gbps
+        reference = (
+            baseline_by[flow_key]
+            if baseline_by is not None
+            else next(iter(series_by.values()))[flow_key]
+        )
+        demand = reference.demand_gbps
         total_n += 1
         total_demand += demand
         for key, by_flow in series_by.items():
@@ -273,9 +304,12 @@ def compute_epoch_compare(result_bl: Any, result_greedy: Any, result_lp: Any, re
             rtt_wsum[key] += flow.total_rtt * demand
             sums[key][0] += flow.satellite_rtt * demand
             sums[key][1] += flow.ground_rtt * demand
-        for key in ("greedy", "lp", "mip"):
-            candidate = series_by[key][flow_key]
-            if baseline.pop_code != candidate.pop_code:
+        if baseline_by is not None:
+            baseline = baseline_by[flow_key]
+            for key in reroutes:
+                candidate = series_by[key][flow_key]
+                if baseline.pop_code == candidate.pop_code:
+                    continue
                 reroutes[key][0] += 1
                 delta_total = candidate.total_rtt - baseline.total_rtt
                 if delta_total < -tolerance:
@@ -288,25 +322,30 @@ def compute_epoch_compare(result_bl: Any, result_greedy: Any, result_lp: Any, re
     def _weighted_avg(value: float) -> float:
         return value / total_demand if total_demand > 0 else 0.0
 
+    greedy_reroutes = reroutes.get("greedy", [0, 0, 0, 0])
     out = {
         "total_flows": total_n,
         "total_demand_gbps": round(total_demand, 2),
-        "reroute_flows": reroutes["greedy"][0],
-        "reroute_pct": round(reroutes["greedy"][0] / total_n * 100, 2) if total_n else 0,
-        "impr_flows": reroutes["greedy"][1],
-        "worse_flows": reroutes["greedy"][2],
-        "neutral_flows": reroutes["greedy"][3],
-        "impr_pct_of_re": round(reroutes["greedy"][1] / reroutes["greedy"][0] * 100, 1) if reroutes["greedy"][0] else 0,
-        "worse_pct_of_re": round(reroutes["greedy"][2] / reroutes["greedy"][0] * 100, 1) if reroutes["greedy"][0] else 0,
+        "reroute_flows": greedy_reroutes[0],
+        "reroute_pct": round(greedy_reroutes[0] / total_n * 100, 2) if total_n else 0,
+        "impr_flows": greedy_reroutes[1],
+        "worse_flows": greedy_reroutes[2],
+        "neutral_flows": greedy_reroutes[3],
+        "impr_pct_of_re": round(greedy_reroutes[1] / greedy_reroutes[0] * 100, 1) if greedy_reroutes[0] else 0,
+        "worse_pct_of_re": round(greedy_reroutes[2] / greedy_reroutes[0] * 100, 1) if greedy_reroutes[0] else 0,
     }
-    for key, prefix in (("bl", "bl"), ("greedy", "greedy"), ("lp", "lp"), ("mip", "mip")):
+    for key in series_by:
+        prefix = prefix_by_name.get(key, key)
         out[f"{prefix}_mean_rtt"] = round(_weighted_avg(rtt_wsum[key]), 2)
         out[f"{prefix}_sat_rtt"] = round(_weighted_avg(sums[key][0]), 2)
         out[f"{prefix}_gnd_rtt"] = round(_weighted_avg(sums[key][1]), 2)
         out[f"{prefix}_p95_rtt"] = round(weighted_percentile(rtt_pairs[key], 95), 2)
         out[f"{prefix}_p99_rtt"] = round(weighted_percentile(rtt_pairs[key], 99), 2)
-    for key, prefix in (("lp", "lp"), ("mip", "mip")):
-        reroute_n, improved, worse, neutral = reroutes[key]
+    for key, counts in reroutes.items():
+        if key == "greedy":
+            continue
+        prefix = prefix_by_name.get(key, key)
+        reroute_n, improved, worse, neutral = counts
         out[f"{prefix}_reroute_flows"] = reroute_n
         out[f"{prefix}_reroute_pct"] = round(reroute_n / total_n * 100, 2) if total_n else 0
         out[f"{prefix}_impr_flows"] = improved

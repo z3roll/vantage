@@ -2,23 +2,44 @@
 
 from __future__ import annotations
 
-import random as _random
 import time
 from types import MappingProxyType
 
 from vantage.common import DEFAULT_MIN_ELEVATION_DEG
 from vantage.common.link_model import pftk_throughput
-from vantage.common.seed import mix_seed
-from vantage.control.policy.common.utils import find_ingress_satellite
 from vantage.forward.execution.context import RunContext
 from vantage.forward.results.models import EpochResult, FlowOutcome
-from vantage.forward.strategy.routing import EgressOption, ForwardStrategy, PathDecision
+from vantage.forward.strategy.routing import (
+    EgressOption,
+    ForwardStrategy,
+    NoForwardCapacity,
+    PathDecision,
+)
 from vantage.model.network import NetworkSnapshot
 from vantage.model.satellite.state import AccessLink
 from vantage.model.satellite.visibility import SphericalAccessModel
-from vantage.traffic.types import FlowKey, TrafficDemand
+from vantage.traffic.types import Endpoint, FlowKey, TrafficDemand
 
 __all__ = ["effective_throughput", "realize"]
+
+
+def find_ingress_satellite(
+    src: Endpoint,
+    sat_positions: object,
+    *,
+    rng: object | None = None,
+    _visible: list[AccessLink] | None = None,
+) -> AccessLink | None:
+    """Deterministic forward ingress picker: highest visible elevation.
+
+    The old runner-level name is kept so existing tests and ad-hoc
+    monkeypatches still have a stable hook, but the behavior no longer
+    performs the 80/20 stochastic choice.
+    """
+    del src, sat_positions, rng
+    if not _visible:
+        return None
+    return _visible[0]
 
 def realize(
     strategy: ForwardStrategy,
@@ -45,33 +66,26 @@ def realize(
     queuing report no longer depends on dict iteration order.
 
     Each source's ingress satellite is resolved exactly once per
-    :func:`realize` call (cached in ``_uplink_cache``). Without the
-    cache, ``find_ingress_satellite``'s 80/20 stochastic branch (over
-    a process-wide RNG) could scatter a single terminal's flows
-    across multiple ingress sats within the same epoch.
-
-    The stochastic branch uses a per-realize RNG seeded from
-    ``(ingress_seed_base, demand.epoch)`` via
-    :func:`vantage.common.seed.mix_seed`. Two controllers called with
-    the same ``ingress_seed_base`` for the same epoch draw the same
-    ingress-sat assignments, while changing ``ingress_seed_base``
-    across runs (derived from the run-level seed) varies the
-    stochastic ingress selection between runs.
+    :func:`realize` call (cached in ``_uplink_cache``). The choice is
+    deterministic: first sight within a routing-plane window picks the
+    highest-elevation visible satellite, then the strategy may pin that
+    sat for the rest of the window while it remains visible. This keeps
+    planned control outputs aligned with forward without reintroducing
+    the old 80/20 stochastic branch.
     """
+    del ingress_seed_base  # kept for API compatibility with existing callers
     sat = snapshot.satellite
     total_demand = 0.0
 
     _access = SphericalAccessModel()
-    _visible_cache: dict[str, list[AccessLink]] = {}
-    _uplink_cache: dict[str, AccessLink | None] = {}
-    _ingress_rng = _random.Random(mix_seed(ingress_seed_base, demand.epoch))
-    # Window-scoped ingress pin lives on the strategy (survives
-    # reset_for_epoch, drops on plane refresh). Absent on strategies
-    # that don't opt in — those fall back to per-epoch selection.
+    _visible_cache: dict[str, tuple[AccessLink, ...]] = {}
+    _uplink_cache: dict[object, AccessLink | None] = {}
     _get_pin = getattr(strategy, "uplink_sat_pin", None)
     _uplink_sat_pin: dict[str, int] | None = (
         _get_pin() if callable(_get_pin) else None
     )
+    _preferred_ingress = getattr(strategy, "preferred_ingress", None)
+    _uses_preferred_ingress = callable(_preferred_ingress)
 
     pending: list[tuple[FlowKey, float, PathDecision, EgressOption]] = []
 
@@ -95,7 +109,10 @@ def realize(
             continue
 
         src_name = flow_key.src
-        if src_name not in _uplink_cache:
+        uplink_cache_key: object = (
+            (src_name, flow_key.dst) if _uses_preferred_ingress else src_name
+        )
+        if uplink_cache_key not in _uplink_cache:
             t0 = _perf()
             if src_name not in _visible_cache:
                 _visible_cache[src_name] = _access.compute_access(
@@ -105,33 +122,41 @@ def realize(
             visible = _visible_cache[src_name]
             link: AccessLink | None = None
             if visible:
-                # Prefer the window-pinned sat if it's still visible;
-                # its AccessLink comes from the *current* epoch's
-                # geometry so uplink.delay reflects current sat
-                # position (only the sat *id* is frozen across the
-                # window, not the RTT).
-                pinned_sat = (
-                    None if _uplink_sat_pin is None
-                    else _uplink_sat_pin.get(src_name)
+                preferred_sat = (
+                    _preferred_ingress(
+                        flow_key, src_ep, visible, snapshot, context, demand.epoch,
+                    )
+                    if _uses_preferred_ingress
+                    else None
                 )
-                if pinned_sat is not None:
-                    for v in visible:
-                        if v.sat_id == pinned_sat:
-                            link = v
+                if preferred_sat is not None:
+                    for candidate in visible:
+                        if candidate.sat_id == preferred_sat:
+                            link = candidate
                             break
                 if link is None:
-                    # No pin, or pinned sat dropped below horizon:
-                    # fresh stochastic pick, then (re-)pin so the
-                    # rest of the window stays stable.
-                    link = find_ingress_satellite(
-                        src_ep, sat.positions,
-                        rng=_ingress_rng, _visible=visible,
+                    pinned_sat = (
+                        None if _uplink_sat_pin is None
+                        else _uplink_sat_pin.get(src_name)
                     )
-                    if link is not None and _uplink_sat_pin is not None:
+                    if pinned_sat is not None:
+                        for candidate in visible:
+                            if candidate.sat_id == pinned_sat:
+                                link = candidate
+                                break
+                if link is None:
+                    link = find_ingress_satellite(
+                        src_ep, sat.positions, _visible=visible,
+                    )
+                    if (
+                        link is not None
+                        and _uplink_sat_pin is not None
+                        and not _uses_preferred_ingress
+                    ):
                         _uplink_sat_pin[src_name] = link.sat_id
-            _uplink_cache[src_name] = link
+            _uplink_cache[uplink_cache_key] = link
             ingress_s += _perf() - t0
-        uplink = _uplink_cache[src_name]
+        uplink = _uplink_cache[uplink_cache_key]
         if uplink is None:
             continue
 
@@ -145,7 +170,11 @@ def realize(
             continue
 
         t0 = _perf()
-        chosen = strategy.charge(decision, flow_demand)
+        try:
+            chosen = strategy.charge(decision, flow_demand)
+        except NoForwardCapacity:
+            charge_s += _perf() - t0
+            continue
         charge_s += _perf() - t0
         pending.append((flow_key, flow_demand, decision, chosen))
 
@@ -243,4 +272,3 @@ def effective_throughput(
     if bottleneck_gbps > 0:
         candidates.append(bottleneck_gbps)
     return min(candidates)
-

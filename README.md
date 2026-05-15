@@ -7,10 +7,13 @@ for user-to-service flows that traverse a Starlink-class constellation:
 
 - **Baseline (nearest-PoP):** every cell is pinned to its geographically
   closest PoP and spills through the nearest cascade under pressure.
+- **Progressive spillover:** for each destination, PoPs are ranked by
+  ground-segment RTT, and largest `(cell, destination)` demand blocks fill
+  that destination's best PoP before spilling to the next one.
 - **Greedy (cascade):** a central controller ranks PoPs per
   `(cell, destination)` by predicted end-to-end RTT and emits a ranked
   cascade; the data plane walks the cascade and picks the first egress
-  whose Ka-feeder still has capacity.
+  whose satellite, feeder, and ISL path still have capacity.
 - **LP rounding / MILP:** optimization references for the same
   `(cell, destination) -> PoP` assignment problem, used to compare the
   greedy controller against relaxation and integer-optimal baselines.
@@ -40,11 +43,16 @@ watch results fill in while the simulation is still running.
 uv run python run.py --epochs 600        # longer run (~10 min)
 uv run python run.py --user-scale 1.0    # use real ~6.4M user count
 uv run python run.py --seed 12345        # reproducible traffic/truth/ingress
+uv run python run.py --control greedy    # run one policy instead of all
+uv run python run.py --egress-top-k 3    # retain top-3 visible egress sats per GS
 uv run python run.py --port 9000         # alternative HTTP port
 uv run python run.py --no-browser        # headless (server still up)
 uv run python run.py --no-serve          # no dashboard server, just write JSON
 uv run python run.py --max-gs-per-pop 2  # cap GS attachments per PoP
 ```
+
+`--control` accepts `baseline`, `progressive`, `greedy`, `lpround`, `milp`,
+or `all`; comma-separated and repeated forms both work.
 
 When the simulation finishes the server keeps running so you can keep
 browsing — `Ctrl-C` to exit.
@@ -68,6 +76,7 @@ src/vantage/
         evaluation.py           # control-plan objective and predicted RTT stats
         policy/                 # routing-plane builders
             nearest_pop.py      # Baseline controller
+            progressive.py      # ground-latency progressive spillover baseline
             greedy.py           # Greedy (cascade) controller
             lpround.py          # LP relaxation + rounding controller
             milp.py             # integer optimum reference controller
